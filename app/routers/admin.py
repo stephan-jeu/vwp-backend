@@ -10,3 +10,4 @@ router = APIRouter()
 async def admin_status() -> dict[str, str]:
     """Return admin status placeholder."""
     return {"status": "admin-ok"}
+

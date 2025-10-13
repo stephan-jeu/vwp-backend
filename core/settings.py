@@ -32,6 +32,35 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("DB_MAX_OVERFLOW", "10"))
     )
 
+    # OAuth2 - Google
+    google_client_id: str = Field(
+        default_factory=lambda: os.getenv("GOOGLE_CLIENT_ID", "")
+    )
+    google_client_secret: SecretStr = Field(
+        default_factory=lambda: SecretStr(os.getenv("GOOGLE_CLIENT_SECRET", ""))
+    )
+    google_redirect_uri: str = Field(
+        default_factory=lambda: os.getenv(
+            "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/callback"
+        )
+    )
+
+    # JWT
+    jwt_secret: SecretStr = Field(
+        default_factory=lambda: SecretStr(
+            os.getenv("JWT_SECRET", "dev-insecure-secret")
+        )
+    )
+    jwt_algorithm: str = Field(
+        default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256")
+    )
+    access_token_expires_minutes: int = Field(
+        default_factory=lambda: int(os.getenv("ACCESS_TOKEN_EXPIRES_MINUTES", "30"))
+    )
+    refresh_token_expires_days: int = Field(
+        default_factory=lambda: int(os.getenv("REFRESH_TOKEN_EXPIRES_DAYS", "30"))
+    )
+
     @property
     def sqlalchemy_database_uri_async(self) -> str:
         # postgresql+asyncpg://user:pass@host:port/db

@@ -10,3 +10,4 @@ router = APIRouter()
 async def list_visits() -> list[dict[str, str]]:
     """List visits placeholder endpoint."""
     return []
+

@@ -70,3 +70,4 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
 
 
 app = create_app()
+

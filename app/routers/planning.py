@@ -10,3 +10,4 @@ router = APIRouter()
 async def get_planning() -> dict[str, str]:
     """Return planning placeholder."""
     return {"planning": "placeholder"}
+
