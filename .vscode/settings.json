@@ -1,0 +1,8 @@
+{
+    "python.defaultInterpreterPath": "/Users/stephanvandenberg/git/veldwerkplanning/backend/.venv/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "ruff.interpreter": ["/Users/stephanvandenberg/git/veldwerkplanning/backend/.venv/bin/python"],
+    "black.path": ["/Users/stephanvandenberg/git/veldwerkplanning/backend/.venv/bin/black"],
+    "mypy.pythonPath": "/Users/stephanvandenberg/git/veldwerkplanning/backend/.venv/bin/python",
+    "pytest.paths": ["backend"]
+  }
