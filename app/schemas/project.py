@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class ProjectBase(BaseModel):
     code: str
     location: str
+    google_drive_folder: str | None = None
 
 
 class ProjectCreate(ProjectBase):

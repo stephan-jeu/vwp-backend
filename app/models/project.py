@@ -19,3 +19,4 @@ class Project(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     location: Mapped[str] = mapped_column(String(255))
+    google_drive_folder: Mapped[str | None] = mapped_column(String(255), nullable=True)

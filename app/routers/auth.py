@@ -15,9 +15,10 @@ from app.services.auth_service import (
     create_refresh_token,
     decode_token,
 )
-from app.schemas.auth import GoogleCallbackRequest
+from app.schemas.auth import GoogleCallbackRequest, AuthMeResponse
 from app.models.user import User
 from db.session import get_db
+from app.services.security import get_current_user
 
 
 router = APIRouter()
@@ -153,8 +154,15 @@ async def refresh_token(refresh_token: str) -> dict[str, str]:
     return {"access_token": new_access, "token_type": "bearer"}
 
 
-@router.get("/me")
-async def get_me(current_sub: str = Depends(get_current_user_sub)) -> dict[str, str]:
-    """Return minimal identity of the authenticated user."""
+@router.get("/me", response_model=AuthMeResponse)
+async def get_me(current_user: User = Depends(get_current_user)) -> AuthMeResponse:
+    """Return identity of the authenticated user including admin flag.
 
-    return {"sub": current_sub}
+    Args:
+        current_user: Injected authenticated user instance.
+
+    Returns:
+        A dictionary with the user's subject email and admin status.
+    """
+
+    return AuthMeResponse(sub=current_user.email, admin=bool(current_user.admin))
