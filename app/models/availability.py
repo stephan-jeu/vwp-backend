@@ -3,8 +3,8 @@ from __future__ import annotations
 from sqlalchemy import ForeignKey, UniqueConstraint, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models import Base, TimestampMixin
-from backend.app.models.user import User
+from app.models import Base, TimestampMixin
+from app.models.user import User
 
 
 class AvailabilityWeek(TimestampMixin, Base):

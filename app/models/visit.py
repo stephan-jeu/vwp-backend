@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import ForeignKey, Integer, String, Table, Column
+from sqlalchemy import ForeignKey, Integer, String, Table, Column, Enum, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models import Base, TimestampMixin
-from backend.app.models.cluster import Cluster
-from backend.app.models.function import Function
-from backend.app.models.species import Species
-from backend.app.models.user import User
+from app.models import Base, TimestampMixin
+from app.models.cluster import Cluster
+from app.models.function import Function
+from app.models.species import Species
+from app.models.user import User
 
 
 # Association tables for many-to-many relationships
@@ -68,3 +68,28 @@ class Visit(TimestampMixin, Base):
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
     remarks_planning: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     remarks_field: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    priority: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    preferred_researcher_id: Mapped[int | None] = mapped_column(
+        ForeignKey(User.id), nullable=True
+    )
+    preferred_researcher: Mapped[User | None] = relationship(User)
+
+    class VisitStatusEnum(str, Enum):
+        IN_TE_PLANNEN = "In te plannen"
+        INGEPLAND = "Ingepland"
+        UITGEVOERD = "Uitgevoerd"
+
+    status: Mapped["Visit.VisitStatusEnum"] = mapped_column(
+        Enum(VisitStatusEnum, name="visit_status_type"),
+        nullable=False,
+        default=VisitStatusEnum.IN_TE_PLANNEN,
+        server_default="In te plannen",
+    )
+    advertized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    quote: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )

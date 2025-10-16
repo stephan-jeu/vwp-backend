@@ -6,12 +6,12 @@ from typing import Sequence
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.core.settings import get_settings
-from backend.db.session import engine
-from backend.app.routers.auth import router as auth_router
-from backend.app.routers.visits import router as visits_router
-from backend.app.routers.planning import router as planning_router
-from backend.app.routers.admin import router as admin_router
+from core.settings import get_settings
+from db.session import engine
+from app.routers.auth import router as auth_router
+from app.routers.visits import router as visits_router
+from app.routers.planning import router as planning_router
+from app.routers.admin import router as admin_router
 
 
 settings = get_settings()
@@ -70,4 +70,3 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
 
 
 app = create_app()
-

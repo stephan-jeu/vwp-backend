@@ -5,9 +5,9 @@ from datetime import date, time
 from sqlalchemy import Date, Enum, ForeignKey, Integer, String, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models import Base, TimestampMixin
-from backend.app.models.function import Function
-from backend.app.models.species import Species
+from app.models import Base, TimestampMixin
+from app.models.function import Function
+from app.models.species import Species
 
 
 class Protocol(TimestampMixin, Base):

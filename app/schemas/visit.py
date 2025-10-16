@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date
 
 from pydantic import BaseModel
-from backend.app.schemas.function import FunctionRead
-from backend.app.schemas.species import SpeciesRead
-from backend.app.schemas.user import UserNameRead
+from app.schemas.function import FunctionRead
+from app.schemas.species import SpeciesRead
+from app.schemas.user import UserNameRead
 
 
 class VisitBase(BaseModel):
@@ -30,6 +30,11 @@ class VisitBase(BaseModel):
     dvp: bool = False
     remarks_planning: str | None = None
     remarks_field: str | None = None
+    priority: bool = False
+    preferred_researcher_id: int | None = None
+    status: str = "In te plannen"
+    advertized: bool = False
+    quote: bool = False
 
 
 class VisitCreate(VisitBase):

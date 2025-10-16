@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.models import Base, TimestampMixin
+from app.models import Base, TimestampMixin
 
 
 class Project(TimestampMixin, Base):

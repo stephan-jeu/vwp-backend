@@ -5,7 +5,7 @@ from enum import StrEnum
 from sqlalchemy import Enum, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.models import Base, TimestampMixin
+from app.models import Base, TimestampMixin
 
 
 class User(TimestampMixin, Base):

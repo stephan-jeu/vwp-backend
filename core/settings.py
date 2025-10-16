@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 from pydantic import BaseModel, Field, SecretStr
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class Settings(BaseModel):
@@ -41,7 +44,7 @@ class Settings(BaseModel):
     )
     google_redirect_uri: str = Field(
         default_factory=lambda: os.getenv(
-            "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/callback"
+            "GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/callback"
         )
     )
 

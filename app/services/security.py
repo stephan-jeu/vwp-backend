@@ -5,9 +5,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.user import User
-from backend.app.services.auth_service import decode_token
-from backend.db.session import get_db
+from app.models.user import User
+from app.services.auth_service import decode_token
+from db.session import get_db
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -76,3 +76,4 @@ async def assert_admin(db: AsyncSession, subject_email: str) -> None:
     user: User | None = result.scalar_one_or_none()
     if user is None or not user.admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+

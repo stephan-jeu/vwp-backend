@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class FamilyBase(BaseModel):
     name: str
+    priority: int = 5
 
 
 class FamilyCreate(FamilyBase):
@@ -15,4 +16,3 @@ class FamilyRead(FamilyBase):
     id: int
 
     model_config = {"from_attributes": True}
-

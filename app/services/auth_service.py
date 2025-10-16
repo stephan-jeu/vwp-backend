@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 import jwt
 
-from backend.core.settings import get_settings
+from core.settings import get_settings
 
 
 def _now_utc() -> datetime:
@@ -75,3 +75,4 @@ def decode_token(token: str) -> Dict[str, Any]:
         algorithms=[settings.jwt_algorithm],
         options={"require": ["exp", "sub"]},
     )
+

@@ -3,8 +3,8 @@ from __future__ import annotations
 from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.models import Base, TimestampMixin
-from backend.app.models.family import Family
+from app.models import Base, TimestampMixin
+from app.models.family import Family
 
 
 class Species(TimestampMixin, Base):

@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.core.settings import get_settings
+from core.settings import get_settings
 
 
 settings = get_settings()

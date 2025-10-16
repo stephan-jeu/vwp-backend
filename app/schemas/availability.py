@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from backend.app.schemas.user import UserNameRead
+from app.schemas.user import UserNameRead
 
 
 class AvailabilityBase(BaseModel):
