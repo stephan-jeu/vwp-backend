@@ -11,6 +11,7 @@ from db.session import engine
 from app.routers.auth import router as auth_router
 from app.routers.visits import router as visits_router
 from app.routers.planning import router as planning_router
+from app.routers.projects import router as projects_router
 from app.routers.admin import router as admin_router
 
 
@@ -60,6 +61,7 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     app.include_router(auth_router, prefix="/auth", tags=["auth"])
     app.include_router(visits_router, prefix="/visits", tags=["visits"])
     app.include_router(planning_router, prefix="/planning", tags=["planning"])
+    app.include_router(projects_router, prefix="/projects", tags=["projects"])
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
 
     @app.get("/health")
