@@ -23,3 +23,4 @@ class Cluster(TimestampMixin, Base):
     )
     project: Mapped[Project] = relationship(Project)
     address: Mapped[str] = mapped_column(String(255))
+    cluster_number: Mapped[int] = mapped_column(nullable=False, index=True)

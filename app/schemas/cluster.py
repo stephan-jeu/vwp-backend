@@ -8,6 +8,7 @@ class ClusterBase(BaseModel):
 
     project_id: int
     address: str
+    cluster_number: int
 
 
 class ClusterCreate(ClusterBase):

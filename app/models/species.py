@@ -24,4 +24,9 @@ class Species(TimestampMixin, Base):
     )
     family: Mapped[Family] = relationship(Family)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    name_latin: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name_latin: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, nullable=True
+    )
+    abbreviation: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )

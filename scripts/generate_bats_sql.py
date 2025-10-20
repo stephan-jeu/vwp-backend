@@ -85,6 +85,53 @@ def main() -> None:
                 % sql_escape(func_name)
             )
 
+    # Helpers to convert textual Dutch month names into concrete dates (year 2000)
+    month_map = {
+        "jan": 1,
+        "januari": 1,
+        "feb": 2,
+        "februari": 2,
+        "mrt": 3,
+        "maart": 3,
+        "apr": 4,
+        "april": 4,
+        "mei": 5,
+        "jun": 6,
+        "juni": 6,
+        "jul": 7,
+        "juli": 7,
+        "aug": 8,
+        "augustus": 8,
+        "sep": 9,
+        "sept": 9,
+        "september": 9,
+        "okt": 10,
+        "oktober": 10,
+        "nov": 11,
+        "november": 11,
+        "dec": 12,
+        "december": 12,
+    }
+
+    def parse_core_date(text: str | None) -> str | None:
+        """Parse values like '1 dec', '15 mrt', or 'dec' into '2000-MM-DD'."""
+        if not text:
+            return None
+        raw = str(text).strip().lower()
+        # Pattern: 'DD mon'
+        m = re.match(r"^(\d{1,2})\s+([a-z\u00e4\u00eb\u00ef\u00f6\u00fc]+)$", raw)
+        if m:
+            day = int(m.group(1))
+            mon = m.group(2)
+            month_num = month_map.get(mon)
+            if month_num:
+                return f"2000-{month_num:02d}-{day:02d}"
+            return None
+        # Pattern: only month name -> default to day 1
+        if raw in month_map:
+            return f"2000-{month_map[raw]:02d}-01"
+        return None
+
     # Protocols
     for row in data:
         family = row.get("family")
@@ -115,9 +162,9 @@ def main() -> None:
         )
         special_follow_up_action = row.get("special_follow_up_action")
 
-        # Periods in JSON are textual (e.g., '1 dec'); DB columns are DATE. Keep NULL and preserve text in conditions.
-        period_from = None
-        period_to = None
+        # Periods: parse textual into concrete dates using year 2000
+        period_from = parse_core_date(row.get("period_from_core"))
+        period_to = parse_core_date(row.get("period_to_core"))
         # Append original textual periods into visit_conditions_text if present.
         extra_period_texts = []
         if row.get("period_from_core"):

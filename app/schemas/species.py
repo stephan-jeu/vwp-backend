@@ -6,7 +6,8 @@ from pydantic import BaseModel
 class SpeciesBase(BaseModel):
     family_id: int
     name: str
-    name_latin: str
+    name_latin: str | None = None
+    abbreviation: str | None = None
 
 
 class SpeciesCreate(SpeciesBase):
