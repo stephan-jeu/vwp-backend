@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import time
 
-from sqlalchemy import Date, Enum, ForeignKey, Integer, String, Time
+from sqlalchemy import ForeignKey, Integer, String, Time, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models import Base, TimestampMixin
 from app.models.function import Function
 from app.models.species import Species
+from app.models.protocol_visit_window import ProtocolVisitWindow
 
 
 class Protocol(TimestampMixin, Base):
@@ -30,10 +31,10 @@ class Protocol(TimestampMixin, Base):
     species: Mapped[Species] = relationship(Species)
     function: Mapped[Function] = relationship(Function)
 
-    period_from: Mapped[date | None] = mapped_column(Date, nullable=True)
-    period_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     visits: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    visit_duration_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    visit_duration_hours: Mapped[float | None] = mapped_column(
+        Numeric(4, 1), nullable=True
+    )
     min_period_between_visits_value: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
@@ -76,10 +77,17 @@ class Protocol(TimestampMixin, Base):
     requires_maternity_period_visit: Mapped[bool] = mapped_column(
         default=False, server_default="false"
     )
-    # July visit is optional and may be unspecified
     requires_july_visit: Mapped[bool | None] = mapped_column(
-        nullable=True, default=None
+        default=False, server_default="false"
     )
     special_follow_up_action: Mapped[str | None] = mapped_column(
         String(255), nullable=True
+    )
+
+    # Per-visit windows ordered by visit_index
+    visit_windows: Mapped[list[ProtocolVisitWindow]] = relationship(
+        ProtocolVisitWindow,
+        back_populates="protocol",
+        cascade="all, delete-orphan",
+        order_by="ProtocolVisitWindow.visit_index",
     )

@@ -8,8 +8,6 @@ from pydantic import BaseModel
 class ProtocolBase(BaseModel):
     species_id: int
     function_id: int
-    period_from: date | None = None
-    period_to: date | None = None
     visits: int | None = None
     visit_duration_hours: int | None = None
     min_period_between_visits_value: int | None = None
@@ -31,6 +29,9 @@ class ProtocolBase(BaseModel):
     requires_june_visit: bool = False
     requires_maternity_period_visit: bool = False
     special_follow_up_action: str | None = None
+    # Optional nested windows when creating/updating a protocol
+    # Note: create types defined below
+    visit_windows: list["ProtocolVisitWindowCreate"] | None = None
 
 
 class ProtocolCreate(ProtocolBase):
@@ -38,6 +39,25 @@ class ProtocolCreate(ProtocolBase):
 
 
 class ProtocolRead(ProtocolBase):
+    id: int
+    visit_windows: list["ProtocolVisitWindowRead"] = []
+
+    model_config = {"from_attributes": True}
+
+
+class ProtocolVisitWindowBase(BaseModel):
+    visit_index: int
+    window_from: date
+    window_to: date
+    required: bool = True
+    label: str | None = None
+
+
+class ProtocolVisitWindowCreate(ProtocolVisitWindowBase):
+    pass
+
+
+class ProtocolVisitWindowRead(ProtocolVisitWindowBase):
     id: int
 
     model_config = {"from_attributes": True}

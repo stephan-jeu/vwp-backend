@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import time
 
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -165,29 +164,37 @@ def main() -> None:
         # Periods: parse textual into concrete dates using year 2000
         period_from = parse_core_date(row.get("period_from_core"))
         period_to = parse_core_date(row.get("period_to_core"))
-        # Append original textual periods into visit_conditions_text if present.
-        extra_period_texts = []
-        if row.get("period_from_core"):
-            extra_period_texts.append(f"period_from_core: {row['period_from_core']}")
-        if row.get("period_to_core"):
-            extra_period_texts.append(f"period_to_core: {row['period_to_core']}")
-        if extra_period_texts:
-            visit_conditions_text = (
-                (visit_conditions_text or "")
-                + ("\n" if visit_conditions_text else "")
-                + " | ".join(extra_period_texts)
-            )
 
-        stmts.append(
-            "INSERT INTO protocols (species_id, function_id, period_from, period_to, visits, visit_duration_hours, "
+        # Build window segments honoring year wrap; protocol_visit_windows requires from <= to
+        window_segments: list[tuple[str, str]] = []
+        if period_from and period_to:
+            if period_from <= period_to:
+                window_segments.append((period_from, period_to))
+            else:
+                # wrap-around: split into two segments
+                window_segments.append((period_from, "2000-12-31"))
+                window_segments.append(("2000-01-01", period_to))
+
+        # Insert protocol and windows using a CTE to capture protocol id
+        # Note: no period_from/period_to on protocols anymore
+        protocol_insert_columns = (
+            "species_id, function_id, visits, visit_duration_hours, "
             "min_period_between_visits_value, min_period_between_visits_unit, start_timing_reference, start_time_relative_minutes, "
             "start_time_absolute_from, start_time_absolute_to, end_timing_reference, end_time_relative_minutes, "
             "min_temperature_celsius, max_wind_force_bft, max_precipitation, start_time_condition, end_time_condition, "
-            "visit_conditions_text, requires_morning_visit, requires_evening_visit, requires_june_visit, requires_maternity_period_visit, special_follow_up_action) "
-            "VALUES ("
-            f"(SELECT s.id FROM species s JOIN families f ON s.family_id = f.id WHERE f.name = '{sql_escape(family or '')}' AND s.name_latin = '{sql_escape(latin or '')}'), "
-            f"(SELECT id FROM functions WHERE name = '{sql_escape(func_name or '')}'), "
-            f"{to_sql_null_or_str(period_from)}, {to_sql_null_or_str(period_to)}, "
+            "visit_conditions_text, requires_morning_visit, requires_evening_visit, requires_june_visit, requires_maternity_period_visit, special_follow_up_action"
+        )
+
+        species_select = (
+            f"(SELECT s.id FROM species s JOIN families f ON s.family_id = f.id "
+            f"WHERE f.name = '{sql_escape(family or '')}' AND s.name_latin = '{sql_escape(latin or '')}')"
+        )
+        function_select = (
+            f"(SELECT id FROM functions WHERE name = '{sql_escape(func_name or '')}')"
+        )
+
+        protocol_values = (
+            f"{species_select}, {function_select}, "
             f"{to_sql_null_or_int(visits)}, {to_sql_null_or_int(visit_duration_hours)}, "
             f"{to_sql_null_or_int(min_period_between_visits_value)}, {to_sql_null_or_str(min_period_between_visits_unit)}, "
             f"{to_sql_null_or_str(start_timing_reference)}, {to_sql_null_or_int(start_time_relative_minutes)}, "
@@ -196,8 +203,40 @@ def main() -> None:
             f"{to_sql_null_or_int(min_temperature_celsius)}, {to_sql_null_or_int(max_wind_force_bft)}, {to_sql_null_or_str(max_precipitation)}, "
             f"{to_sql_null_or_str(start_time_condition)}, {to_sql_null_or_str(end_time_condition)}, {to_sql_null_or_str(visit_conditions_text)}, "
             f"{'true' if requires_morning_visit else 'false'}, {'true' if requires_evening_visit else 'false'}, {'true' if requires_june_visit else 'false'}, {'true' if requires_maternity_period_visit else 'false'}, {to_sql_null_or_str(special_follow_up_action)}"
-            ") ON CONFLICT DO NOTHING;"
         )
+
+        # Insert Protocol row
+        stmts.append(
+            "INSERT INTO protocols ("
+            + protocol_insert_columns
+            + ") VALUES ("
+            + protocol_values
+            + ");"
+        )
+
+        # Insert protocol_visit_windows if we have segments and visits
+        if window_segments and visits and int(visits) > 0:
+            # Build values rows cycling segments
+            values_rows: list[str] = []
+            for i in range(int(visits)):
+                seg = window_segments[i % len(window_segments)]
+                # visit_index is 1-based
+                values_rows.append(
+                    "( %d, DATE '%s', DATE '%s', true, NULL )" % (i + 1, seg[0], seg[1])
+                )
+            # Insert windows for the most recently inserted protocol for this species/function
+            stmts.append(
+                "INSERT INTO protocol_visit_windows (protocol_id, visit_index, window_from, window_to, required, label)\n"
+                + "SELECT p.id, v.visit_index, v.window_from, v.window_to, v.required, v.label\n"
+                + "FROM (VALUES\n  "
+                + ",\n  ".join(values_rows)
+                + "\n) AS v(visit_index, window_from, window_to, required, label),\n"
+                + "LATERAL (SELECT id FROM protocols WHERE species_id = "
+                + species_select
+                + " AND function_id = "
+                + function_select
+                + " ORDER BY id DESC LIMIT 1) AS p(id);"
+            )
 
     with open(OUT_PATH, "w", encoding="utf-8") as out:
         out.write("\n".join(stmts) + "\n")
