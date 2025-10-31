@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -100,7 +100,6 @@ async def oauth_callback(
     token_payload = resp.json()
 
     # Optionally: validate `id_token` (Google-signed JWT). For brevity, trust email field here.
-    id_token = token_payload.get("id_token")
     # In production, validate id_token's signature and claims; here we assume we get email from userinfo.
 
     # Fetch userinfo to obtain email

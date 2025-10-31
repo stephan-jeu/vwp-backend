@@ -16,3 +16,17 @@ class FunctionRead(FunctionBase):
 
     model_config = {"from_attributes": True}
 
+
+class FunctionCompactRead(BaseModel):
+    """Compact function representation used in nested read models.
+
+    Args:
+        id: Unique identifier of the function.
+        name: Human-readable function name.
+
+    Returns:
+        Serialized compact function object.
+    """
+
+    id: int
+    name: str

@@ -1,5 +1,5 @@
 import pytest
-from fastapi import FastAPI, status
+from fastapi import status
 
 
 @pytest.mark.asyncio

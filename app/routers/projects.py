@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Sequence
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status, Response
 from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,10 +87,12 @@ async def update_project(
     return project
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response
+)
 async def delete_project(
     _: AdminDep, db: DbDep, project_id: Annotated[int, Path(ge=1)]
-) -> None:
+) -> Response:
     """Delete a project by id.
 
     Rely on DB-level cascade to remove dependent rows.
@@ -102,4 +104,4 @@ async def delete_project(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     await db.delete(project)
     await db.commit()
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

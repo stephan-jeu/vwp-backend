@@ -36,3 +36,7 @@ def downgrade() -> None:
         existing_type=sa.Numeric(4, 1),
         existing_nullable=True,
     )
+
+
+
+

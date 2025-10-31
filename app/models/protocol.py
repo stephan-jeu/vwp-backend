@@ -80,9 +80,6 @@ class Protocol(TimestampMixin, Base):
     requires_july_visit: Mapped[bool | None] = mapped_column(
         default=False, server_default="false"
     )
-    special_follow_up_action: Mapped[str | None] = mapped_column(
-        String(255), nullable=True
-    )
 
     # Per-visit windows ordered by visit_index
     visit_windows: Mapped[list[ProtocolVisitWindow]] = relationship(

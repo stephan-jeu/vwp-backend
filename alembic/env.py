@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from logging.config import fileConfig
-from typing import Sequence, Union
+from typing import Union
 
 import os
 import sys
@@ -16,8 +16,8 @@ BACKEND_DIR = os.path.abspath(os.path.join(CURRENT_DIR, os.pardir))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from app.models import Base
-from core.settings import get_settings
+from app.models import Base  # noqa: E402
+from core.settings import get_settings  # noqa: E402
 
 
 # this is the Alembic Config object, which provides

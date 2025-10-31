@@ -28,7 +28,6 @@ class ProtocolBase(BaseModel):
     requires_evening_visit: bool = False
     requires_june_visit: bool = False
     requires_maternity_period_visit: bool = False
-    special_follow_up_action: str | None = None
     # Optional nested windows when creating/updating a protocol
     # Note: create types defined below
     visit_windows: list["ProtocolVisitWindowCreate"] | None = None

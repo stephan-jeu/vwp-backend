@@ -159,7 +159,6 @@ def main() -> None:
         requires_maternity_period_visit = bool(
             row.get("requires_maternity_period_visit")
         )
-        special_follow_up_action = row.get("special_follow_up_action")
 
         # Periods: parse textual into concrete dates using year 2000
         period_from = parse_core_date(row.get("period_from_core"))
@@ -182,7 +181,7 @@ def main() -> None:
             "min_period_between_visits_value, min_period_between_visits_unit, start_timing_reference, start_time_relative_minutes, "
             "start_time_absolute_from, start_time_absolute_to, end_timing_reference, end_time_relative_minutes, "
             "min_temperature_celsius, max_wind_force_bft, max_precipitation, start_time_condition, end_time_condition, "
-            "visit_conditions_text, requires_morning_visit, requires_evening_visit, requires_june_visit, requires_maternity_period_visit, special_follow_up_action"
+            "visit_conditions_text, requires_morning_visit, requires_evening_visit, requires_june_visit, requires_maternity_period_visit"
         )
 
         species_select = (
@@ -202,7 +201,7 @@ def main() -> None:
             f"{to_sql_null_or_str(end_timing_reference)}, {to_sql_null_or_int(end_time_relative_minutes)}, "
             f"{to_sql_null_or_int(min_temperature_celsius)}, {to_sql_null_or_int(max_wind_force_bft)}, {to_sql_null_or_str(max_precipitation)}, "
             f"{to_sql_null_or_str(start_time_condition)}, {to_sql_null_or_str(end_time_condition)}, {to_sql_null_or_str(visit_conditions_text)}, "
-            f"{'true' if requires_morning_visit else 'false'}, {'true' if requires_evening_visit else 'false'}, {'true' if requires_june_visit else 'false'}, {'true' if requires_maternity_period_visit else 'false'}, {to_sql_null_or_str(special_follow_up_action)}"
+            f"{'true' if requires_morning_visit else 'false'}, {'true' if requires_evening_visit else 'false'}, {'true' if requires_june_visit else 'false'}, {'true' if requires_maternity_period_visit else 'false'}"
         )
 
         # Insert Protocol row

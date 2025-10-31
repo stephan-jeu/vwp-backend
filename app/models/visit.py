@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+from uuid import uuid4
 
-from sqlalchemy import ForeignKey, Integer, String, Table, Column, Enum, Boolean
+from sqlalchemy import ForeignKey, Integer, String, Table, Column, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models import Base, TimestampMixin
@@ -53,6 +54,17 @@ class Visit(TimestampMixin, Base):
     species: Mapped[list[Species]] = relationship(Species, secondary=visit_species)
     researchers: Mapped[list[User]] = relationship(User, secondary=visit_researchers)
 
+    # Free-form grouping identifier to link related visits.
+    # Populated with a random string (UUID4) on creation; can be edited to group visits.
+    group_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, default=lambda: str(uuid4())
+    )
+
+    # Ephemeral grouping used for weekly planning to combine visits ad-hoc
+    schedule_group_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
     required_researchers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     visit_nr: Mapped[int | None] = mapped_column(Integer, nullable=True)
     from_date: Mapped[date | None] = mapped_column("from", nullable=True)
@@ -66,27 +78,36 @@ class Visit(TimestampMixin, Base):
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
     hup: Mapped[bool] = mapped_column(default=False, server_default="false")
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
+    requires_morning_visit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    requires_evening_visit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    requires_june_visit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    requires_maternity_period_visit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     remarks_planning: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     remarks_field: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     priority: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Derived/planning helper fields to persist
+    part_of_day: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Start time expressed in minutes relative to timing reference
+    start_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Human-readable Dutch representation of the start time (derived but persisted)
+    start_time_text: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preferred_researcher_id: Mapped[int | None] = mapped_column(
         ForeignKey(User.id), nullable=True
     )
     preferred_researcher: Mapped[User | None] = relationship(User)
 
-    class VisitStatusEnum(str, Enum):
-        IN_TE_PLANNEN = "In te plannen"
-        INGEPLAND = "Ingepland"
-        UITGEVOERD = "Uitgevoerd"
-
-    status: Mapped["Visit.VisitStatusEnum"] = mapped_column(
-        Enum(VisitStatusEnum, name="visit_status_type"),
-        nullable=False,
-        default=VisitStatusEnum.IN_TE_PLANNEN,
-        server_default="In te plannen",
-    )
+    # Optional ISO week number the visit is planned for
+    planned_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
     advertized: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

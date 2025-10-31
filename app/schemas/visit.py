@@ -23,18 +23,28 @@ class VisitBase(BaseModel):
     min_temperature_celsius: int | None = None
     max_wind_force_bft: int | None = None
     max_precipitation: str | None = None
+    planned_week: int | None = None
     expertise_level: bool = False
     wbc: bool = False
     fiets: bool = False
     hup: bool = False
     dvp: bool = False
+    requires_morning_visit: bool = False
+    requires_evening_visit: bool = False
+    requires_june_visit: bool = False
+    requires_maternity_period_visit: bool = False
     remarks_planning: str | None = None
     remarks_field: str | None = None
     priority: bool = False
     preferred_researcher_id: int | None = None
-    status: str = "In te plannen"
     advertized: bool = False
     quote: bool = False
+    # Derived planning helpers (not persisted)
+    part_of_day: str | None = None
+    # Start time expressed in minutes, relative to the timing reference
+    start_time: int | None = None
+    # Human-readable Dutch representation of the start time
+    start_time_text: str | None = None
 
 
 class VisitCreate(VisitBase):
@@ -57,3 +67,37 @@ class VisitRead(VisitBase):
     researchers: list[UserNameRead] = []
 
     model_config = {"from_attributes": True}
+
+
+class VisitUpdate(BaseModel):
+    """Payload for updating a Visit from table edits.
+
+    All fields are optional; only provided values will be persisted. Relation
+    updates for functions/species can be done via their *_ids lists.
+    """
+
+    required_researchers: int | None = None
+    visit_nr: int | None = None
+    from_date: date | None = None
+    to_date: date | None = None
+    duration: int | None = None
+    min_temperature_celsius: int | None = None
+    max_wind_force_bft: int | None = None
+    max_precipitation: str | None = None
+    planned_week: int | None = None
+    expertise_level: bool | None = None
+    wbc: bool | None = None
+    fiets: bool | None = None
+    hup: bool | None = None
+    dvp: bool | None = None
+    remarks_planning: str | None = None
+    remarks_field: str | None = None
+    priority: bool | None = None
+    preferred_researcher_id: int | None = None
+    advertized: bool | None = None
+    quote: bool | None = None
+    # Allow manual override of derived planning helpers
+    part_of_day: str | None = None
+    start_time: int | None = None
+    function_ids: list[int] | None = None
+    species_ids: list[int] | None = None
