@@ -213,8 +213,9 @@ async def create_cluster(
     await db.flush()
 
     # Generate visits (append-only)
+    warnings: list[str] = []
     if payload.function_ids or payload.species_ids:
-        await generate_visits_for_cluster(
+        _, warnings = await generate_visits_for_cluster(
             db=db,
             cluster=cluster,
             function_ids=payload.function_ids,
@@ -275,6 +276,7 @@ async def create_cluster(
             )
             for v in visits
         ],
+        warnings=warnings,
     )
 
 

@@ -25,6 +25,7 @@ alwaysApply: true
 - All dependencies (like database sessions or settings) MUST be handled via FastAPI's dependency injection system.
 - Do not use `print()`. Import the logger from `app.core.logging`.
 - All secrets and configurations must be loaded from environment variables via the `app.core.config.Settings` class.
+- Always eagerly load required relations in async SQLAlchemy (use selectinload/joinedload) to avoid lazy-loading at runtime (MissingGreenlet).
 
 ## 4. Alembic
 

@@ -15,6 +15,7 @@ from app.routers.planning import router as planning_router
 from app.routers.projects import router as projects_router
 from app.routers.admin import router as admin_router
 
+import logging
 
 settings = get_settings()
 
@@ -38,6 +39,8 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
+    logging.getLogger("uvicorn.error").setLevel(logging.DEBUG)
+
     app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 
     cors_origins = list(

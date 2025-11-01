@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 from uuid import uuid4
+import os
+import logging
 
 from sqlalchemy import Select, select
 from sqlalchemy.orm import selectinload
@@ -13,6 +15,211 @@ from app.models.function import Function
 from app.models.protocol import Protocol
 from app.models.species import Species
 from app.models.visit import Visit
+
+
+_DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
+# Use uvicorn's error logger so messages always appear in console
+_logger = logging.getLogger("uvicorn.error")
+
+# Minimum acceptable effective window length (days) for a combined bucket
+MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "14"))
+# Note: visit priority is set when a window is tight (<= MIN_EFFECTIVE_WINDOW_DAYS)
+
+
+def _subset_for_threshold(
+    items: list[tuple[date, date, Protocol, set[str] | None]],
+    threshold_days: int,
+) -> list[tuple[date, date, Protocol, set[str] | None]] | None:
+    """Find a smallest-removal subset whose common window meets threshold.
+
+    Args:
+        items: Per-protocol windows within a bucket as (from, to, protocol, parts).
+        threshold_days: Minimum required length for the common window.
+
+    Returns:
+        A list of kept items meeting the threshold (preferring larger resulting window
+        among same removal count), or None if impossible.
+    """
+
+    from itertools import combinations
+
+    n = len(items)
+    for remove_k in range(0, n + 1):
+        best_len = -1
+        best_choice: list[tuple[date, date, Protocol, set[str] | None]] | None = None
+        for keep_idxs in combinations(range(n), n - remove_k):
+            kept = [items[i] for i in keep_idxs]
+            new_from = max(wf for (wf, wt, _p, _pa) in kept)
+            new_to = min(wt for (wf, wt, _p, _pa) in kept)
+            if new_from > new_to:
+                continue
+            window_len = (new_to - new_from).days
+            if window_len >= threshold_days and window_len > best_len:
+                best_len = window_len
+                best_choice = kept
+        if best_choice is not None:
+            return best_choice
+    return None
+
+
+def _normalize_tight_buckets(drafts: list[dict], threshold_days: int) -> list[dict]:
+    """Normalize buckets by splitting tight ones into best subset + singles.
+
+    Each draft must contain:
+      - from_date, to_date, protocols, chosen_part_of_day, visit_index
+      - meta.per_proto_windows: list[(protocol, (wf, wt))]
+    """
+
+    out: list[dict] = []
+    for d in drafts:
+        wf, wt = d["from_date"], d["to_date"]
+        protos: list[Protocol] = d["protocols"]
+        if (wt - wf).days >= threshold_days or len(protos) <= 1:
+            out.append(d)
+            continue
+        items: list[tuple[date, date, Protocol, set[str] | None]] = [
+            (it_wf, it_wt, p, None)
+            for (p, (it_wf, it_wt)) in d["meta"]["per_proto_windows"]
+        ]
+        best = _subset_for_threshold(items, threshold_days)
+        if best is None:
+            # all singles
+            for it_wf, it_wt, p, _pa in items:
+                if it_wf <= it_wt:
+                    out.append(
+                        {
+                            "from_date": it_wf,
+                            "to_date": it_wt,
+                            "protocols": [p],
+                            "chosen_part_of_day": d.get("chosen_part_of_day"),
+                            "visit_index": d.get("visit_index"),
+                        }
+                    )
+            continue
+        # emit best combined
+        best_from = max(it_wf for (it_wf, it_wt, _p, _pa) in best)
+        best_to = min(it_wt for (it_wf, it_wt, _p, _pa) in best)
+        out.append(
+            {
+                "from_date": best_from,
+                "to_date": best_to,
+                "protocols": [p for (_wf, _wt, p, _pa) in best],
+                "chosen_part_of_day": d.get("chosen_part_of_day"),
+                "visit_index": d.get("visit_index"),
+            }
+        )
+        # emit singles for removed
+        kept_set = {id(p) for (_wf, _wt, p, _pa) in best}
+        for it_wf, it_wt, p, _pa in items:
+            if id(p) not in kept_set and it_wf <= it_wt:
+                out.append(
+                    {
+                        "from_date": it_wf,
+                        "to_date": it_wt,
+                        "protocols": [p],
+                        "chosen_part_of_day": d.get("chosen_part_of_day"),
+                        "visit_index": d.get("visit_index"),
+                    }
+                )
+    return out
+
+
+def _enforce_sequence_feasibility(visits: list[dict]) -> list[dict]:
+    """Offline pass to enforce per-protocol min-gap feasibility across indices.
+
+    For each protocol, walk visits by visit_index;
+    if the next index own window (shifted per protocol) adjusted by min-gap becomes
+    invalid, demote the current protocol to a single and optionally create a next single.
+    """
+
+    # Helper: build per-protocol map of entries by visit_index
+    proto_map: dict[int, list[dict]] = defaultdict(list)
+    for entry in visits:
+        vidx = entry.get("visit_index")
+        for p in entry["protocols"]:
+            proto_map[p.id].append(entry)
+    for entries in proto_map.values():
+        entries.sort(key=lambda e: e.get("visit_index") or 0)
+
+    updated: list[dict] = visits[:]  # shallow copy of list
+
+    for proto_id, entries in proto_map.items():
+        for i in range(len(entries)):
+            curr = entries[i]
+            vidx = curr.get("visit_index") or 1
+            p = next((pp for pp in curr["protocols"] if pp.id == proto_id), None)
+            if p is None:
+                continue
+            # find next window for this protocol
+            w2 = next((w for w in p.visit_windows if w.visit_index == vidx + 1), None)
+            if w2 is None:
+                continue
+            proto_days2 = _unit_to_days(
+                p.min_period_between_visits_value, p.min_period_between_visits_unit
+            )
+            off2 = (vidx) * (proto_days2 if proto_days2 else 0)
+            cand_from2 = _to_current_year(w2.window_from) + timedelta(days=off2)
+            cand_to2 = _to_current_year(w2.window_to)
+            cand_from2 = max(
+                cand_from2, curr["from_date"] + timedelta(days=(proto_days2 or 0))
+            )
+            # If infeasible, demote current protocol to single; keep next visit to be handled by normal flow
+            if (
+                cand_from2 > cand_to2
+                or (cand_to2 - cand_from2).days < MIN_EFFECTIVE_WINDOW_DAYS
+            ):
+                # Remove p from current combined
+                if len(curr["protocols"]) > 1:
+                    curr["protocols"] = [
+                        pp for pp in curr["protocols"] if pp.id != proto_id
+                    ]
+                    # Add a single for current using intersection with p's own window for this index
+                    w_curr = next(
+                        (w for w in p.visit_windows if w.visit_index == vidx), None
+                    )
+                    if w_curr is not None:
+                        # Recompute shifted start for current index
+                        proto_days_curr = _unit_to_days(
+                            p.min_period_between_visits_value,
+                            p.min_period_between_visits_unit,
+                        )
+                        off_curr = (vidx - 1) * (
+                            proto_days_curr if proto_days_curr else 0
+                        )
+                        wf = _to_current_year(w_curr.window_from) + timedelta(
+                            days=off_curr
+                        )
+                        wt = _to_current_year(w_curr.window_to)
+                        sing_from = max(
+                            wf, curr["from_date"]
+                        )  # keep inside bucket window
+                        sing_to = min(wt, curr["to_date"])  # keep inside bucket window
+                        if sing_from <= sing_to:
+                            updated.append(
+                                {
+                                    "from_date": sing_from,
+                                    "to_date": sing_to,
+                                    "protocols": [p],
+                                    "chosen_part_of_day": curr.get(
+                                        "chosen_part_of_day"
+                                    ),
+                                    "visit_index": vidx,
+                                }
+                            )
+                # Optionally create next single if still possible
+                if cand_from2 <= cand_to2:
+                    updated.append(
+                        {
+                            "from_date": cand_from2,
+                            "to_date": cand_to2,
+                            "protocols": [p],
+                            "chosen_part_of_day": None,
+                            "visit_index": vidx + 1,
+                        }
+                    )
+    # Drop any empty combined entries created by removals
+    updated = [e for e in updated if e.get("protocols")]
+    return updated
 
 
 def _windows_overlap(a: tuple[date, date], b: tuple[date, date]) -> bool:
@@ -88,14 +295,52 @@ def _same_family(a: Protocol, b: Protocol) -> bool:
         return False
 
 
-def _is_allowed_cross_family(_a: Protocol, _b: Protocol) -> bool:
+def _normalize_family_name(name: str | None) -> str:
+    """Normalize family name for matching (case-insensitive, handle common variants).
+
+    Collapses Dutch variants like "Vleermuis"/"Vleermuizen" to a single key.
+    """
+
+    if not name:
+        return ""
+    n = name.strip().lower()
+    if "vleer" in n:  # matches vleermuis/vleermuizen
+        return "vleermuis"
+    if "zwaluw" in n:  # matches zwaluw/zwaluwen
+        return "zwaluw"
+    return n
+
+
+def _same_family_name(a: Protocol, b: Protocol) -> bool:
+    """Return True if two protocols share the same species family name.
+
+    Falls back to False if names are unavailable.
+    """
+
+    try:
+        name_a = _normalize_family_name(getattr(a.species.family, "name", None))
+        name_b = _normalize_family_name(getattr(b.species.family, "name", None))
+        return bool(name_a) and name_a == name_b
+    except Exception:
+        return False
+
+
+def _is_allowed_cross_family(a: Protocol, b: Protocol) -> bool:
     """Determine if a specific cross-family combination is allowed.
 
     Default implementation returns False (no cross-family grouping). Extend later with
     a curated allowlist.
     """
 
-    return False
+    try:
+        fam_a = _normalize_family_name(getattr(a.species.family, "name", None))
+        fam_b = _normalize_family_name(getattr(b.species.family, "name", None))
+    except Exception:
+        return False
+
+    pair = {fam_a, fam_b}
+    allowed_pairs = [{"vleermuis", "zwaluw"}]
+    return any(pair == allowed for allowed in allowed_pairs)
 
 
 def _functions_in_allowed_set(function_ids: set[int], allowed: set[int]) -> bool:
@@ -108,8 +353,8 @@ def _allow_together(a: Protocol, b: Protocol) -> bool:
     """Compatibility check whether two protocols may be grouped.
 
     This is the main hook for future exception rules. Current defaults:
-      - Allow grouping broadly to enable baseline combinations.
-        Stricter family/function rules can be enforced later.
+      - Allow only same-family groupings by default (by id or by family name).
+      - Allow specific cross-family exceptions (e.g., Vleermuis ↔ Zwaluw).
 
     Args:
         a: First protocol.
@@ -119,7 +364,9 @@ def _allow_together(a: Protocol, b: Protocol) -> bool:
         True if protocols may be grouped together.
     """
 
-    return True
+    if _same_family(a, b) or _same_family_name(a, b):
+        return True
+    return _is_allowed_cross_family(a, b)
 
 
 def _apply_custom_recipe_if_any(
@@ -173,6 +420,43 @@ def _derive_part_of_day(protocol: Protocol) -> str | None:
         return "Avond"
     if ref == "DAYTIME":
         return "Dag"
+    return None
+
+
+def _derive_part_options(protocol: Protocol) -> set[str] | None:
+    """Return allowed part-of-day options for a protocol.
+
+    Hard constraints take precedence; otherwise infer from timing references.
+    Preference for later selection is handled outside this function.
+    """
+
+    if getattr(protocol, "requires_morning_visit", False):
+        return {"Ochtend"}
+    if getattr(protocol, "requires_evening_visit", False):
+        return {"Avond"}
+
+    ref_start = protocol.start_timing_reference or ""
+    ref_end = getattr(protocol, "end_timing_reference", None) or ""
+
+    if ref_start == "DAYTIME":
+        return {"Dag"}
+    if ref_start == "ABSOLUTE_TIME":
+        # If absolute start time is present and clearly in the morning (<12), pick morning, else evening
+        if (
+            getattr(protocol, "start_time_absolute_from", None) is not None
+            and protocol.start_time_absolute_from.hour < 12
+        ):
+            return {"Ochtend"}
+        return {"Avond"}
+
+    # Overnight window from sunset to sunrise allows both evening and (next) morning
+    if ref_start == "SUNSET" and ref_end == "SUNRISE":
+        return {"Avond", "Ochtend"}
+    if ref_start == "SUNSET":
+        return {"Avond"}
+    if ref_start == "SUNRISE":
+        return {"Ochtend"}
+
     return None
 
 
@@ -374,16 +658,34 @@ async def generate_visits_for_cluster(
     cluster: Cluster,
     function_ids: list[int],
     species_ids: list[int],
-) -> list[Visit]:
+) -> tuple[list[Visit], list[str]]:
     """Generate visits for a cluster based on selected functions and species.
 
     This is an append-only operation: existing visits are left intact.
-    Combination logic is intentionally conservative (minimal viable) and applies
-    the "most restrictive" constraints when merging overlapping protocol windows.
+    The algorithm consists of two phases:
+      1) Greedy "tightest-first" bucketing of protocol windows with compatibility and
+         minimum effective window checks (Avond/Ochtend/Dag parts intersected).
+      2) A completion pass that ensures each protocol visit_index has at least one
+         planned visit; if a window has no planned occurrence, we add a single visit
+         within its own window (respecting min-gap to the next planned when possible).
+
+    Returns:
+        (visits, warnings): The created Visit ORM objects and user-facing warnings
+        in Dutch for any protocol windows that could not be planned.
     """
 
+    if _DEBUG_VISIT_GEN:
+        _logger.info(
+            "visit_gen start cluster=%s functions=%s species=%s",
+            getattr(cluster, "id", None),
+            function_ids,
+            species_ids,
+        )
+
+    warnings: list[str] = []
+
     if not function_ids or not species_ids:
-        return []
+        return [], warnings
 
     # Fetch all protocols for selected pairs and their windows (eager-load windows)
     stmt: Select[tuple[Protocol]] = (
@@ -391,172 +693,359 @@ async def generate_visits_for_cluster(
         .where(
             Protocol.function_id.in_(function_ids), Protocol.species_id.in_(species_ids)
         )
-        .options(selectinload(Protocol.visit_windows))
+        .options(
+            selectinload(Protocol.visit_windows),
+            selectinload(Protocol.species).selectinload(Species.family),
+            selectinload(Protocol.function),
+        )
     )
     protocols: list[Protocol] = (await db.execute(stmt)).scalars().unique().all()
 
     if not protocols:
-        return []
+        return [], warnings
 
     # Windows loaded via selectinload
 
-    # Group by visit_index across protocols; within each index, form compatible buckets
-    visits_to_create: list[dict] = []
-    by_index: dict[int, list[Protocol]] = defaultdict(list)
+    # 1) Precompute shifted windows per protocol and tightness key
+    #    Shift only the start per visit_index using the protocol's own min period;
+    #    keep window_to fixed in the current year.
+    proto_id_to_protocol: dict[int, Protocol] = {p.id: p for p in protocols}
+    proto_windows: dict[int, list[tuple[int, date, date, set[str] | None]]] = {}
     for p in protocols:
+        items: list[tuple[int, date, date, set[str] | None]] = []
         if p.visit_windows:
-            for w in p.visit_windows:
-                by_index[w.visit_index].append(p)
-        elif p.visits:
-            for idx in range(1, (p.visits or 0) + 1):
-                by_index[idx].append(p)
-
-    for visit_index, protos in sorted(by_index.items()):
-        # Optional custom recipe per visit_index
-        recipe = _apply_custom_recipe_if_any(protos, visit_index)
-        if recipe is not None and len(recipe) > 0:
-            # Map each bucket to a combined visit using time window intersections
-            for bucket in recipe:
-                # compute shifted windows per protocol and combine
-                windows: list[tuple[date, date]] = []
-                per_proto_days = [
-                    _unit_to_days(
-                        p.min_period_between_visits_value,
-                        p.min_period_between_visits_unit,
-                    )
-                    for p in bucket
-                    if p is not None
-                ]
-                offset_days = (visit_index - 1) * (
-                    max(per_proto_days) if per_proto_days else 0
+            for w in sorted(p.visit_windows, key=lambda w: w.visit_index):
+                vidx = w.visit_index
+                proto_days = _unit_to_days(
+                    p.min_period_between_visits_value, p.min_period_between_visits_unit
                 )
-                for p in bucket:
-                    w = next(
-                        (w for w in p.visit_windows if w.visit_index == visit_index),
-                        None,
-                    )
-                    if w is None:
-                        continue
-                    wf = _to_current_year(w.window_from) + timedelta(days=offset_days)
-                    wt = _to_current_year(w.window_to) + timedelta(days=offset_days)
-                    windows.append((wf, wt))
-                if not windows:
-                    continue
-                from_date = max(w[0] for w in windows)
-                to_date = min(w[1] for w in windows)
-                if from_date > to_date:
-                    # No common intersection for the recipe step; fall back to per-protocol
-                    for p in bucket:
-                        w = next(
-                            (
-                                w
-                                for w in p.visit_windows
-                                if w.visit_index == visit_index
-                            ),
-                            None,
-                        )
-                        if w is None:
-                            continue
-                        visits_to_create.append(
-                            {
-                                "from_date": _to_current_year(w.window_from)
-                                + timedelta(days=offset_days),
-                                "to_date": _to_current_year(w.window_to)
-                                + timedelta(days=offset_days),
-                                "protocols": [p],
-                            }
-                        )
-                    continue
-                visits_to_create.append(
-                    {
-                        "from_date": from_date,
-                        "to_date": to_date,
-                        "protocols": bucket,
-                    }
-                )
-            continue
+                offset_days = (vidx - 1) * (proto_days if proto_days else 0)
+                wf = _to_current_year(w.window_from) + timedelta(days=offset_days)
+                wt = _to_current_year(w.window_to)
+                if wf <= wt:
+                    items.append((vidx, wf, wt, _derive_part_options(p)))
+        if items:
+            proto_windows[p.id] = items
 
-        # Generic path: derive shifted windows and attributes for this visit_index
-        per_proto_days = [
-            _unit_to_days(
+    def tightness_key(p: Protocol) -> tuple[int, date]:
+        items = proto_windows.get(p.id, [])
+        if not items:
+            return (10_000, date.max)
+        max_idx_item = max(items, key=lambda it: it[0])
+        _, wf, wt, _ = max_idx_item
+        length = (wt - wf).days
+        earliest = min(it[1] for it in items)
+        return (length, earliest)
+
+    ordered = sorted([p for p in protocols if p.id in proto_windows], key=tightness_key)
+
+    # 2) Buckets: greedy tightest-first placement
+    #    Buckets maintain a running intersection window and part-of-day intersection.
+    #    A protocol may be placed in a bucket only if:
+    #      - family compatibility holds for all existing bucket protocols
+    #      - intersection window is non-empty and >= MIN_EFFECTIVE_WINDOW_DAYS
+    #      - parts-of-day intersection is None or non-empty
+    #      - for visit_index > 1: start respects previous placement + min period
+    class _Bucket:
+        def __init__(
+            self,
+            wf: date,
+            wt: date,
+            parts: set[str] | None,
+            first_proto: Protocol,
+            vidx: int,
+        ):
+            self.from_date = wf
+            self.to_date = wt
+            self.parts = parts
+            self.proto_ids: set[int] = {first_proto.id}
+            self.last_from_by_proto: dict[int, date] = {first_proto.id: wf}
+
+        def _inter(self, a: set[str] | None, b: set[str] | None) -> set[str] | None:
+            if a is None and b is None:
+                return None
+            if a is None:
+                return b
+            if b is None:
+                return a
+            return a & b
+
+        def candidate_accepts(
+            self,
+            p: Protocol,
+            wf: date,
+            wt: date,
+            parts: set[str] | None,
+            last_from_p: date | None,
+            vidx: int,
+            proto_days: int,
+        ) -> tuple[bool, tuple[date, date], set[str] | None]:
+            for pid in self.proto_ids:
+                if not _allow_together(p, proto_id_to_protocol[pid]):
+                    return (False, (self.from_date, self.to_date), self.parts)
+            new_from = max(self.from_date, wf)
+            new_to = min(self.to_date, wt)
+            if new_from > new_to:
+                return (False, (self.from_date, self.to_date), self.parts)
+            if (new_to - new_from).days < MIN_EFFECTIVE_WINDOW_DAYS:
+                return (False, (self.from_date, self.to_date), self.parts)
+            # Enforce sequencing gap for visit_index > 1
+            if vidx > 1 and last_from_p is not None:
+                required_from = last_from_p + timedelta(days=(proto_days or 0))
+                if new_from < required_from:
+                    return (False, (self.from_date, self.to_date), self.parts)
+            new_parts = self._inter(self.parts, parts)
+            if new_parts is not None and len(new_parts) == 0:
+                return (False, (self.from_date, self.to_date), self.parts)
+            return (True, (new_from, new_to), new_parts)
+
+        def place(
+            self,
+            p: Protocol,
+            wf: date,
+            wt: date,
+            parts: set[str] | None,
+            new_from: date,
+            new_to: date,
+            new_parts: set[str] | None,
+        ):
+            self.from_date = new_from
+            self.to_date = new_to
+            self.parts = new_parts
+            self.proto_ids.add(p.id)
+            self.last_from_by_proto[p.id] = new_from
+
+    buckets: list[_Bucket] = []
+    if ordered:
+        first = ordered[0]
+        for vidx, wf, wt, parts in proto_windows[first.id]:
+            buckets.append(_Bucket(wf, wt, parts, first, vidx))
+
+    for p in ordered[1:]:
+        last_from_p: date | None = None
+        for vidx, wf, wt, parts in proto_windows[p.id]:
+            proto_days = _unit_to_days(
                 p.min_period_between_visits_value, p.min_period_between_visits_unit
             )
-            for p in protos
-            if p is not None
-        ]
-        offset_days = (visit_index - 1) * (max(per_proto_days) if per_proto_days else 0)
+            placed = False
+            for b in sorted(buckets, key=lambda b: (b.to_date, b.from_date)):
+                if p.id in b.proto_ids:
+                    continue
+                ok, (nf, nt), nparts = b.candidate_accepts(
+                    p, wf, wt, parts, last_from_p, vidx, proto_days
+                )
+                if ok:
+                    b.place(p, wf, wt, parts, nf, nt, nparts)
+                    last_from_p = nf
+                    placed = True
+                    break
+            if not placed:
+                # Enforce gap when opening a new bucket for vidx>1
+                adj_wf = wf
+                if vidx > 1 and last_from_p is not None:
+                    required_from = last_from_p + timedelta(days=(proto_days or 0))
+                    adj_wf = max(wf, required_from)
+                if adj_wf <= wt:
+                    b = _Bucket(adj_wf, wt, parts, p, vidx)
+                    buckets.append(b)
+                    last_from_p = adj_wf
 
-        entries: list[tuple[Protocol, tuple[date, date], str | None]] = []
-        for p in protos:
-            w = next((w for w in p.visit_windows if w.visit_index == visit_index), None)
-            if w is None:
+    # Emit visits from buckets
+    # Each bucket becomes one visit with the bucket window and preferred part-of-day.
+    visits_to_create: list[dict] = []
+    for b in buckets:
+        chosen_part = None
+        if b.parts and len(b.parts) > 0:
+            if "Avond" in b.parts:
+                chosen_part = "Avond"
+            elif "Ochtend" in b.parts:
+                chosen_part = "Ochtend"
+            elif "Dag" in b.parts:
+                chosen_part = "Dag"
+        visits_to_create.append(
+            {
+                "from_date": b.from_date,
+                "to_date": b.to_date,
+                "protocols": [proto_id_to_protocol[pid] for pid in sorted(b.proto_ids)],
+                "chosen_part_of_day": chosen_part,
+            }
+        )
+
+    # Coalesce duplicate windows (same from/to and part) by unioning protocols
+    if visits_to_create:
+        merged_map: dict[tuple[date, date, str | None], dict] = {}
+        for v in visits_to_create:
+            key = (v["from_date"], v["to_date"], v.get("chosen_part_of_day"))
+            existing = merged_map.get(key)
+            if existing is None:
+                merged_map[key] = {
+                    "from_date": v["from_date"],
+                    "to_date": v["to_date"],
+                    "chosen_part_of_day": v.get("chosen_part_of_day"),
+                    "protocols": list(v["protocols"]),
+                }
+            else:
+                existing_ids = {p.id for p in existing["protocols"]}
+                for p in v["protocols"]:
+                    if p.id not in existing_ids:
+                        existing["protocols"].append(p)
+                        existing_ids.add(p.id)
+        visits_to_create = list(merged_map.values())
+
+    # Completion pass: ensure each protocol has one planned visit per visit_index window
+    # Match planned occurrences to windows without reusing the same planned date across windows.
+    proto_to_planned_froms: dict[int, list[date]] = defaultdict(list)
+    for entry in visits_to_create:
+        for p in entry["protocols"]:
+            proto_to_planned_froms[p.id].append(entry["from_date"])
+    for pid, windows in proto_windows.items():
+        p = proto_id_to_protocol[pid]
+        win_list = sorted(
+            windows, key=lambda it: it[0], reverse=True
+        )  # (vidx,wf,wt,parts)
+        planned = sorted(proto_to_planned_froms.get(pid, []))
+        used: set[int] = set()  # indexes into planned that are assigned to a window
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "completion check proto=%s windows=%s planned=%s",
+                getattr(p, "id", None),
+                [
+                    (vidx, wf.isoformat(), wt.isoformat())
+                    for (vidx, wf, wt, _pa) in sorted(windows, key=lambda it: it[0])
+                ],
+                [d.isoformat() for d in planned],
+            )
+        proto_days = _unit_to_days(
+            p.min_period_between_visits_value, p.min_period_between_visits_unit
+        )
+        for vidx, wf, wt, parts in win_list:
+            # find an unused planned date within this window
+            assign_idx = None
+            for i, d in enumerate(planned):
+                if i in used:
+                    continue
+                if wf <= d <= wt:
+                    assign_idx = i
+                    break
+            if assign_idx is not None:
+                used.add(assign_idx)
                 continue
-            wf = _to_current_year(w.window_from) + timedelta(days=offset_days)
-            wt = _to_current_year(w.window_to) + timedelta(days=offset_days)
-            if wf > wt:
-                continue
-            part = _derive_part_of_day(p)
-            entries.append((p, (wf, wt), part))
-        if not entries:
-            continue
-
-        # Split by part_of_day key first (keep None separate)
-        by_part: dict[
-            str | None, list[tuple[Protocol, tuple[date, date], str | None]]
-        ] = defaultdict(list)
-        for e in entries:
-            by_part[e[2]].append(e)
-
-        for _part_key, items in by_part.items():
-            # Build overlap graph respecting exception compatibility
-            indexed: list[tuple[int, Protocol, tuple[date, date]]] = [
-                (i, it[0], it[1]) for i, it in enumerate(items)
-            ]
-
-            # Filter edges by both window overlap and _allow_together
-            overlap_items: list[tuple[int, tuple[date, date]]] = [
-                (i, win) for i, _p, win in indexed
-            ]
-            comps = _connected_components_by_overlap(overlap_items)
-
-            for comp in comps:
-                # Within component, further split by compatibility if needed
-                comp_items = [indexed[i] for i in comp]
-
-                # Greedy bucketing by compatibility
-                buckets: list[list[tuple[int, Protocol, tuple[date, date]]]] = []
-                for idx, proto, win in comp_items:
-                    placed = False
-                    for b in buckets:
-                        if all(_allow_together(proto, other) for _i, other, _w in b):
-                            b.append((idx, proto, win))
-                            placed = True
-                            break
-                    if not placed:
-                        buckets.append([(idx, proto, win)])
-
-                for bucket in buckets:
-                    wins = [w for _i, _p, w in bucket]
-                    from_date = max(w[0] for w in wins)
-                    to_date = min(w[1] for w in wins)
-                    if from_date > to_date:
-                        # fallback to single-protocol visits inside this bucket
-                        for _i, p, (wf, wt) in bucket:
-                            visits_to_create.append(
-                                {
-                                    "from_date": wf,
-                                    "to_date": wt,
-                                    "protocols": [p],
-                                }
-                            )
-                        continue
-                    visits_to_create.append(
-                        {
-                            "from_date": from_date,
-                            "to_date": to_date,
-                            "protocols": [p for _i, p, _w in bucket],
-                        }
+            # No planned found for this window: add one as early as feasible.
+            # For first window, do not apply previous-gap. For later windows, apply min-gap
+            # relative to the last assigned occurrence.
+            candidate_from = wf
+            prev_dates = [planned[i] for i in used if planned[i] <= candidate_from]
+            prev = max(prev_dates) if prev_dates else None
+            # Only enforce previous gap for visit_index > 1
+            if vidx > 1 and prev is not None and proto_days:
+                candidate_from = max(candidate_from, prev + timedelta(days=proto_days))
+            if candidate_from > wt:
+                msg = None
+                try:
+                    abbr = (
+                        getattr(getattr(p, "species", None), "abbreviation", None)
+                        or getattr(getattr(p, "species", None), "name", None)
+                        or "onbekend"
                     )
+                    fname = (
+                        getattr(getattr(p, "function", None), "name", None)
+                        or "onbekend"
+                    )
+                    msg = f"Het is niet gelukt om een bezoek voor {abbr} voor functie {fname} in te plannen."
+                except Exception:
+                    msg = "Het is niet gelukt om een bezoek in te plannen."
+                warnings.append(msg)
+                if _DEBUG_VISIT_GEN:
+                    _logger.warning(
+                        "cannot add required visit proto=%s vidx=%s earliest_from=%s > window_to=%s",
+                        getattr(p, "id", None),
+                        vidx,
+                        candidate_from.isoformat(),
+                        wt.isoformat(),
+                    )
+                continue
+            nxt_candidates = [d for d in planned if d >= candidate_from]
+            nxt = min(nxt_candidates) if nxt_candidates else None
+            if (
+                nxt is not None
+                and proto_days
+                and candidate_from + timedelta(days=proto_days) > nxt
+            ):
+                if _DEBUG_VISIT_GEN:
+                    _logger.warning(
+                        "gap violation risk proto=%s vidx=%s candidate_from=%s next_from=%s min_gap_days=%s",
+                        getattr(p, "id", None),
+                        vidx,
+                        candidate_from.isoformat(),
+                        nxt.isoformat(),
+                        proto_days,
+                    )
+            # Clamp end before next planned visit start (consider ALL planned dates)
+            candidate_to = wt
+            nxt_candidates = [d for d in planned if d >= candidate_from]
+            nxt = min(nxt_candidates) if nxt_candidates else None
+            if nxt is not None:
+                before_next = nxt - timedelta(days=1)
+                if before_next >= candidate_from:
+                    candidate_to = min(candidate_to, before_next)
+
+            chosen_part = None
+            if parts and len(parts) > 0:
+                if "Avond" in parts:
+                    chosen_part = "Avond"
+                elif "Ochtend" in parts:
+                    chosen_part = "Ochtend"
+                elif "Dag" in parts:
+                    chosen_part = "Dag"
+            visits_to_create.append(
+                {
+                    "from_date": candidate_from,
+                    "to_date": candidate_to,
+                    "protocols": [p],
+                    "chosen_part_of_day": chosen_part,
+                }
+            )
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "completion add proto=%s vidx=%s added=(%s,%s)",
+                    getattr(p, "id", None),
+                    vidx,
+                    candidate_from.isoformat(),
+                    candidate_to.isoformat(),
+                )
+            # insert into planned and mark used
+            # keep planned sorted
+            insert_pos = 0
+            while insert_pos < len(planned) and planned[insert_pos] < candidate_from:
+                insert_pos += 1
+            planned.insert(insert_pos, candidate_from)
+            # find index of inserted element (first occurrence of candidate_from at/after insert_pos)
+            assign_idx = planned.index(candidate_from, insert_pos)
+            used.add(assign_idx)
+
+    # Re-coalesce duplicates after additions
+    if visits_to_create:
+        merged_map2: dict[tuple[date, date, str | None], dict] = {}
+        for v in visits_to_create:
+            key = (v["from_date"], v["to_date"], v.get("chosen_part_of_day"))
+            existing = merged_map2.get(key)
+            if existing is None:
+                merged_map2[key] = {
+                    "from_date": v["from_date"],
+                    "to_date": v["to_date"],
+                    "chosen_part_of_day": v.get("chosen_part_of_day"),
+                    "protocols": list(v["protocols"]),
+                }
+            else:
+                existing_ids = {p.id for p in existing["protocols"]}
+                for p in v["protocols"]:
+                    if p.id not in existing_ids:
+                        existing["protocols"].append(p)
+                        existing_ids.add(p.id)
+        visits_to_create = list(merged_map2.values())
+
+    # Order by start date to assign visit_nr
+    visits_to_create.sort(key=lambda v: v["from_date"])
 
     created: list[Visit] = []
     series_group_id = str(uuid4())
@@ -595,11 +1084,12 @@ async def generate_visits_for_cluster(
             if _derive_start_time_minutes(p) is not None
         ]
         start_time = min(derived_starts) if derived_starts else None
-        # part of day: consistent value or None
+        # part of day: prefer chosen bucket value, else first derived non-null
+        chosen_bucket_part = v.get("chosen_part_of_day")
         part_values = [
             _derive_part_of_day(p) for p in protos if _derive_part_of_day(p) is not None
         ]
-        part_of_day = part_values[0] if part_values else None
+        part_of_day = chosen_bucket_part or (part_values[0] if part_values else None)
         # start time text: pick the earliest by minutes, but rebuild text using that protocol
         text_candidates: list[tuple[int, str]] = []
         for p in protos:
@@ -652,6 +1142,13 @@ async def generate_visits_for_cluster(
         visit.part_of_day = part_of_day
         visit.start_time = start_time
         setattr(visit, "start_time_text", start_time_text)
+        # Set higher priority for tight windows (<= threshold)
+        try:
+            window_days = (v["to_date"] - v["from_date"]).days
+            if window_days <= MIN_EFFECTIVE_WINDOW_DAYS:
+                visit.priority = 1
+        except Exception:
+            pass
         next_nr += 1
         # attach relations
         # Attach existing entities by loading references to avoid transient instances
@@ -672,7 +1169,7 @@ async def generate_visits_for_cluster(
         db.add(visit)
         created.append(visit)
 
-    return created
+    return created, warnings
 
 
 async def duplicate_cluster_with_visits(

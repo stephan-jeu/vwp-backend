@@ -76,6 +76,7 @@ class ClusterRead(BaseModel):
 
 class ClusterWithVisitsRead(ClusterRead):
     visits: list[VisitReadCompact]
+    warnings: list[str] = []
 
 
 class ClusterVisitRow(BaseModel):
