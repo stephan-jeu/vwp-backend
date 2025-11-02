@@ -60,3 +60,4 @@ def downgrade() -> None:
         batch_op.drop_column("requires_evening_visit")
         batch_op.drop_column("requires_june_visit")
         batch_op.drop_column("requires_maternity_period_visit")
+

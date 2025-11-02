@@ -478,6 +478,19 @@ def _derive_start_time_minutes(protocol: Protocol) -> int | None:
     return rel
 
 
+def _derive_end_time_minutes(protocol: Protocol) -> int | None:
+    """Compute end time in minutes relative to the end timing reference.
+
+    Uses the protocol's ``end_timing_reference`` and ``end_time_relative_minutes``.
+    Returns None when not derivable.
+    """
+
+    rel = getattr(protocol, "end_time_relative_minutes", None)
+    if rel is None:
+        return None
+    return rel
+
+
 def _derive_start_time_text(protocol: Protocol) -> str | None:
     """Build Dutch textual description for start time.
 
@@ -716,16 +729,22 @@ async def generate_visits_for_cluster(
         if p.visit_windows:
             for w in sorted(p.visit_windows, key=lambda w: w.visit_index):
                 vidx = w.visit_index
-                proto_days = _unit_to_days(
-                    p.min_period_between_visits_value, p.min_period_between_visits_unit
-                )
-                offset_days = (vidx - 1) * (proto_days if proto_days else 0)
-                wf = _to_current_year(w.window_from) + timedelta(days=offset_days)
+                # Do not shift window start by min-gap here; rely on explicit windows.
+                wf = _to_current_year(w.window_from)
                 wt = _to_current_year(w.window_to)
                 if wf <= wt:
                     items.append((vidx, wf, wt, _derive_part_options(p)))
         if items:
             proto_windows[p.id] = items
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "proto %s windows: %s",
+                    getattr(p, "id", None),
+                    [
+                        (vidx, wf.isoformat(), wt.isoformat(), list(parts) if parts else None)
+                        for (vidx, wf, wt, parts) in items
+                    ],
+                )
 
     def tightness_key(p: Protocol) -> tuple[int, date]:
         items = proto_windows.get(p.id, [])
@@ -818,7 +837,23 @@ async def generate_visits_for_cluster(
     buckets: list[_Bucket] = []
     if ordered:
         first = ordered[0]
+        # Deduplicate initial buckets by (from,to,parts_signature)
+        seen_keys: set[tuple[date, date, tuple[str, ...] | None]] = set()
         for vidx, wf, wt, parts in proto_windows[first.id]:
+            parts_key: tuple[str, ...] | None = (
+                tuple(sorted(parts)) if parts is not None else None
+            )
+            key = (wf, wt, parts_key)
+            if key in seen_keys:
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "skip duplicate seed bucket for first proto: wf=%s wt=%s parts=%s",
+                        wf.isoformat(),
+                        wt.isoformat(),
+                        list(parts) if parts else None,
+                    )
+                continue
+            seen_keys.add(key)
             buckets.append(_Bucket(wf, wt, parts, first, vidx))
 
     for p in ordered[1:]:
@@ -837,18 +872,66 @@ async def generate_visits_for_cluster(
                 if ok:
                     b.place(p, wf, wt, parts, nf, nt, nparts)
                     last_from_p = nf
+                    if _DEBUG_VISIT_GEN:
+                        _logger.info(
+                            "place proto=%s vidx=%s into existing bucket: new_from=%s new_to=%s parts=%s",
+                            getattr(p, "id", None),
+                            vidx,
+                            nf.isoformat(),
+                            nt.isoformat(),
+                            list(nparts) if nparts else None,
+                        )
                     placed = True
                     break
             if not placed:
-                # Enforce gap when opening a new bucket for vidx>1
+                # Opening a new bucket: respect window spacing vs min-gap
                 adj_wf = wf
                 if vidx > 1 and last_from_p is not None:
-                    required_from = last_from_p + timedelta(days=(proto_days or 0))
+                    # Look up previous window_from for this protocol (vidx-1)
+                    prev_wf = None
+                    for (v_i, wf_i, _wt_i, _pa_i) in proto_windows.get(p.id, []):
+                        if v_i == vidx - 1:
+                            prev_wf = wf_i
+                            break
+                    window_gap_days = (wf - prev_wf).days if prev_wf is not None else None
+                    required_from_gap = last_from_p + timedelta(days=(proto_days or 0)) if proto_days else last_from_p
+                    if (
+                        window_gap_days is not None
+                        and proto_days
+                        and window_gap_days >= proto_days
+                    ):
+                        # Windows already encode a gap >= min-gap; do not push start by min-gap
+                        required_from = wf
+                    else:
+                        required_from = required_from_gap
                     adj_wf = max(wf, required_from)
+                    if _DEBUG_VISIT_GEN:
+                        _logger.info(
+                            "open new bucket: proto=%s vidx=%s wf=%s prev_wf=%s window_gap=%s min_gap=%s last_from=%s required_from=%s adj_wf=%s",
+                            getattr(p, "id", None),
+                            vidx,
+                            wf.isoformat(),
+                            prev_wf.isoformat() if prev_wf else None,
+                            window_gap_days,
+                            proto_days,
+                            last_from_p.isoformat() if last_from_p else None,
+                            required_from.isoformat() if isinstance(required_from, date) else required_from,
+                            adj_wf.isoformat(),
+                        )
                 if adj_wf <= wt:
                     b = _Bucket(adj_wf, wt, parts, p, vidx)
                     buckets.append(b)
                     last_from_p = adj_wf
+                    if _DEBUG_VISIT_GEN:
+                        _logger.info(
+                            "new bucket proto=%s vidx=%s wf=%s wt=%s required_from=%s adj_wf=%s",
+                            getattr(p, "id", None),
+                            vidx,
+                            wf.isoformat(),
+                            wt.isoformat(),
+                            (last_from_p - timedelta(days=(proto_days or 0))).isoformat() if last_from_p and proto_days else None,
+                            adj_wf.isoformat(),
+                        )
 
     # Emit visits from buckets
     # Each bucket becomes one visit with the bucket window and preferred part-of-day.
@@ -869,6 +952,19 @@ async def generate_visits_for_cluster(
                 "protocols": [proto_id_to_protocol[pid] for pid in sorted(b.proto_ids)],
                 "chosen_part_of_day": chosen_part,
             }
+        )
+    if _DEBUG_VISIT_GEN and visits_to_create:
+        _logger.info(
+            "pre-coalesce visits: %s",
+            [
+                (
+                    v["from_date"].isoformat(),
+                    v["to_date"].isoformat(),
+                    v.get("chosen_part_of_day"),
+                    [getattr(p, "id", None) for p in v["protocols"]],
+                )
+                for v in visits_to_create
+            ],
         )
 
     # Coalesce duplicate windows (same from/to and part) by unioning protocols
@@ -891,6 +987,19 @@ async def generate_visits_for_cluster(
                         existing["protocols"].append(p)
                         existing_ids.add(p.id)
         visits_to_create = list(merged_map.values())
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "post-coalesce visits: %s",
+                [
+                    (
+                        v["from_date"].isoformat(),
+                        v["to_date"].isoformat(),
+                        v.get("chosen_part_of_day"),
+                        [getattr(p, "id", None) for p in v["protocols"]],
+                    )
+                    for v in visits_to_create
+                ],
+            )
 
     # Completion pass: ensure each protocol has one planned visit per visit_index window
     # Match planned occurrences to windows without reusing the same planned date across windows.
@@ -900,130 +1009,128 @@ async def generate_visits_for_cluster(
             proto_to_planned_froms[p.id].append(entry["from_date"])
     for pid, windows in proto_windows.items():
         p = proto_id_to_protocol[pid]
-        win_list = sorted(
-            windows, key=lambda it: it[0], reverse=True
-        )  # (vidx,wf,wt,parts)
+        # Group windows by (wf,wt) to treat identical windows as required counts
+        group_counts: dict[tuple[date, date], dict] = {}
+        for vidx, wf, wt, parts in windows:
+            key = (wf, wt)
+            g = group_counts.get(key)
+            if g is None:
+                group_counts[key] = {"count": 1, "parts": parts}
+            else:
+                g["count"] += 1
+                # keep the stricter parts intersection across duplicates
+                if g["parts"] is None:
+                    g["parts"] = parts
+                elif parts is not None:
+                    g["parts"] = set(g["parts"]) & set(parts)
         planned = sorted(proto_to_planned_froms.get(pid, []))
-        used: set[int] = set()  # indexes into planned that are assigned to a window
         if _DEBUG_VISIT_GEN:
             _logger.info(
-                "completion check proto=%s windows=%s planned=%s",
+                "completion grouped proto=%s groups=%s planned=%s",
                 getattr(p, "id", None),
                 [
-                    (vidx, wf.isoformat(), wt.isoformat())
-                    for (vidx, wf, wt, _pa) in sorted(windows, key=lambda it: it[0])
+                    (wf.isoformat(), wt.isoformat(), grp["count"], list(grp["parts"]) if grp["parts"] else None)
+                    for (wf, wt), grp in sorted(group_counts.items())
                 ],
                 [d.isoformat() for d in planned],
             )
         proto_days = _unit_to_days(
             p.min_period_between_visits_value, p.min_period_between_visits_unit
         )
-        for vidx, wf, wt, parts in win_list:
-            # find an unused planned date within this window
-            assign_idx = None
-            for i, d in enumerate(planned):
-                if i in used:
+        for (wf, wt), grp in sorted(group_counts.items()):
+            required = grp["count"]
+            parts = grp["parts"]
+            have = sum(1 for d in planned if wf <= d <= wt)
+            missing = max(0, required - have)
+            for _ in range(missing):
+                # Try to attach to existing visit with sufficient overlap and allowed part
+                attached = False
+                for entry in visits_to_create:
+                    v_from = entry["from_date"]
+                    v_to = entry["to_date"]
+                    overlap_from = max(v_from, wf)
+                    overlap_to = min(v_to, wt)
+                    overlap_days = (overlap_to - overlap_from).days
+                    chosen_part = entry.get("chosen_part_of_day")
+                    part_ok = parts is None or chosen_part is None or chosen_part in parts
+                    if overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS and part_ok:
+                        # attach if not already present
+                        if all(pp.id != p.id for pp in entry["protocols"]):
+                            entry["protocols"].append(p)
+                            planned.append(entry["from_date"])  # count toward coverage
+                            planned.sort()
+                            attached = True
+                            if _DEBUG_VISIT_GEN:
+                                _logger.info(
+                                    "completion attach proto=%s to visit (%s,%s) part=%s",
+                                    getattr(p, "id", None),
+                                    v_from.isoformat(),
+                                    v_to.isoformat(),
+                                    chosen_part,
+                                )
+                            break
+                if attached:
                     continue
-                if wf <= d <= wt:
-                    assign_idx = i
-                    break
-            if assign_idx is not None:
-                used.add(assign_idx)
-                continue
-            # No planned found for this window: add one as early as feasible.
-            # For first window, do not apply previous-gap. For later windows, apply min-gap
-            # relative to the last assigned occurrence.
-            candidate_from = wf
-            prev_dates = [planned[i] for i in used if planned[i] <= candidate_from]
-            prev = max(prev_dates) if prev_dates else None
-            # Only enforce previous gap for visit_index > 1
-            if vidx > 1 and prev is not None and proto_days:
-                candidate_from = max(candidate_from, prev + timedelta(days=proto_days))
-            if candidate_from > wt:
-                msg = None
-                try:
-                    abbr = (
-                        getattr(getattr(p, "species", None), "abbreviation", None)
-                        or getattr(getattr(p, "species", None), "name", None)
-                        or "onbekend"
-                    )
-                    fname = (
-                        getattr(getattr(p, "function", None), "name", None)
-                        or "onbekend"
-                    )
-                    msg = f"Het is niet gelukt om een bezoek voor {abbr} voor functie {fname} in te plannen."
-                except Exception:
-                    msg = "Het is niet gelukt om een bezoek in te plannen."
-                warnings.append(msg)
-                if _DEBUG_VISIT_GEN:
-                    _logger.warning(
-                        "cannot add required visit proto=%s vidx=%s earliest_from=%s > window_to=%s",
-                        getattr(p, "id", None),
-                        vidx,
-                        candidate_from.isoformat(),
-                        wt.isoformat(),
-                    )
-                continue
-            nxt_candidates = [d for d in planned if d >= candidate_from]
-            nxt = min(nxt_candidates) if nxt_candidates else None
-            if (
-                nxt is not None
-                and proto_days
-                and candidate_from + timedelta(days=proto_days) > nxt
-            ):
-                if _DEBUG_VISIT_GEN:
-                    _logger.warning(
-                        "gap violation risk proto=%s vidx=%s candidate_from=%s next_from=%s min_gap_days=%s",
-                        getattr(p, "id", None),
-                        vidx,
-                        candidate_from.isoformat(),
-                        nxt.isoformat(),
-                        proto_days,
-                    )
-            # Clamp end before next planned visit start (consider ALL planned dates)
-            candidate_to = wt
-            nxt_candidates = [d for d in planned if d >= candidate_from]
-            nxt = min(nxt_candidates) if nxt_candidates else None
-            if nxt is not None:
-                before_next = nxt - timedelta(days=1)
-                if before_next >= candidate_from:
-                    candidate_to = min(candidate_to, before_next)
-
-            chosen_part = None
-            if parts and len(parts) > 0:
-                if "Avond" in parts:
-                    chosen_part = "Avond"
-                elif "Ochtend" in parts:
-                    chosen_part = "Ochtend"
-                elif "Dag" in parts:
-                    chosen_part = "Dag"
-            visits_to_create.append(
-                {
-                    "from_date": candidate_from,
-                    "to_date": candidate_to,
-                    "protocols": [p],
-                    "chosen_part_of_day": chosen_part,
-                }
-            )
-            if _DEBUG_VISIT_GEN:
-                _logger.info(
-                    "completion add proto=%s vidx=%s added=(%s,%s)",
-                    getattr(p, "id", None),
-                    vidx,
-                    candidate_from.isoformat(),
-                    candidate_to.isoformat(),
+                # Create new dedicated visit within [wf,wt]
+                last_planned = max([d for d in planned if d <= wt], default=None)
+                candidate_from = wf
+                if last_planned is not None and proto_days:
+                    candidate_from = max(candidate_from, last_planned + timedelta(days=proto_days))
+                if candidate_from > wt:
+                    if _DEBUG_VISIT_GEN:
+                        _logger.warning(
+                            "completion cannot place proto=%s within window %s->%s (min-gap or bounds)",
+                            getattr(p, "id", None), wf.isoformat(), wt.isoformat()
+                        )
+                    continue
+                candidate_to = wt
+                nxt_candidates = [d for d in planned if d >= candidate_from]
+                nxt = min(nxt_candidates) if nxt_candidates else None
+                if nxt is not None:
+                    before_next = nxt - timedelta(days=1)
+                    if before_next >= candidate_from:
+                        candidate_to = min(candidate_to, before_next)
+                chosen_part = None
+                if parts and len(parts) > 0:
+                    if "Avond" in parts:
+                        chosen_part = "Avond"
+                    elif "Ochtend" in parts:
+                        chosen_part = "Ochtend"
+                    elif "Dag" in parts:
+                        chosen_part = "Dag"
+                visits_to_create.append(
+                    {
+                        "from_date": candidate_from,
+                        "to_date": candidate_to,
+                        "protocols": [p],
+                        "chosen_part_of_day": chosen_part,
+                    }
                 )
-            # insert into planned and mark used
-            # keep planned sorted
-            insert_pos = 0
-            while insert_pos < len(planned) and planned[insert_pos] < candidate_from:
-                insert_pos += 1
-            planned.insert(insert_pos, candidate_from)
-            # find index of inserted element (first occurrence of candidate_from at/after insert_pos)
-            assign_idx = planned.index(candidate_from, insert_pos)
-            used.add(assign_idx)
+                planned.append(candidate_from)
+                planned.sort()
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "completion create visit proto=%s (%s,%s) part=%s",
+                        getattr(p, "id", None),
+                        candidate_from.isoformat(),
+                        candidate_to.isoformat(),
+                        chosen_part,
+                    )
 
     # Re-coalesce duplicates after additions
+    if _DEBUG_VISIT_GEN and visits_to_create:
+        _logger.info(
+            "pre-final-coalesce visits: %s",
+            [
+                (
+                    v["from_date"].isoformat(),
+                    v["to_date"].isoformat(),
+                    v.get("chosen_part_of_day"),
+                    [getattr(p, "id", None) for p in v["protocols"]],
+                )
+                for v in visits_to_create
+            ],
+        )
     if visits_to_create:
         merged_map2: dict[tuple[date, date, str | None], dict] = {}
         for v in visits_to_create:
@@ -1043,6 +1150,19 @@ async def generate_visits_for_cluster(
                         existing["protocols"].append(p)
                         existing_ids.add(p.id)
         visits_to_create = list(merged_map2.values())
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "final visits: %s",
+                [
+                    (
+                        v["from_date"].isoformat(),
+                        v["to_date"].isoformat(),
+                        v.get("chosen_part_of_day"),
+                        [getattr(p, "id", None) for p in v["protocols"]],
+                    )
+                    for v in visits_to_create
+                ],
+            )
 
     # Order by start date to assign visit_nr
     visits_to_create.sort(key=lambda v: v["from_date"])
@@ -1090,14 +1210,8 @@ async def generate_visits_for_cluster(
             _derive_part_of_day(p) for p in protos if _derive_part_of_day(p) is not None
         ]
         part_of_day = chosen_bucket_part or (part_values[0] if part_values else None)
-        # start time text: pick the earliest by minutes, but rebuild text using that protocol
-        text_candidates: list[tuple[int, str]] = []
-        for p in protos:
-            m = _derive_start_time_minutes(p)
-            t = _derive_start_time_text(p)
-            if m is not None and t is not None:
-                text_candidates.append((m, t))
-        start_time_text = min(text_candidates)[1] if text_candidates else None
+        # start time text: will be calculated from final part_of_day and earliest minutes
+        start_time_text = None
         # remarks: select unique whitelisted phrases only
         remarks_texts = [
             p.visit_conditions_text for p in protos if p.visit_conditions_text
@@ -1116,6 +1230,40 @@ async def generate_visits_for_cluster(
         requires_maternity = any(
             getattr(p, "requires_maternity_period_visit", False) for p in protos
         )
+
+        # Precedence overrides for protocol hard requirements to ensure consistency
+        # If any protocol requires a morning visit (and not evening), force morning semantics.
+        # If any protocol requires an evening visit (and not morning), force evening semantics.
+        # This avoids mismatches like part_of_day "Ochtend" with text "Zonsondergang".
+        if requires_morning and not requires_evening:
+            part_of_day = "Ochtend"
+        elif requires_evening and not requires_morning:
+            part_of_day = "Avond"
+
+        # If morning/evening is enforced or chosen, compute start as (earliest end) - (max duration)
+        # Morning: prefer protocols with end_timing_reference == SUNRISE
+        # Evening: prefer protocols with end_timing_reference == SUNSET
+        if part_of_day in {"Ochtend", "Avond"} and duration_min is not None:
+            target_ref = "SUNRISE" if part_of_day == "Ochtend" else "SUNSET"
+            end_candidates = [
+                _derive_end_time_minutes(p)
+                for p in protos
+                if getattr(p, "end_timing_reference", None) == target_ref
+                and _derive_end_time_minutes(p) is not None
+            ]
+            # fallback: consider any available end if none match the target ref
+            if not end_candidates:
+                end_candidates = [
+                    _derive_end_time_minutes(p)
+                    for p in protos
+                    if _derive_end_time_minutes(p) is not None
+                ]
+            if end_candidates:
+                earliest_end = min(end_candidates)
+                start_time = int(earliest_end - duration_min)
+
+        # Calculate a consistent textual description based on chosen part and minutes
+        start_time_text = derive_start_time_text_for_visit(part_of_day, start_time)
 
         # union of functions/species across combined protos
         function_ids_set = sorted({p.function_id for p in protos})

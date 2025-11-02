@@ -28,3 +28,4 @@ def downgrade() -> None:
         batch_op.add_column(
             sa.Column("special_follow_up_action", sa.String(length=255), nullable=True)
         )
+

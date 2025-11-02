@@ -63,7 +63,11 @@ async def list_clusters(
         visits_stmt: Select[tuple[Visit]] = (
             select(Visit)
             .where(Visit.cluster_id == cluster.id)
-            .options(selectinload(Visit.functions), selectinload(Visit.species))
+            .options(
+                selectinload(Visit.functions),
+                selectinload(Visit.species),
+                selectinload(Visit.preferred_researcher),
+            )
             .order_by(Visit.visit_nr)
         )
         visits = (await db.execute(visits_stmt)).scalars().all()
@@ -113,6 +117,16 @@ async def list_clusters(
                         dvp=v.dvp,
                         remarks_planning=v.remarks_planning,
                         remarks_field=v.remarks_field,
+                        priority=v.priority,
+                        preferred_researcher_id=v.preferred_researcher_id,
+                        preferred_researcher=(
+                            None
+                            if v.preferred_researcher is None
+                            else UserNameRead(
+                                id=v.preferred_researcher.id,
+                                full_name=v.preferred_researcher.full_name,
+                            )
+                        ),
                     )
                     for v in visits
                 ],
@@ -204,13 +218,28 @@ async def create_cluster(
 ) -> ClusterWithVisitsRead:
     """Create cluster and append generated visits based on selected functions/species."""
 
-    cluster = Cluster(
-        project_id=payload.project_id,
-        address=payload.address,
-        cluster_number=payload.cluster_number,
+    # If a cluster with the same project and number exists, merge by appending visits
+    existing_stmt: Select[tuple[Cluster]] = (
+        select(Cluster)
+        .where(
+            (Cluster.project_id == payload.project_id)
+            & (Cluster.cluster_number == payload.cluster_number)
+        )
+        .limit(1)
     )
-    db.add(cluster)
-    await db.flush()
+    existing = (await db.execute(existing_stmt)).scalars().first()
+    if existing is not None:
+        # Update address as requested, keep the same cluster row
+        existing.address = payload.address
+        cluster = existing
+    else:
+        cluster = Cluster(
+            project_id=payload.project_id,
+            address=payload.address,
+            cluster_number=payload.cluster_number,
+        )
+        db.add(cluster)
+        await db.flush()
 
     # Generate visits (append-only)
     warnings: list[str] = []
@@ -228,7 +257,11 @@ async def create_cluster(
     visits_stmt: Select[tuple[Visit]] = (
         select(Visit)
         .where(Visit.cluster_id == cluster.id)
-        .options(selectinload(Visit.functions), selectinload(Visit.species))
+        .options(
+            selectinload(Visit.functions),
+            selectinload(Visit.species),
+            selectinload(Visit.preferred_researcher),
+        )
     )
     visits = (await db.execute(visits_stmt)).scalars().all()
     return ClusterWithVisitsRead(
@@ -273,6 +306,16 @@ async def create_cluster(
                 dvp=v.dvp,
                 remarks_planning=v.remarks_planning,
                 remarks_field=v.remarks_field,
+                priority=v.priority,
+                preferred_researcher_id=v.preferred_researcher_id,
+                preferred_researcher=(
+                    None
+                    if v.preferred_researcher is None
+                    else UserNameRead(
+                        id=v.preferred_researcher.id,
+                        full_name=v.preferred_researcher.full_name,
+                    )
+                ),
             )
             for v in visits
         ],

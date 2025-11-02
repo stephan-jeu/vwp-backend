@@ -5,6 +5,7 @@ from datetime import date
 from pydantic import BaseModel, Field
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
+from app.schemas.user import UserNameRead
 
 
 class ClusterCreate(BaseModel):
@@ -65,6 +66,9 @@ class VisitReadCompact(BaseModel):
     dvp: bool
     remarks_planning: str | None
     remarks_field: str | None
+    priority: bool
+    preferred_researcher_id: int | None = None
+    preferred_researcher: UserNameRead | None = None
 
 
 class ClusterRead(BaseModel):

@@ -1,0 +1,34 @@
+---
+trigger: always_on
+description:
+globs:
+---
+
+# Project Rules for FastAPI App
+
+## 1. Code Style & Quality
+
+- All Python code MUST be formatted using `ruff format` and pass `ruff check`.
+- All public functions and classes MUST have a Google-style docstring explaining their purpose, args, and return value.
+
+## 2. Architecture & Dependencies
+
+- Use **FastAPI** for the web framework and **Pydantic V2** for data modeling.
+- Database access MUST use **SQLAlchemy 2.0** with `asyncio` sessions.
+- All generated code **MUST** be compatible with the libraries and versions specified in `requirements.txt`.
+- **File Structure:**
+  - Routers go in `app/routers/`.
+  - Services (business logic) go in `app/services/`.
+  - Models (database schemas) go in `app/models/`.
+  - Schemas (pydantic schemas) go in `app/schemas/`.
+
+## 3. Best Practices & Security
+
+- All dependencies (like database sessions or settings) MUST be handled via FastAPI's dependency injection system.
+- Do not use `print()`. Import the logger from `app.core.logging`.
+- All secrets and configurations must be loaded from environment variables via the `app.core.config.Settings` class.
+- Always eagerly load required relations in async SQLAlchemy (use selectinload/joinedload) to avoid lazy-loading at runtime (MissingGreenlet).
+
+## 4. Alembic
+
+- Alembic revision ids must be <=32 characters. Use short, readable slugs (e.g., 20251018_04_species_cluster_upd).”
