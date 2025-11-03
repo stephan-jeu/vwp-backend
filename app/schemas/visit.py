@@ -99,5 +99,6 @@ class VisitUpdate(BaseModel):
     # Allow manual override of derived planning helpers
     part_of_day: str | None = None
     start_time: int | None = None
+    start_time_text: str | None = None
     function_ids: list[int] | None = None
     species_ids: list[int] | None = None

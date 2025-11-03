@@ -430,34 +430,66 @@ def _derive_part_options(protocol: Protocol) -> set[str] | None:
     Preference for later selection is handled outside this function.
     """
 
-    if getattr(protocol, "requires_morning_visit", False):
-        return {"Ochtend"}
-    if getattr(protocol, "requires_evening_visit", False):
-        return {"Avond"}
-
     ref_start = protocol.start_timing_reference or ""
     ref_end = getattr(protocol, "end_timing_reference", None) or ""
 
     if ref_start == "DAYTIME":
         return {"Dag"}
     if ref_start == "ABSOLUTE_TIME":
-        # If absolute start time is present and clearly in the morning (<12), pick morning, else evening
-        if (
-            getattr(protocol, "start_time_absolute_from", None) is not None
-            and protocol.start_time_absolute_from.hour < 12
-        ):
-            return {"Ochtend"}
-        return {"Avond"}
+        # Do not over-constrain: allow both, actual part is decided later by assignment/split
+        return {"Avond", "Ochtend"}
 
-    # Overnight window from sunset to sunrise allows both evening and (next) morning
+    # Overnight window defined by separate start/end allows both
     if ref_start == "SUNSET" and ref_end == "SUNRISE":
         return {"Avond", "Ochtend"}
     if ref_start == "SUNSET":
         return {"Avond"}
     if ref_start == "SUNRISE":
         return {"Ochtend"}
-
+    if ref_start == "SUNSET_TO_SUNRISE":
+        return {"Avond", "Ochtend"}
     return None
+
+
+# ---- Helpers: Allowed parts and coalescing ---------------------------------
+
+def _compute_allowed_parts_for_entry(protocols: list[Protocol]) -> set[str] | None:
+    """Intersect allowed part-of-day across protocols in a visit entry.
+
+    Returns None if unconstrained; otherwise a non-empty set of allowed parts.
+    """
+    allowed: set[str] | None = None
+    for p in protocols:
+        opts = _derive_part_options(p)
+        if allowed is None:
+            allowed = opts
+        else:
+            if opts is None:
+                continue
+            allowed = allowed & opts if allowed is not None else opts
+    return allowed
+
+
+def _coalesce_visits(entries: list[dict]) -> list[dict]:
+    """Merge entries with identical (from, to, chosen_part_of_day) by union of protocols."""
+    merged: dict[tuple[date, date, str | None], dict] = {}
+    for v in entries:
+        key = (v["from_date"], v["to_date"], v.get("chosen_part_of_day"))
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = {
+                "from_date": v["from_date"],
+                "to_date": v["to_date"],
+                "chosen_part_of_day": v.get("chosen_part_of_day"),
+                "protocols": list(v["protocols"]),
+            }
+        else:
+            existing_ids = {p.id for p in existing["protocols"]}
+            for p in v["protocols"]:
+                if p.id not in existing_ids:
+                    existing["protocols"].append(p)
+                    existing_ids.add(p.id)
+    return list(merged.values())
 
 
 def _derive_start_time_minutes(protocol: Protocol) -> int | None:
@@ -741,7 +773,12 @@ async def generate_visits_for_cluster(
                     "proto %s windows: %s",
                     getattr(p, "id", None),
                     [
-                        (vidx, wf.isoformat(), wt.isoformat(), list(parts) if parts else None)
+                        (
+                            vidx,
+                            wf.isoformat(),
+                            wt.isoformat(),
+                            list(parts) if parts else None,
+                        )
                         for (vidx, wf, wt, parts) in items
                     ],
                 )
@@ -757,6 +794,21 @@ async def generate_visits_for_cluster(
         return (length, earliest)
 
     ordered = sorted([p for p in protocols if p.id in proto_windows], key=tightness_key)
+    if _DEBUG_VISIT_GEN:
+        _logger.info(
+            "proto options: %s",
+            [
+                (
+                    getattr(p, "id", None),
+                    getattr(p, "requires_morning_visit", False),
+                    getattr(p, "requires_evening_visit", False),
+                    getattr(p, "start_timing_reference", None),
+                    getattr(p, "end_timing_reference", None),
+                    list(_derive_part_options(p) or []),
+                )
+                for p in ordered
+            ],
+        )
 
     # 2) Buckets: greedy tightest-first placement
     #    Buckets maintain a running intersection window and part-of-day intersection.
@@ -889,12 +941,18 @@ async def generate_visits_for_cluster(
                 if vidx > 1 and last_from_p is not None:
                     # Look up previous window_from for this protocol (vidx-1)
                     prev_wf = None
-                    for (v_i, wf_i, _wt_i, _pa_i) in proto_windows.get(p.id, []):
+                    for v_i, wf_i, _wt_i, _pa_i in proto_windows.get(p.id, []):
                         if v_i == vidx - 1:
                             prev_wf = wf_i
                             break
-                    window_gap_days = (wf - prev_wf).days if prev_wf is not None else None
-                    required_from_gap = last_from_p + timedelta(days=(proto_days or 0)) if proto_days else last_from_p
+                    window_gap_days = (
+                        (wf - prev_wf).days if prev_wf is not None else None
+                    )
+                    required_from_gap = (
+                        last_from_p + timedelta(days=(proto_days or 0))
+                        if proto_days
+                        else last_from_p
+                    )
                     if (
                         window_gap_days is not None
                         and proto_days
@@ -915,7 +973,11 @@ async def generate_visits_for_cluster(
                             window_gap_days,
                             proto_days,
                             last_from_p.isoformat() if last_from_p else None,
-                            required_from.isoformat() if isinstance(required_from, date) else required_from,
+                            (
+                                required_from.isoformat()
+                                if isinstance(required_from, date)
+                                else required_from
+                            ),
                             adj_wf.isoformat(),
                         )
                 if adj_wf <= wt:
@@ -929,7 +991,13 @@ async def generate_visits_for_cluster(
                             vidx,
                             wf.isoformat(),
                             wt.isoformat(),
-                            (last_from_p - timedelta(days=(proto_days or 0))).isoformat() if last_from_p and proto_days else None,
+                            (
+                                (
+                                    last_from_p - timedelta(days=(proto_days or 0))
+                                ).isoformat()
+                                if last_from_p and proto_days
+                                else None
+                            ),
                             adj_wf.isoformat(),
                         )
 
@@ -1029,7 +1097,12 @@ async def generate_visits_for_cluster(
                 "completion grouped proto=%s groups=%s planned=%s",
                 getattr(p, "id", None),
                 [
-                    (wf.isoformat(), wt.isoformat(), grp["count"], list(grp["parts"]) if grp["parts"] else None)
+                    (
+                        wf.isoformat(),
+                        wt.isoformat(),
+                        grp["count"],
+                        list(grp["parts"]) if grp["parts"] else None,
+                    )
                     for (wf, wt), grp in sorted(group_counts.items())
                 ],
                 [d.isoformat() for d in planned],
@@ -1052,7 +1125,9 @@ async def generate_visits_for_cluster(
                     overlap_to = min(v_to, wt)
                     overlap_days = (overlap_to - overlap_from).days
                     chosen_part = entry.get("chosen_part_of_day")
-                    part_ok = parts is None or chosen_part is None or chosen_part in parts
+                    part_ok = (
+                        parts is None or chosen_part is None or chosen_part in parts
+                    )
                     if overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS and part_ok:
                         # attach if not already present
                         if all(pp.id != p.id for pp in entry["protocols"]):
@@ -1075,12 +1150,16 @@ async def generate_visits_for_cluster(
                 last_planned = max([d for d in planned if d <= wt], default=None)
                 candidate_from = wf
                 if last_planned is not None and proto_days:
-                    candidate_from = max(candidate_from, last_planned + timedelta(days=proto_days))
+                    candidate_from = max(
+                        candidate_from, last_planned + timedelta(days=proto_days)
+                    )
                 if candidate_from > wt:
                     if _DEBUG_VISIT_GEN:
                         _logger.warning(
                             "completion cannot place proto=%s within window %s->%s (min-gap or bounds)",
-                            getattr(p, "id", None), wf.isoformat(), wt.isoformat()
+                            getattr(p, "id", None),
+                            wf.isoformat(),
+                            wt.isoformat(),
                         )
                     continue
                 candidate_to = wt
@@ -1164,6 +1243,273 @@ async def generate_visits_for_cluster(
                 ],
             )
 
+    # First attempt: at-least-one part-of-day assignment per protocol BEFORE splitting
+    def _assign_at_least_one(visits: list[dict]) -> None:
+        allowed_parts_by_entry: dict[int, set[str] | None] = {
+            idx: _compute_allowed_parts_for_entry(e["protocols"]) for idx, e in enumerate(visits)
+        }
+
+        def set_part_if_allowed(entry_idx: int, part: str) -> bool:
+            allowed = allowed_parts_by_entry.get(entry_idx)
+            if allowed is None or part in allowed:
+                visits[entry_idx]["chosen_part_of_day"] = part
+                return True
+            return False
+
+        for p in protocols:
+            entry_indexes = [i for i, e in enumerate(visits) if any(pp.id == p.id for pp in e["protocols"])]
+            if not entry_indexes:
+                continue
+            if getattr(p, "requires_morning_visit", False):
+                if not any(visits[i].get("chosen_part_of_day") == "Ochtend" for i in entry_indexes):
+                    for i in entry_indexes:
+                        if set_part_if_allowed(i, "Ochtend"):
+                            if _DEBUG_VISIT_GEN:
+                                _logger.info("assign (pre-split) morning for proto=%s on %s->%s", getattr(p, "id", None), visits[i]["from_date"].isoformat(), visits[i]["to_date"].isoformat())
+                            break
+            if getattr(p, "requires_evening_visit", False):
+                if not any(visits[i].get("chosen_part_of_day") == "Avond" for i in entry_indexes):
+                    for i in entry_indexes:
+                        if set_part_if_allowed(i, "Avond"):
+                            if _DEBUG_VISIT_GEN:
+                                _logger.info("assign (pre-split) evening for proto=%s on %s->%s", getattr(p, "id", None), visits[i]["from_date"].isoformat(), visits[i]["to_date"].isoformat())
+                            break
+
+    if _DEBUG_VISIT_GEN:
+        _logger.info(
+            "pre-split allowed parts: %s",
+            [
+                (
+                    v["from_date"].isoformat(),
+                    v["to_date"].isoformat(),
+                    v.get("chosen_part_of_day"),
+                    list(_compute_allowed_parts_for_entry(v["protocols"]) or []),
+                )
+                for v in visits_to_create
+            ],
+        )
+    _assign_at_least_one(visits_to_create)
+
+    # Split pass: if a protocol requires morning/evening and cannot be satisfied by part assignment
+    # create a sibling visit from the earliest bucket window and move all protocols with the same
+    # requirement (and compatible) there. This helps produce one morning and one evening in common cases.
+    def can_visit_allow_part(entry: dict, part: str) -> bool:
+        allowed = _compute_allowed_parts_for_entry(entry["protocols"])
+        return allowed is None or part in allowed
+
+    def split_for_required_part(required_part: str) -> None:
+        # Build map proto_id -> list of entry indexes containing it
+        proto_to_entries: dict[int, list[int]] = defaultdict(list)
+        for i, e in enumerate(visits_to_create):
+            for p in e["protocols"]:
+                proto_to_entries[p.id].append(i)
+
+        # Protocols that require this part
+        required_protos = [p for p in protocols if getattr(p, f"requires_{'morning' if required_part=='Ochtend' else 'evening'}_visit", False)]
+        # Iterate protocols in deterministic id order
+        for p in sorted(required_protos, key=lambda x: x.id):
+            entries = sorted(proto_to_entries.get(p.id, []), key=lambda idx: visits_to_create[idx]["from_date"])
+            if not entries:
+                continue
+            # If already satisfied by an existing chosen_part, skip here; assignment will confirm
+            if any(visits_to_create[i].get("chosen_part_of_day") == required_part for i in entries):
+                continue
+            # Pick earliest entry containing this protocol; sibling will include only protocols that allow the part
+            chosen_idx = entries[0]
+            base = visits_to_create[chosen_idx]
+            # Determine which protocols to move with the same requirement and compatibility
+            to_move: list[Protocol] = []
+            for q in list(base["protocols"]):
+                req_flag = getattr(q, f"requires_{'morning' if required_part=='Ochtend' else 'evening'}_visit", False)
+                if not req_flag:
+                    continue
+                if not can_visit_allow_part({"protocols": [q]}, required_part):
+                    continue
+                # Ensure compatibility within the moving set
+                if all(_allow_together(q, r) for r in to_move):
+                    to_move.append(q)
+            if not to_move:
+                continue
+            # Also include protocols with the same species as any moved protocol (species grouping)
+            companion: list[Protocol] = []
+            target_species_ids: set[int] = set(
+                getattr(q, "species_id", None) for q in to_move if getattr(q, "species_id", None) is not None
+            )
+            # First pass: same-species companions that allow the required part and are compatible
+            for q in list(base["protocols"]):
+                if q in to_move:
+                    continue
+                sid = getattr(q, "species_id", None)
+                if sid not in target_species_ids:
+                    continue
+                if not can_visit_allow_part({"protocols": [q]}, required_part):
+                    continue
+                if all(_allow_together(q, r) for r in to_move + companion):
+                    companion.append(q)
+            # Optional second pass: other flexible protocols that allow the required part and are compatible
+            for q in list(base["protocols"]):
+                if q in to_move or q in companion:
+                    continue
+                if not can_visit_allow_part({"protocols": [q]}, required_part):
+                    continue
+                if all(_allow_together(q, r) for r in to_move + companion):
+                    companion.append(q)
+
+            sibling_protocols = to_move[:] + companion[:]
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "split-pass plan: base %s->%s required_part=%s to_move=%s companion=%s",
+                    base["from_date"].isoformat(),
+                    base["to_date"].isoformat(),
+                    required_part,
+                    [getattr(q, "id", None) for q in to_move],
+                    [getattr(q, "id", None) for q in companion],
+                )
+
+            # Create sibling entry
+            sibling = {
+                "from_date": base["from_date"],
+                "to_date": base["to_date"],
+                "protocols": sibling_protocols,
+                "chosen_part_of_day": required_part,
+            }
+            # Remove moved protocols (required + companions) from base
+            moved_ids = {r.id for r in (to_move + companion)}
+            base["protocols"] = [q for q in base["protocols"] if q.id not in moved_ids]
+            visits_to_create.append(sibling)
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "split-pass: created %s sibling %s->%s protos=%s (companions=%s)",
+                    required_part,
+                    sibling["from_date"].isoformat(),
+                    sibling["to_date"].isoformat(),
+                    [getattr(q, "id", None) for q in to_move],
+                    [getattr(q, "id", None) for q in companion],
+                )
+
+        # Drop empties
+        non_empty = [e for e in visits_to_create if e.get("protocols")]
+        visits_to_create.clear()
+        visits_to_create.extend(non_empty)
+
+    # Run split for morning then evening
+    split_for_required_part("Ochtend")
+    split_for_required_part("Avond")
+
+    # Re-coalesce after split
+    if visits_to_create:
+        visits_to_create = _coalesce_visits(visits_to_create)
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "post-split visits: %s",
+                [
+                    (
+                        v["from_date"].isoformat(),
+                        v["to_date"].isoformat(),
+                        v.get("chosen_part_of_day"),
+                        [getattr(p, "id", None) for p in v["protocols"]],
+                    )
+                    for v in visits_to_create
+                ],
+            )
+
+    # At-least-one part-of-day constraint assignment per protocol
+    # Recompute allowed parts per entry as intersection across protocols
+    def intersect_parts(a: set[str] | None, b: set[str] | None) -> set[str] | None:
+        if a is None and b is None:
+            return None
+        if a is None:
+            return b
+        if b is None:
+            return a
+        return a & b
+
+    allowed_parts_by_entry: dict[int, set[str] | None] = {}
+    for idx, e in enumerate(visits_to_create):
+        allowed: set[str] | None = None
+        for p in e["protocols"]:
+            allowed = intersect_parts(allowed, _derive_part_options(p))
+        allowed_parts_by_entry[idx] = allowed
+
+    # Helper to set chosen part if allowed
+    def set_part_if_allowed(entry_idx: int, part: str) -> bool:
+        allowed = allowed_parts_by_entry.get(entry_idx)
+        if allowed is None or part in allowed:
+            visits_to_create[entry_idx]["chosen_part_of_day"] = part
+            return True
+        return False
+
+    # For each protocol, ensure at least one visit is morning/evening if required
+    for p in protocols:
+        # Collect entries containing this protocol
+        entry_indexes = [i for i, e in enumerate(visits_to_create) if any(pp.id == p.id for pp in e["protocols"]) ]
+        if not entry_indexes:
+            continue
+        # Morning
+        if getattr(p, "requires_morning_visit", False):
+            satisfied = any(
+                visits_to_create[i].get("chosen_part_of_day") == "Ochtend"
+                for i in entry_indexes
+            )
+            if not satisfied:
+                # pick earliest compatible
+                picked = False
+                for i in entry_indexes:
+                    if set_part_if_allowed(i, "Ochtend"):
+                        picked = True
+                        if _DEBUG_VISIT_GEN:
+                            _logger.info("assign morning part for proto=%s to visit %s->%s", getattr(p, "id", None), visits_to_create[i]["from_date"].isoformat(), visits_to_create[i]["to_date"].isoformat())
+                        break
+                if not picked and _DEBUG_VISIT_GEN:
+                    _logger.warning("cannot satisfy requires_morning_visit for proto=%s; no morning-capable visit", getattr(p, "id", None))
+        # Evening
+        if getattr(p, "requires_evening_visit", False):
+            satisfied = any(
+                visits_to_create[i].get("chosen_part_of_day") == "Avond"
+                for i in entry_indexes
+            )
+            if not satisfied:
+                picked = False
+                for i in entry_indexes:
+                    if set_part_if_allowed(i, "Avond"):
+                        picked = True
+                        if _DEBUG_VISIT_GEN:
+                            _logger.info("assign evening part for proto=%s to visit %s->%s", getattr(p, "id", None), visits_to_create[i]["from_date"].isoformat(), visits_to_create[i]["to_date"].isoformat())
+                        break
+                if not picked and _DEBUG_VISIT_GEN:
+                    _logger.warning("cannot satisfy requires_evening_visit for proto=%s; no evening-capable visit", getattr(p, "id", None))
+
+    # Assign stable per-protocol occurrence indices to each visit entry
+    # This disambiguates identical window ranges by ordering visits chronologically.
+    for pid, windows in proto_windows.items():
+        # Build sorted unique groups by (wf, wt)
+        groups: list[tuple[date, date]] = []
+        seen_pairs: set[tuple[date, date]] = set()
+        for _vidx, wf, wt, _parts in sorted(windows, key=lambda w: (w[1], w[2])):
+            pair = (wf, wt)
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                groups.append(pair)
+        # counters per group
+        counters: dict[tuple[date, date], int] = {g: 0 for g in groups}
+        # all entries including this protocol, sorted by from_date
+        entries = [e for e in visits_to_create if any(pp.id == pid for pp in e["protocols"])]
+        entries.sort(key=lambda e: e["from_date"])
+        for e in entries:
+            assigned = False
+            for g in groups:
+                wf, wt = g
+                if wf <= e["from_date"] <= wt:
+                    counters[g] += 1
+                    e.setdefault("per_proto_index", {})[pid] = counters[g]
+                    assigned = True
+                    break
+            if not assigned:
+                # Fallback: assign running index outside declared groups
+                e.setdefault("per_proto_index", {})[pid] = (
+                    max(counters.values()) + 1 if counters else 1
+                )
+
     # Order by start date to assign visit_nr
     visits_to_create.sort(key=lambda v: v["from_date"])
 
@@ -1212,12 +1558,45 @@ async def generate_visits_for_cluster(
         part_of_day = chosen_bucket_part or (part_values[0] if part_values else None)
         # start time text: will be calculated from final part_of_day and earliest minutes
         start_time_text = None
-        # remarks: select unique whitelisted phrases only
+        # remarks: select unique whitelisted phrases only (planning)
         remarks_texts = [
             p.visit_conditions_text for p in protos if p.visit_conditions_text
         ]
         extracted = _extract_whitelisted_remarks(remarks_texts)
-        remarks_field = " | ".join(extracted) if extracted else None
+        remarks_planning = " | ".join(extracted) if extracted else None
+
+        # Build field remarks listing species per function when multiple functions are combined
+        remarks_field = None
+        try:
+            # Map: function name -> { species abbr -> set(visit_indices) }
+            fn_to_species_indices: dict[str, dict[str, set[int]]] = {}
+            visit_from = v["from_date"]
+            for p in protos:
+                fn = getattr(getattr(p, "function", None), "name", None)
+                sp = getattr(p, "species", None)
+                if not fn or sp is None:
+                    continue
+                abbr = getattr(sp, "abbreviation", None) or getattr(sp, "name", None)
+                if not abbr:
+                    continue
+                # Use assigned per-protocol index from the prepared map
+                idx = v.get("per_proto_index", {}).get(p.id)
+                indices: set[int] = {idx} if idx is not None else {1}
+                fn_to_species_indices.setdefault(fn, {}).setdefault(abbr, set()).update(indices)
+
+            if len(fn_to_species_indices) > 0:
+                lines: list[str] = []
+                for fn_name in sorted(fn_to_species_indices.keys()):
+                    entries: list[str] = []
+                    for abbr, idxs in sorted(fn_to_species_indices[fn_name].items(), key=lambda x: x[0]):
+                        idx_text = "/".join(str(i) for i in sorted(idxs))
+                        entries.append(f"{abbr} ({idx_text})")
+                    species_list = ", ".join(entries)
+                    lines.append(f"{fn_name}: {species_list}")
+                remarks_field = "\n".join(lines) if lines else None
+        except Exception:
+            # Be resilient; do not break visit creation due to remark formatting
+            pass
 
         # derive boolean requirement flags (true if any protocol requires it)
         requires_morning = any(
@@ -1231,14 +1610,7 @@ async def generate_visits_for_cluster(
             getattr(p, "requires_maternity_period_visit", False) for p in protos
         )
 
-        # Precedence overrides for protocol hard requirements to ensure consistency
-        # If any protocol requires a morning visit (and not evening), force morning semantics.
-        # If any protocol requires an evening visit (and not morning), force evening semantics.
-        # This avoids mismatches like part_of_day "Ochtend" with text "Zonsondergang".
-        if requires_morning and not requires_evening:
-            part_of_day = "Ochtend"
-        elif requires_evening and not requires_morning:
-            part_of_day = "Avond"
+        # No global forcing: part_of_day comes from chosen bucket assignment and constraint pass
 
         # If morning/evening is enforced or chosen, compute start as (earliest end) - (max duration)
         # Morning: prefer protocols with end_timing_reference == SUNRISE
@@ -1280,6 +1652,7 @@ async def generate_visits_for_cluster(
             min_temperature_celsius=min_temp,
             max_wind_force_bft=max_wind,
             max_precipitation=precip,
+            remarks_planning=remarks_planning,
             remarks_field=remarks_field,
             requires_morning_visit=requires_morning,
             requires_evening_visit=requires_evening,

@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import select, delete, insert
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.visit import Visit
@@ -54,6 +55,7 @@ async def update_visit(
         "planned_week",
         "part_of_day",
         "start_time",
+        "start_time_text",
         "expertise_level",
         "wbc",
         "fiets",
@@ -98,8 +100,18 @@ async def update_visit(
             )
 
     await db.commit()
-    await db.refresh(visit)
-    return visit
+    # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit.id)
+        .options(
+            selectinload(Visit.functions),
+            selectinload(Visit.species),
+            selectinload(Visit.researchers),
+        )
+    )
+    visit_loaded = (await db.execute(stmt)).scalars().first()
+    return visit_loaded or visit
 
 
 @router.delete(
