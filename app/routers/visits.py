@@ -54,7 +54,6 @@ async def update_visit(
         "max_precipitation",
         "planned_week",
         "part_of_day",
-        "start_time",
         "start_time_text",
         "expertise_level",
         "wbc",

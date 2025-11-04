@@ -94,12 +94,9 @@ async def list_clusters(
                             for s in v.species
                         ],
                         part_of_day=v.part_of_day,
-                        start_time=v.start_time,
                         start_time_text=(
                             v.start_time_text
-                            or derive_start_time_text_for_visit(
-                                v.part_of_day, v.start_time
-                            )
+                            or derive_start_time_text_for_visit(v.part_of_day, None)
                         ),
                         group_id=v.group_id,
                         required_researchers=v.required_researchers,
@@ -168,9 +165,7 @@ async def list_clusters_flat(
         for v in visits:
             if not getattr(v, "start_time_text", None):
                 setattr(
-                    v,
-                    "start_time_text",
-                    derive_start_time_text_for_visit(v.part_of_day, v.start_time),
+                    v, "start_time_text", derive_start_time_text_for_visit(v.part_of_day, None)
                 )
             rows.append(
                 ClusterVisitRow(
@@ -285,10 +280,9 @@ async def create_cluster(
                     for s in v.species
                 ],
                 part_of_day=v.part_of_day,
-                start_time=v.start_time,
                 start_time_text=(
                     v.start_time_text
-                    or derive_start_time_text_for_visit(v.part_of_day, v.start_time)
+                    or derive_start_time_text_for_visit(v.part_of_day, None)
                 ),
                 group_id=v.group_id,
                 required_researchers=v.required_researchers,

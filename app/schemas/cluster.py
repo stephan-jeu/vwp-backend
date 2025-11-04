@@ -48,7 +48,6 @@ class VisitReadCompact(BaseModel):
     species: list[SpeciesCompactRead] = []
     # planning helpers
     part_of_day: str | None = None
-    start_time: int | None = None
     start_time_text: str | None = None
     group_id: str | None
     required_researchers: int | None
@@ -59,7 +58,7 @@ class VisitReadCompact(BaseModel):
     min_temperature_celsius: int | None
     max_wind_force_bft: int | None
     max_precipitation: str | None
-    expertise_level: bool
+    expertise_level: str | None
     wbc: bool
     fiets: bool
     hup: bool
@@ -127,7 +126,7 @@ class ClusterVisitRow(BaseModel):
     min_temperature_celsius: int | None
     max_wind_force_bft: int | None
     max_precipitation: str | None
-    expertise_level: bool
+    expertise_level: str | None
     wbc: bool
     fiets: bool
     hup: bool

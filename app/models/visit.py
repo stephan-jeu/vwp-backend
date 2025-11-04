@@ -73,7 +73,7 @@ class Visit(TimestampMixin, Base):
     min_temperature_celsius: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_wind_force_bft: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_precipitation: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    expertise_level: Mapped[bool] = mapped_column(default=False, server_default="false")
+    expertise_level: Mapped[str | None] = mapped_column(String(64), nullable=True)
     wbc: Mapped[bool] = mapped_column(default=False, server_default="false")
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
     hup: Mapped[bool] = mapped_column(default=False, server_default="false")
@@ -97,8 +97,6 @@ class Visit(TimestampMixin, Base):
     )
     # Derived/planning helper fields to persist
     part_of_day: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    # Start time expressed in minutes relative to timing reference
-    start_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Human-readable Dutch representation of the start time (derived but persisted)
     start_time_text: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preferred_researcher_id: Mapped[int | None] = mapped_column(

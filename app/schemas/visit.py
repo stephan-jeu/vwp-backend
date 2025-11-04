@@ -24,7 +24,7 @@ class VisitBase(BaseModel):
     max_wind_force_bft: int | None = None
     max_precipitation: str | None = None
     planned_week: int | None = None
-    expertise_level: bool = False
+    expertise_level: str | None = None
     wbc: bool = False
     fiets: bool = False
     hup: bool = False
@@ -41,8 +41,6 @@ class VisitBase(BaseModel):
     quote: bool = False
     # Derived planning helpers (not persisted)
     part_of_day: str | None = None
-    # Start time expressed in minutes, relative to the timing reference
-    start_time: int | None = None
     # Human-readable Dutch representation of the start time
     start_time_text: str | None = None
 
@@ -85,7 +83,7 @@ class VisitUpdate(BaseModel):
     max_wind_force_bft: int | None = None
     max_precipitation: str | None = None
     planned_week: int | None = None
-    expertise_level: bool | None = None
+    expertise_level: str | None = None
     wbc: bool | None = None
     fiets: bool | None = None
     hup: bool | None = None
@@ -98,7 +96,6 @@ class VisitUpdate(BaseModel):
     quote: bool | None = None
     # Allow manual override of derived planning helpers
     part_of_day: str | None = None
-    start_time: int | None = None
     start_time_text: str | None = None
     function_ids: list[int] | None = None
     species_ids: list[int] | None = None
