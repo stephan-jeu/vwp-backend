@@ -19,24 +19,29 @@ class UserBase(BaseModel):
     class ExperienceBat(StrEnum):
         NIEUW = "Nieuw"
         JUNIOR = "Junior"
+        MEDIOR = "Medior"
         SENIOR = "Senior"
-        GZ = "GZ"
 
     contract: ContractType | None = None
     experience_bat: ExperienceBat | None = None
     smp: bool = False
-    rugstreeppad: bool = False
-    huismus: bool = False
-    langoren: bool = False
-    roofvogels: bool = False
+    pad: bool = False
+    langoor: bool = False
+    roofvogel: bool = False
     wbc: bool = False
     fiets: bool = False
     hup: bool = False
     dvp: bool = False
+    vleermuis: bool = False
+    zwaluw: bool = False
+    vlinder: bool = False
+    zangvogel: bool = False
+    biggenkruid: bool = False
+    schijfhoren: bool = False
 
 
 class UserCreate(UserBase):
-    password: str
+    pass
 
 
 class UserRead(UserBase):
@@ -45,6 +50,31 @@ class UserRead(UserBase):
     model_config = {
         "from_attributes": True,
     }
+
+
+class UserUpdate(BaseModel):
+    """Partial update schema for users."""
+
+    email: EmailStr | None = None
+    full_name: str | None = None
+    admin: bool | None = None
+    city: str | None = None
+    contract: UserBase.ContractType | None = None
+    experience_bat: UserBase.ExperienceBat | None = None
+    smp: bool | None = None
+    pad: bool | None = None
+    langoor: bool | None = None
+    roofvogel: bool | None = None
+    wbc: bool | None = None
+    fiets: bool | None = None
+    hup: bool | None = None
+    dvp: bool | None = None
+    vleermuis: bool | None = None
+    zwaluw: bool | None = None
+    vlinder: bool | None = None
+    zangvogel: bool | None = None
+    biggenkruid: bool | None = None
+    schijfhoren: bool | None = None
 
 
 class UserNameRead(BaseModel):

@@ -27,21 +27,36 @@ class User(TimestampMixin, Base):
     class ExperienceBat(StrEnum):
         NIEUW = "Nieuw"
         JUNIOR = "Junior"
+        MEDIOR = "Medior"
         SENIOR = "Senior"
-        GZ = "GZ"
 
     contract: Mapped[ContractType | None] = mapped_column(
-        Enum(ContractType, name="contract_type"), nullable=True
+        Enum(
+            ContractType,
+            name="contract_type",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=True,
     )
     experience_bat: Mapped[ExperienceBat | None] = mapped_column(
-        Enum(ExperienceBat, name="experience_bat_type"), nullable=True
+        Enum(
+            ExperienceBat,
+            name="experience_bat_type",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=True,
     )
     smp: Mapped[bool] = mapped_column(default=False, server_default="false")
-    rugstreeppad: Mapped[bool] = mapped_column(default=False, server_default="false")
-    huismus: Mapped[bool] = mapped_column(default=False, server_default="false")
-    langoren: Mapped[bool] = mapped_column(default=False, server_default="false")
-    roofvogels: Mapped[bool] = mapped_column(default=False, server_default="false")
+    pad: Mapped[bool] = mapped_column(default=False, server_default="false")
+    langoor: Mapped[bool] = mapped_column(default=False, server_default="false")
+    roofvogel: Mapped[bool] = mapped_column(default=False, server_default="false")
     wbc: Mapped[bool] = mapped_column(default=False, server_default="false")
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
     hup: Mapped[bool] = mapped_column(default=False, server_default="false")
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
+    vleermuis: Mapped[bool] = mapped_column(default=False, server_default="false")
+    zwaluw: Mapped[bool] = mapped_column(default=False, server_default="false")
+    vlinder: Mapped[bool] = mapped_column(default=False, server_default="false")
+    zangvogel: Mapped[bool] = mapped_column(default=False, server_default="false")
+    biggenkruid: Mapped[bool] = mapped_column(default=False, server_default="false")
+    schijfhoren: Mapped[bool] = mapped_column(default=False, server_default="false")
