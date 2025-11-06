@@ -10,14 +10,13 @@ from app.models.user import User
 class AvailabilityWeek(TimestampMixin, Base):
     """Weekly availability for a researcher.
 
-    One row per (user, ISO year, ISO week). Stores number of available days per
-    slot type: daytime, nighttime, and flex (either).
+    One row per (user, ISO week). Stores number of available days per
+    slot type: morning, nighttime, and flex (either).
 
     Attributes:
         user_id: Foreign key to the `users` table.
-        year: ISO year number.
         week: ISO week number (1-53).
-        daytime_days: Number of daytime-available days in the week.
+        morning_days: Number of morning-available days in the week.
         nighttime_days: Number of nighttime-available days in the week.
         flex_days: Number of flex-available days in the week.
     """
@@ -31,13 +30,12 @@ class AvailabilityWeek(TimestampMixin, Base):
     )
     user: Mapped[User] = relationship(User)
 
-    year: Mapped[int] = mapped_column(Integer, nullable=False)
     week: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    daytime_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    
+    morning_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     nighttime_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     flex_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (
-        UniqueConstraint("user_id", "year", "week", name="uq_user_year_week"),
+        UniqueConstraint("user_id", "week", name="uq_user_week"),
     )

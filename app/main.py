@@ -14,6 +14,7 @@ from app.routers.clusters import router as clusters_router
 from app.routers.planning import router as planning_router
 from app.routers.projects import router as projects_router
 from app.routers.admin import router as admin_router
+from app.routers.admin_availability import router as admin_availability_router
 
 import logging
 
@@ -68,6 +69,7 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     app.include_router(planning_router, prefix="/planning", tags=["planning"])
     app.include_router(projects_router, prefix="/projects", tags=["projects"])
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
+    app.include_router(admin_availability_router, prefix="/admin", tags=["admin"])
     app.include_router(clusters_router, prefix="/clusters", tags=["clusters"])
 
     @app.get("/health")
