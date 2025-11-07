@@ -1,6 +1,6 @@
 -- Seed generated for Rugstreeppad (family Pad)
 SET statement_timeout = 0;
-INSERT INTO families (name, priority) VALUES ('Pad', 5) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Pad', 3) ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Pad'), 'Rugstreeppad', 'RSP') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('luisterbezoek') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('platen neerleggen, eisnoeren/larven') ON CONFLICT (name) DO NOTHING;

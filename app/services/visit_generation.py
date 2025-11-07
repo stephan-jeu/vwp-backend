@@ -23,8 +23,6 @@ _logger = logging.getLogger("uvicorn.error")
 
 # Minimum acceptable effective window length (days) for a combined bucket
 MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "14"))
-# Note: visit priority is set when a window is tight (<= MIN_EFFECTIVE_WINDOW_DAYS)
-
 
 # ---- Exception rules scaffolding -------------------------------------------------
 
@@ -1440,13 +1438,6 @@ async def generate_visits_for_cluster(
         # assign derived attributes (persisted)
         visit.part_of_day = part_of_day
         setattr(visit, "start_time_text", start_time_text)
-        # Set higher priority for tight windows (<= threshold)
-        try:
-            window_days = (v["to_date"] - v["from_date"]).days
-            if window_days <= MIN_EFFECTIVE_WINDOW_DAYS:
-                visit.priority = 1
-        except Exception:
-            pass
         next_nr += 1
         # attach relations
         # Attach existing entities by loading references to avoid transient instances

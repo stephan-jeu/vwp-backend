@@ -1,6 +1,6 @@
 -- Seed generated for family Langoren (Haas, Konijn)
 SET statement_timeout = 0;
-INSERT INTO families (name, priority) VALUES ('Langoren', 5) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Langoren', 3) ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Langoren'), 'Haas', 'HS') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Langoren'), 'Konijn', 'KN') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('Voortplantingsplaats') ON CONFLICT (name) DO NOTHING;

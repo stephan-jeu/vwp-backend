@@ -1,6 +1,6 @@
 -- Seed generated for family Vlinder protocols
 SET statement_timeout = 0;
-INSERT INTO families (name, priority) VALUES ('Vlinder', 5) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Vlinder', 3) ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vlinder'), 'Iepenpage', 'IEPP') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vlinder'), 'Grote vos', 'GV') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vlinder'), 'Teunisbloempijlstaart', 'TBP') ON CONFLICT (name) DO NOTHING;

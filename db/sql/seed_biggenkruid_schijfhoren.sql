@@ -1,7 +1,7 @@
 -- Seed for Biggenkruid (Glad biggenkruid) and Schijfhoren (Platte schijfhoren)
 SET statement_timeout = 0;
-INSERT INTO families (name, priority) VALUES ('Biggenkruid', 5) ON CONFLICT (name) DO NOTHING;
-INSERT INTO families (name, priority) VALUES ('Schijfhoren', 5) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Biggenkruid', 3) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Schijfhoren', 3) ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Biggenkruid'), 'Glad biggenkruid', 'GBK') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Schijfhoren'), 'Platte schijfhoren', 'PS') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('Groeiplaats') ON CONFLICT (name) DO NOTHING;
