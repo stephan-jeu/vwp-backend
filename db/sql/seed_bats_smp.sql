@@ -1,9 +1,9 @@
 -- Seed generated for bats SMP protocols
 SET statement_timeout = 0;
 INSERT INTO families (name, priority) VALUES ('Vleermuis', 5) ON CONFLICT (name) DO NOTHING;
-INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vleermuis'), 'Laatvlieger', 'LV') ON CONFLICT (name) DO NOTHING;
-INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vleermuis'), 'Gewone dwergvleermuis', 'GD') ON CONFLICT (name) DO NOTHING;
-INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vleermuis'), 'Ruige dwergvleermuis', 'RD') ON CONFLICT (name) DO NOTHING;
+INSERT INTO species (family_id, name, abbreviation, name_latin) VALUES ((SELECT id FROM families WHERE name = 'Vleermuis'), 'Laatvlieger', 'LV', 'Eptesicus serotinus') ON CONFLICT (name) DO NOTHING;
+INSERT INTO species (family_id, name, abbreviation, name_latin) VALUES ((SELECT id FROM families WHERE name = 'Vleermuis'), 'Gewone dwergvleermuis', 'GD', 'Pipistrellus pipistrellus') ON CONFLICT (name) DO NOTHING;
+INSERT INTO species (family_id, name, abbreviation, name_latin) VALUES ((SELECT id FROM families WHERE name = 'Vleermuis'), 'Ruige dwergvleermuis', 'RD', 'Pipistrellus nathusii') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('SMP Groepsvorming kraamverblijf') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('SMP Kraamverblijf') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('SMP Massawinterverblijf') ON CONFLICT (name) DO NOTHING;

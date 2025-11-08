@@ -60,6 +60,7 @@ async def update_visit(
         "fiets",
         "hup",
         "dvp",
+        "sleutel",
         "remarks_planning",
         "remarks_field",
         "priority",

@@ -78,6 +78,7 @@ class Visit(TimestampMixin, Base):
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
     hup: Mapped[bool] = mapped_column(default=False, server_default="false")
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
+    sleutel: Mapped[bool] = mapped_column(default=False, server_default="false")
     requires_morning_visit: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

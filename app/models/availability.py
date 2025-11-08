@@ -33,6 +33,7 @@ class AvailabilityWeek(TimestampMixin, Base):
     week: Mapped[int] = mapped_column(Integer, nullable=False)
     
     morning_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    daytime_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     nighttime_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     flex_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

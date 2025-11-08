@@ -58,9 +58,10 @@ async def list_by_week_range(
                 weeks.append(
                     AvailabilityCompact(
                         week=w,
-                        morning_days=0, 
-                        nighttime_days=0, 
-                        flex_days=0
+                        morning_days=0,
+                        daytime_days=0,
+                        nighttime_days=0,
+                        flex_days=0,
                     )
                 )
             else:
@@ -68,6 +69,7 @@ async def list_by_week_range(
                     AvailabilityCompact(
                         week=w,
                         morning_days=row.morning_days,
+                        daytime_days=row.daytime_days,
                         nighttime_days=row.nighttime_days,
                         flex_days=row.flex_days,
                     )
@@ -114,6 +116,7 @@ async def upsert_cell(
             user_id=user_id,
             week=week,
             morning_days=0,
+            daytime_days=0,
             nighttime_days=0,
             flex_days=0,
         )
@@ -122,6 +125,8 @@ async def upsert_cell(
     # Apply update to the requested slot
     if payload.slot == "morning":
         row.morning_days = payload.value
+    elif payload.slot == "daytime":
+        row.daytime_days = payload.value
     elif payload.slot == "nighttime":
         row.nighttime_days = payload.value
     else:

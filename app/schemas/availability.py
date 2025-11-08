@@ -11,6 +11,7 @@ class AvailabilityBase(BaseModel):
     user_id: int
     week: int = Field(ge=1, le=53)
     morning_days: int = Field(default=0, ge=0, le=7)
+    daytime_days: int = Field(default=0, ge=0, le=7)
     nighttime_days: int = Field(default=0, ge=0, le=7)
     flex_days: int = Field(default=0, ge=0, le=7)
 
@@ -23,6 +24,7 @@ class AvailabilityUpdate(BaseModel):
     """Partial update for availability days counts."""
 
     morning_days: int | None = Field(default=None, ge=0, le=7)
+    daytime_days: int | None = Field(default=None, ge=0, le=7)
     nighttime_days: int | None = Field(default=None, ge=0, le=7)
     flex_days: int | None = Field(default=None, ge=0, le=7)
 
@@ -41,6 +43,7 @@ class AvailabilityCompact(BaseModel):
 
     week: int = Field(ge=1, le=53)
     morning_days: int = Field(ge=0, le=7)
+    daytime_days: int = Field(ge=0, le=7)
     nighttime_days: int = Field(ge=0, le=7)
     flex_days: int = Field(ge=0, le=7)
 
@@ -62,7 +65,7 @@ class AvailabilityListResponse(BaseModel):
 class AvailabilityCellUpdate(BaseModel):
     """Update a single slot value for a specific (user, year, week)."""
 
-    slot: Literal["morning", "nighttime", "flex"]
+    slot: Literal["morning", "daytime", "nighttime", "flex"]
     value: int = Field(ge=0, le=7)
 
 

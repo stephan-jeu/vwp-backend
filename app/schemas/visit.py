@@ -29,6 +29,7 @@ class VisitBase(BaseModel):
     fiets: bool = False
     hup: bool = False
     dvp: bool = False
+    sleutel: bool = False
     requires_morning_visit: bool = False
     requires_evening_visit: bool = False
     requires_june_visit: bool = False
@@ -88,6 +89,7 @@ class VisitUpdate(BaseModel):
     fiets: bool | None = None
     hup: bool | None = None
     dvp: bool | None = None
+    sleutel: bool | None = None
     remarks_planning: str | None = None
     remarks_field: str | None = None
     priority: bool | None = None

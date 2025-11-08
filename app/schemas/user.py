@@ -32,6 +32,7 @@ class UserBase(BaseModel):
     fiets: bool = False
     hup: bool = False
     dvp: bool = False
+    vrfg: bool = False
     vleermuis: bool = False
     zwaluw: bool = False
     vlinder: bool = False
@@ -69,6 +70,7 @@ class UserUpdate(BaseModel):
     fiets: bool | None = None
     hup: bool | None = None
     dvp: bool | None = None
+    vrfg: bool | None = None
     vleermuis: bool | None = None
     zwaluw: bool | None = None
     vlinder: bool | None = None

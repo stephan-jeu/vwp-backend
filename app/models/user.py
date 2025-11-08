@@ -54,6 +54,7 @@ class User(TimestampMixin, Base):
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
     hup: Mapped[bool] = mapped_column(default=False, server_default="false")
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
+    vrfg: Mapped[bool] = mapped_column(default=False, server_default="false")
     vleermuis: Mapped[bool] = mapped_column(default=False, server_default="false")
     zwaluw: Mapped[bool] = mapped_column(default=False, server_default="false")
     vlinder: Mapped[bool] = mapped_column(default=False, server_default="false")

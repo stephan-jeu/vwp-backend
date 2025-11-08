@@ -184,7 +184,7 @@ def _derive_part_options(protocol: Protocol) -> set[str] | None:
 
     # Overnight window defined by separate start/end allows both
     if ref_start == "SUNSET" and ref_end == "SUNRISE":
-        return {"Avond", "Ochtend"}
+        return {"Ochtend", "Avond"}
     if ref_start == "SUNSET":
         return {"Avond"}
     if ref_start == "SUNRISE":
@@ -749,10 +749,10 @@ async def generate_visits_for_cluster(
     for b in buckets:
         chosen_part = None
         if b.parts and len(b.parts) > 0:
-            if "Avond" in b.parts:
-                chosen_part = "Avond"
-            elif "Ochtend" in b.parts:
+            if "Ochtend" in b.parts:
                 chosen_part = "Ochtend"
+            elif "Avond" in b.parts:
+                chosen_part = "Avond"
             elif "Dag" in b.parts:
                 chosen_part = "Dag"
         visits_to_create.append(
@@ -896,10 +896,10 @@ async def generate_visits_for_cluster(
                         candidate_to = min(candidate_to, before_next)
                 chosen_part = None
                 if parts and len(parts) > 0:
-                    if "Avond" in parts:
-                        chosen_part = "Avond"
-                    elif "Ochtend" in parts:
+                    if "Ochtend" in parts:
                         chosen_part = "Ochtend"
+                    elif "Avond" in parts:
+                        chosen_part = "Avond"
                     elif "Dag" in parts:
                         chosen_part = "Dag"
                 visits_to_create.append(

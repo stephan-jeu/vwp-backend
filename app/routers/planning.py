@@ -1,13 +1,100 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from datetime import date, timedelta
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models.visit import Visit
+from app.models.cluster import Cluster
+from app.models.project import Project
+from app.models.function import Function
+from app.models.species import Species
+from app.models.user import User
+from app.schemas.planning import PlanningVisitRead
+from db.session import get_db
+from app.services.security import require_admin
 
 
 router = APIRouter()
 
 
-@router.get("")
-async def get_planning() -> dict[str, str]:
-    """Return planning placeholder."""
-    return {"planning": "placeholder"}
+DbDep = Annotated[AsyncSession, Depends(get_db)]
+AdminDep = Annotated[object, Depends(require_admin)]
+
+
+def _work_week_bounds(current_year: int, iso_week: int) -> tuple[date, date]:
+    monday = date.fromisocalendar(current_year, iso_week, 1)
+    friday = monday + timedelta(days=4)
+    return monday, friday
+
+
+@router.get("", response_model=list[PlanningVisitRead])
+async def get_planning(
+    _: AdminDep,
+    db: DbDep,
+    week: int | None = Query(None, ge=1, le=53),
+) -> list[PlanningVisitRead]:
+    """Return planned visits (those that have at least one assigned researcher).
+
+    If `week` is provided, limit to visits whose [from_date, to_date] overlap the
+    work week (Mon–Fri) of the current year for the given ISO week.
+    """
+
+    stmt = (
+        select(Visit)
+        .options(
+            selectinload(Visit.researchers),
+            selectinload(Visit.functions),
+            selectinload(Visit.species),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+        )
+    )
+
+    visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
+    # Filter to planned (has researchers)
+    planned = [v for v in visits if (v.researchers and len(v.researchers) > 0)]
+
+    if week is not None:
+        year = date.today().year
+        week_start, week_end = _work_week_bounds(year, week)
+        planned = [
+            v
+            for v in planned
+            if (getattr(v, "from_date", None) and getattr(v, "to_date", None))
+            and (v.from_date <= week_end and v.to_date >= week_start)
+        ]
+
+    # Map to read items
+    items: list[PlanningVisitRead] = []
+    for v in planned:
+        project_code = (
+            getattr(getattr(v, "cluster", None), "project", None).code
+            if getattr(v, "cluster", None) and getattr(v.cluster, "project", None)
+            else ""
+        )
+        cluster_number = getattr(getattr(v, "cluster", None), "cluster_number", 0)
+        functions = [f.name for f in (v.functions or []) if getattr(f, "name", None)]
+        species = [s.name for s in (v.species or []) if getattr(s, "name", None)]
+        researchers = [u.full_name or "" for u in (v.researchers or [])]
+
+        items.append(
+            PlanningVisitRead(
+                id=v.id,
+                project_code=project_code,
+                cluster_number=cluster_number or 0,
+                functions=sorted(set(functions)),
+                species=sorted(set(species)),
+                from_date=v.from_date,
+                to_date=v.to_date,
+                researchers=[r for r in researchers if r],
+            )
+        )
+
+    # Sort for stable UI: project, cluster, from_date
+    items.sort(key=lambda it: (it.project_code, it.cluster_number, it.from_date or date.max))
+    return items
 
