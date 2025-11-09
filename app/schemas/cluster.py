@@ -63,6 +63,7 @@ class VisitReadCompact(BaseModel):
     fiets: bool
     hup: bool
     dvp: bool
+    sleutel: bool
     remarks_planning: str | None
     remarks_field: str | None
     priority: bool
@@ -131,6 +132,7 @@ class ClusterVisitRow(BaseModel):
     fiets: bool
     hup: bool
     dvp: bool
+    sleutel: bool
     remarks_planning: str | None
     remarks_field: str | None
     start_time_text: str | None = None

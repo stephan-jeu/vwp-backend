@@ -28,3 +28,13 @@ class PlanningVisitRead(BaseModel):
     researchers: list[str]
 
     model_config = {"from_attributes": True}
+
+
+class PlanningGenerateRequest(BaseModel):
+    """Request body for generating planning for a specific ISO week.
+
+    Attributes:
+        week: ISO week number (1-53) of the current year.
+    """
+
+    week: int

@@ -92,6 +92,15 @@ def _is_allowed_cross_family(a: Protocol, b: Protocol) -> bool:
     return any(pair == allowed for allowed in allowed_pairs)
 
 
+def _is_smp(p: Protocol) -> bool:
+    try:
+        fn = getattr(p, "function", None)
+        name = getattr(fn, "name", "") or ""
+        return name.startswith("SMP")
+    except Exception:
+        return False
+
+
 def _allow_together(a: Protocol, b: Protocol) -> bool:
     """Compatibility check whether two protocols may be grouped.
 
@@ -107,6 +116,16 @@ def _allow_together(a: Protocol, b: Protocol) -> bool:
         True if protocols may be grouped together.
     """
 
+    a_smp = _is_smp(a)
+    b_smp = _is_smp(b)
+
+    # SMP gating: must both be SMP and same family; never allow cross-family exceptions
+    if a_smp or b_smp:
+        if not (a_smp and b_smp):
+            return False
+        return _same_family(a, b) or _same_family_name(a, b)
+
+    # Legacy behavior for non-SMP
     if _same_family(a, b) or _same_family_name(a, b):
         return True
     return _is_allowed_cross_family(a, b)
@@ -1391,20 +1410,32 @@ async def generate_visits_for_cluster(
         # Morning: prefer protocols with end_timing_reference == SUNRISE
         # Evening: prefer protocols with end_timing_reference == SUNSET
         if part_of_day in {"Ochtend", "Avond"}:
-            # Always consider the earliest end across all protocols available
+            # Candidates from end relative minutes
             end_candidates = [
                 _derive_end_time_minutes(p)
                 for p in protos
                 if _derive_end_time_minutes(p) is not None
             ]
-            if end_candidates:
-                earliest_end = min(end_candidates)
-                # compute local minutes for text derivation only (do not persist minutes)
-                local_start_minutes: int | None = None
-                if part_of_day == "Ochtend" and duration_min is not None:
+            # Candidates from start relative minutes
+            start_candidates = [
+                _derive_start_time_minutes(p)
+                for p in protos
+                if _derive_start_time_minutes(p) is not None
+            ]
+            # compute local minutes for text derivation only (do not persist minutes)
+            local_start_minutes: int | None = None
+            if part_of_day == "Ochtend":
+                # Morning: derive by subtracting duration from earliest end if available
+                if end_candidates and duration_min is not None:
+                    earliest_end = min(end_candidates)
                     local_start_minutes = int(earliest_end - duration_min)
-                elif part_of_day == "Avond":
-                    local_start_minutes = int(earliest_end)
+            else:  # Avond
+                # Evening: prefer earliest start across protocols; fall back to earliest end
+                if start_candidates:
+                    local_start_minutes = int(min(start_candidates))
+                elif end_candidates:
+                    local_start_minutes = int(min(end_candidates))
+            if local_start_minutes is not None:
                 start_time_text = derive_start_time_text_for_visit(
                     part_of_day, local_start_minutes
                 )

@@ -13,6 +13,7 @@ from app.models.species import Species
 from app.models.family import Family
 from app.models.function import Function
 from app.models.availability import AvailabilityWeek
+from app.models.user import User
 
 
 _logger = logging.getLogger("uvicorn.error")
@@ -57,7 +58,9 @@ def _family_priority_from_first_species(v: Visit) -> int | None:
 
 
 def _priority_key(week_monday: date, v: Visit) -> tuple:
-    # Build priority tiers as boolean flags (True = matches tier). Sort by descending flags.
+    # Build priority tiers as boolean flags (True = matches tier). We want True > False
+    # in the listed order. Compute a single integer weight where higher is better,
+    # then sort by (-weight, to_date, from_date, id) to keep deterministic order.
     two_weeks_after_monday = week_monday + timedelta(days=14)
 
     tier1 = bool(v.priority)
@@ -65,22 +68,30 @@ def _priority_key(week_monday: date, v: Visit) -> tuple:
     fam_prio = _family_priority_from_first_species(v)
     tier3 = bool(fam_prio is not None and fam_prio <= 3)
     fn0 = _first_function_name(v)
-    tier4 = fn0.startswith("SMP")
+    tier4 = fn0.lstrip().upper().startswith("SMP")
     tier5 = _any_function_contains(v, ("Vliegroute", "Foerageergebied"))
     tier6 = bool(v.hup)
     tier7 = bool(getattr(v, "sleutel", False))
     tier8 = bool(v.fiets or v.dvp or v.wbc)
 
-    # Stable sort within tiers by (earlier to_date first, then earlier from_date, then id)
-    stable = (
-        (v.to_date or date.max),
-        (v.from_date or date.max),
-        v.id or 0,
+    # Weight: tier1 most significant down to tier8 least; use bit shifts
+    weight = (
+        (int(tier1) << 7)
+        | (int(tier2) << 6)
+        | (int(tier3) << 5)
+        | (int(tier4) << 4)
+        | (int(tier5) << 3)
+        | (int(tier6) << 2)
+        | (int(tier7) << 1)
+        | int(tier8)
     )
-    # Negate tiers to sort True before False
-    return tuple(int(t) for t in (
-        tier1, tier2, tier3, tier4, tier5, tier6, tier7, tier8
-    ))[::-1], stable
+
+    # Stable tie-breakers: earlier dates first, then smaller id
+    to_d = v.to_date or date.max
+    from_d = v.from_date or date.max
+    vid = v.id or 0
+
+    return (-weight, to_d, from_d, vid)
 
 
 async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
@@ -119,6 +130,7 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
         .options(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
+            selectinload(Visit.researchers),
         )
     )
     return (await db.execute(stmt)).scalars().unique().all()
@@ -149,11 +161,69 @@ def _format_visit_line(v: Visit) -> str:
     snames = ", ".join(sorted({(s.name or "").strip() for s in (v.species or [])}))
     pod = v.part_of_day or "?"
     req = v.required_researchers or 1
+    assigned = [getattr(u, "full_name", "") or "" for u in (getattr(v, "researchers", []) or [])]
     return (
         f"- Functions: [{fnames}] | Species: [{snames}] | "
         f"From: {getattr(v, 'from_date', None)} To: {getattr(v, 'to_date', None)} | "
-        f"Part: {pod} | Required researchers: {req} | Assigned researchers: []"
+        f"Part: {pod} | Required researchers: {req} | Assigned researchers: {assigned}"
     )
+
+
+def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
+    """Return True if user qualifies for the given visit based on rules.
+
+    Rules:
+    - User must qualify for ALL families of the visit's species.
+    - If first function starts with SMP (case-insensitive, leading spaces allowed), user.smp must be True.
+    - If any function contains 'Vliegroute' or 'Foerageergebied' (case-insensitive), user.vrfg must be True.
+    - If visit.hup/fiets/wbc/dvp/sleutel is True, the corresponding user boolean must be True.
+    """
+    # Family -> user attribute mapping
+    fam_to_user_attr = {
+        "biggenkruid": "biggenkruid",
+        "langoren": "langoor",
+        "pad": "pad",
+        "roofvogel": "roofvogel",
+        "schijfhoren": "schijfhoren",
+        "vleermuis": "vleermuis",
+        "vlinder": "vlinder",
+        "zangvogel": "zangvogel",
+        "zwaluw": "zwaluw",
+    }
+
+    # Family qualifications: user must have True for each family present.
+    # Fallbacks:
+    # - if family name missing, use species name as key
+    # - also enforce flags for any species names that directly match known keys
+    species_names_lower = [str(getattr(sp, "name", "")).strip().lower() for sp in (visit.species or [])]
+    for sp in (visit.species or []):
+        fam: Family | None = getattr(sp, "family", None)
+        fam_name = getattr(fam, "name", None)
+        key = (str(fam_name).strip().lower() if fam_name else str(getattr(sp, "name", "")).strip().lower())
+        attr = fam_to_user_attr.get(key)
+        if attr and not bool(getattr(user, attr, False)):
+            return False
+    # Direct species name enforcement as an extra safety net
+    for key, attr in fam_to_user_attr.items():
+        if key in species_names_lower and not bool(getattr(user, attr, False)):
+            return False
+
+    # SMP function rule
+    if _first_function_name(visit).lstrip().upper().startswith("SMP"):
+        if not bool(getattr(user, "smp", False)):
+            return False
+
+    # VRFG function rule
+    if _any_function_contains(visit, ("Vliegroute", "Foerageergebied")):
+        if not bool(getattr(user, "vrfg", False)):
+            return False
+
+    # Visit flags that must exist on user when required
+    for flag in ("hup", "fiets", "wbc", "dvp", "sleutel"):
+        if bool(getattr(visit, flag, False)) and not bool(getattr(user, flag, False)):
+            return False
+
+    return True
 
 
 async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
@@ -173,7 +243,6 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
     visits_sorted = sorted(
         visits,
         key=lambda v: _priority_key(week_monday, v),
-        reverse=True,
     )
 
     selected: list[Visit] = []
@@ -192,6 +261,30 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
             selected.append(v)
         else:
             skipped.append(v)
+
+    # Assign researchers based on qualifications (no per-user availability yet)
+    if visits_sorted and db is not None:
+        # Load users once
+        users: list[User] = (await db.execute(select(User))).scalars().all()
+        # Do not reuse users within this run to avoid double-booking within the week
+        used_user_ids: set[int] = set()
+
+        for v in selected:
+            needed = max(1, v.required_researchers or 1)
+            # Filter qualifying and unused users, deterministic by id
+            eligible = [u for u in users if (getattr(u, "id", None) not in used_user_ids) and _qualifies_user_for_visit(u, v)]
+            eligible.sort(key=lambda u: getattr(u, "id", 0))
+            take = eligible[:needed]
+            if take:
+                # attach to relationship (tolerate plain objects in tests)
+                if getattr(v, "researchers", None) is None:
+                    setattr(v, "researchers", [])
+                for u in take:
+                    v.researchers.append(u)
+                    if getattr(u, "id", None) is not None:
+                        used_user_ids.add(u.id)
+
+        await db.commit()
 
     # Log output
     if selected:

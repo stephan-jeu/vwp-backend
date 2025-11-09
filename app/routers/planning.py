@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query, HTTPException, status
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,9 +14,10 @@ from app.models.project import Project
 from app.models.function import Function
 from app.models.species import Species
 from app.models.user import User
-from app.schemas.planning import PlanningVisitRead
+from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
 from db.session import get_db
 from app.services.security import require_admin
+from app.services.visit_planning_selection import select_visits_for_week
 
 
 router = APIRouter()
@@ -97,4 +98,64 @@ async def get_planning(
     # Sort for stable UI: project, cluster, from_date
     items.sort(key=lambda it: (it.project_code, it.cluster_number, it.from_date or date.max))
     return items
+
+
+@router.post("/generate")
+async def generate_planning(
+    _: AdminDep,
+    db: DbDep,
+    payload: PlanningGenerateRequest,
+) -> dict:
+    """Run the weekly selection to generate a planning preview for a given week.
+
+    This does not assign researchers yet. It returns the selection summary
+    (selected/skipped IDs) so the frontend can display or refresh the planned list.
+    """
+
+    week = payload.week
+    if week < 1 or week > 53:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="week must be between 1 and 53")
+
+    # Compute Monday for current year ISO week
+    week_monday = date.fromisocalendar(date.today().year, week, 1)
+    result = await select_visits_for_week(db, week_monday)
+    return result
+
+
+@router.post("/clear")
+async def clear_planned_researchers(
+    _: AdminDep,
+    db: DbDep,
+    payload: PlanningGenerateRequest | None = None,
+) -> dict:
+    """Test-only helper to clear assigned researchers.
+
+    If a week is provided, only visits overlapping that work week are affected.
+    Otherwise all visits will be cleared.
+    """
+
+    week = getattr(payload, "week", None) if payload else None
+
+    stmt = select(Visit)
+    if week is not None:
+        week_start, week_end = _work_week_bounds(date.today().year, week)
+        stmt = (
+            stmt.where(
+                and_(
+                    Visit.from_date <= week_end,
+                    Visit.to_date >= week_start,
+                )
+            )
+            .options(selectinload(Visit.researchers))
+        )
+    else:
+        stmt = stmt.options(selectinload(Visit.researchers))
+
+    visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
+    for v in visits:
+        v.researchers.clear()
+
+    await db.commit()
+
+    return {"cleared": len(visits)}
 
