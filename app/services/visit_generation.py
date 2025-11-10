@@ -234,25 +234,41 @@ def _compute_allowed_parts_for_entry(protocols: list[Protocol]) -> set[str] | No
 
 
 def _coalesce_visits(entries: list[dict]) -> list[dict]:
-    """Merge entries with identical (from, to, chosen_part_of_day) by union of protocols."""
-    merged: dict[tuple[date, date, str | None], dict] = {}
+    """Merge entries with identical (from, to, chosen_part_of_day) when compatible.
+
+    If combining protocol sets would violate compatibility, keep separate bins
+    for the same key.
+    """
+    bins_by_key: dict[tuple[date, date, str | None], list[dict]] = {}
     for v in entries:
         key = (v["from_date"], v["to_date"], v.get("chosen_part_of_day"))
-        existing = merged.get(key)
-        if existing is None:
-            merged[key] = {
-                "from_date": v["from_date"],
-                "to_date": v["to_date"],
-                "chosen_part_of_day": v.get("chosen_part_of_day"),
-                "protocols": list(v["protocols"]),
-            }
-        else:
-            existing_ids = {p.id for p in existing["protocols"]}
-            for p in v["protocols"]:
-                if p.id not in existing_ids:
-                    existing["protocols"].append(p)
-                    existing_ids.add(p.id)
-    return list(merged.values())
+        bins = bins_by_key.setdefault(key, [])
+        placed = False
+        for b in bins:
+            # Check if protocols in v are compatible with all protocols already in bin
+            if all(_allow_together(p, q) for p in v["protocols"] for q in b["protocols"]):
+                # Merge unique protocols
+                existing_ids = {p.id for p in b["protocols"]}
+                for p in v["protocols"]:
+                    if p.id not in existing_ids:
+                        b["protocols"].append(p)
+                        existing_ids.add(p.id)
+                placed = True
+                break
+        if not placed:
+            bins.append(
+                {
+                    "from_date": v["from_date"],
+                    "to_date": v["to_date"],
+                    "chosen_part_of_day": v.get("chosen_part_of_day"),
+                    "protocols": list(v["protocols"]),
+                }
+            )
+    # Flatten bins preserving stable order by from_date
+    result: list[dict] = []
+    for _key, group in bins_by_key.items():
+        result.extend(group)
+    return result
 
 
 def _derive_start_time_minutes(protocol: Protocol) -> int | None:
@@ -860,7 +876,7 @@ async def generate_visits_for_cluster(
             have = sum(1 for d in planned if wf <= d <= wt)
             missing = max(0, required - have)
             for _ in range(missing):
-                # Try to attach to existing visit with sufficient overlap and allowed part
+                # Try to attach to an existing visit with sufficient overlap, allowed part, and compatibility
                 attached = False
                 for entry in visits_to_create:
                     v_from = entry["from_date"]
@@ -872,8 +888,8 @@ async def generate_visits_for_cluster(
                     part_ok = (
                         parts is None or chosen_part is None or chosen_part in parts
                     )
-                    if overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS and part_ok:
-                        # attach if not already present
+                    compatible = all(_allow_together(p, q) for q in entry["protocols"])
+                    if overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS and part_ok and compatible:
                         if all(pp.id != p.id for pp in entry["protocols"]):
                             entry["protocols"].append(p)
                             planned.append(entry["from_date"])  # count toward coverage
@@ -887,7 +903,7 @@ async def generate_visits_for_cluster(
                                     v_to.isoformat(),
                                     chosen_part,
                                 )
-                            break
+                        break
                 if attached:
                     continue
                 # Create new dedicated visit within [wf,wt]
