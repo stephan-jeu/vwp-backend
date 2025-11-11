@@ -70,7 +70,7 @@ def _priority_key(week_monday: date, v: Visit) -> tuple:
     fn0 = _first_function_name(v)
     tier4 = fn0.lstrip().upper().startswith("SMP")
     tier5 = _any_function_contains(v, ("Vliegroute", "Foerageergebied"))
-    tier6 = bool(v.hup)
+    tier6 = bool(v.hub)
     tier7 = bool(getattr(v, "sleutel", False))
     tier8 = bool(v.fiets or v.dvp or v.wbc)
 
@@ -176,7 +176,7 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
     - User must qualify for ALL families of the visit's species.
     - If first function starts with SMP (case-insensitive, leading spaces allowed), user.smp must be True.
     - If any function contains 'Vliegroute' or 'Foerageergebied' (case-insensitive), user.vrfg must be True.
-    - If visit.hup/fiets/wbc/dvp/sleutel is True, the corresponding user boolean must be True.
+    - If visit.hub/fiets/wbc/dvp/sleutel is True, the corresponding user boolean must be True.
     """
     # Family -> user attribute mapping
     fam_to_user_attr = {
@@ -219,7 +219,7 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
             return False
 
     # Visit flags that must exist on user when required
-    for flag in ("hup", "fiets", "wbc", "dvp", "sleutel"):
+    for flag in ("hub", "fiets", "wbc", "dvp", "sleutel"):
         if bool(getattr(visit, flag, False)) and not bool(getattr(user, flag, False)):
             return False
 

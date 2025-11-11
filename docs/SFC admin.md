@@ -23,7 +23,7 @@ Then there is the Cluster table. This is a grouped table (see nuxt uit https://u
 - Dupliceer that shows a modal asking for the cluster number and address (with current value of address) and then duplicates all the visit records to the new cluster.
 - Delete (displays modal asking Weet je zeker dat je dit cluster en alle bezoeken wilt verwijderen)
   The expanded section displays a list of inputs for all the visits linked to this cluster. The inputs are:
-  Functies (multiselect), Soorten (multiselect), Aantal onderzoekers (InputNumber default 1), Bezoek nummer, Periode, Tijd start, Duur, Weereisen, expertise_niveau, wbc, fiets, hup, dvp, aantal onderzoekers, opmerkingen planning, opmerkingen veld
+  Functies (multiselect), Soorten (multiselect), Aantal onderzoekers (InputNumber default 1), Bezoek nummer, Periode, Tijd start, Duur, Weereisen, expertise_niveau, wbc, fiets, hub, dvp, aantal onderzoekers, opmerkingen planning, opmerkingen veld
 
 When adding visits via Toevoegen knop, the visits have to be added in a particular way. The general rule is that based on the selected species and functions, we should select the corresponding protocols (and corresponding protocol_visit_windows) and create the visits with the values of these protocols. The number of visits to be created should come from visits field in protocols The visit fields that should come from the protocols are:
 the from_date and to_date based on protocol_visit_window and the index of the visit (if it's the first, second, etc visit in the sequence of required visits)

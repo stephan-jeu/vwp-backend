@@ -61,7 +61,7 @@ class VisitReadCompact(BaseModel):
     expertise_level: str | None
     wbc: bool
     fiets: bool
-    hup: bool
+    hub: bool
     dvp: bool
     sleutel: bool
     remarks_planning: str | None
@@ -104,7 +104,7 @@ class ClusterVisitRow(BaseModel):
         expertise_level: Whether expertise is required.
         wbc: WBC flag.
         fiets: Bicycle required flag.
-        hup: HuP flag.
+        hub: HUB flag.
         dvp: DvP flag.
         remarks_planning: Planner remarks.
         remarks_field: Field remarks.
@@ -130,7 +130,7 @@ class ClusterVisitRow(BaseModel):
     expertise_level: str | None
     wbc: bool
     fiets: bool
-    hup: bool
+    hub: bool
     dvp: bool
     sleutel: bool
     remarks_planning: str | None

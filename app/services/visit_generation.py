@@ -1561,7 +1561,7 @@ async def duplicate_cluster_with_visits(
             expertise_level=v.expertise_level,
             wbc=v.wbc,
             fiets=v.fiets,
-            hup=v.hup,
+            hub=v.hub,
             dvp=v.dvp,
             remarks_planning=v.remarks_planning,
             remarks_field=v.remarks_field,

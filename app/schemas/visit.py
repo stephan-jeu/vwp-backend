@@ -27,7 +27,7 @@ class VisitBase(BaseModel):
     expertise_level: str | None = None
     wbc: bool = False
     fiets: bool = False
-    hup: bool = False
+    hub: bool = False
     dvp: bool = False
     sleutel: bool = False
     requires_morning_visit: bool = False
@@ -87,7 +87,7 @@ class VisitUpdate(BaseModel):
     expertise_level: str | None = None
     wbc: bool | None = None
     fiets: bool | None = None
-    hup: bool | None = None
+    hub: bool | None = None
     dvp: bool | None = None
     sleutel: bool | None = None
     remarks_planning: str | None = None

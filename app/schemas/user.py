@@ -30,7 +30,7 @@ class UserBase(BaseModel):
     roofvogel: bool = False
     wbc: bool = False
     fiets: bool = False
-    hup: bool = False
+    hub: bool = False
     dvp: bool = False
     vrfg: bool = False
     vleermuis: bool = False
@@ -68,7 +68,7 @@ class UserUpdate(BaseModel):
     roofvogel: bool | None = None
     wbc: bool | None = None
     fiets: bool | None = None
-    hup: bool | None = None
+    hub: bool | None = None
     dvp: bool | None = None
     vrfg: bool | None = None
     vleermuis: bool | None = None

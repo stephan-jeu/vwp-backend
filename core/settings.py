@@ -64,6 +64,11 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("REFRESH_TOKEN_EXPIRES_DAYS", "30"))
     )
 
+    # google maps
+    google_maps_api_key: str = Field(
+        default_factory=lambda: os.getenv("GOOGLE_MAPS_API_KEY", "")
+    )
+
     @property
     def sqlalchemy_database_uri_async(self) -> str:
         # postgresql+asyncpg://user:pass@host:port/db

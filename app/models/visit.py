@@ -76,7 +76,7 @@ class Visit(TimestampMixin, Base):
     expertise_level: Mapped[str | None] = mapped_column(String(64), nullable=True)
     wbc: Mapped[bool] = mapped_column(default=False, server_default="false")
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
-    hup: Mapped[bool] = mapped_column(default=False, server_default="false")
+    hub: Mapped[bool] = mapped_column(default=False, server_default="false")
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
     sleutel: Mapped[bool] = mapped_column(default=False, server_default="false")
     requires_morning_visit: Mapped[bool] = mapped_column(

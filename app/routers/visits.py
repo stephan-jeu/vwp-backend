@@ -58,7 +58,7 @@ async def update_visit(
         "expertise_level",
         "wbc",
         "fiets",
-        "hup",
+        "hub",
         "dvp",
         "sleutel",
         "remarks_planning",

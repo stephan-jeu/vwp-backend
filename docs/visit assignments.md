@@ -39,4 +39,23 @@ Zwaluw -> zwaluw
 
 3 - If any vistit function name is 'Vliegroute' and/or 'Foerageergebied' user vrfg must be true
 
-4 - The following visit booleans must also match with the user: hup, fiets, wbc dvp, sleutel (same field naming between user and visit)
+4 - The following visit booleans must also match with the user: hub, fiets, wbc dvp, sleutel (same field naming between user and visit)
+
+# 3 Ordering researchers
+A lot of times we'll have multiple researchers available for a visit. In that case the following criteria should be used to order the researchers:
+1- Travel time: using google maps api we should calculate the travel time from the researcher's current location to the visit location and set a 'travel' value incrementing for eache subsequent 15 minutes. So travel time 0-15 minutes is 1, 15-30 2, 30-45 3, 45-60 4, 60-75 6 and higher is excluded. We should normalize the value by dividing by 6 (all values should be between 0 and 1)
+2- already assigned: number of already assigned visits / total available capacity
+3 - number of assigned visits where number of researchers > 2 / total number of planned visits where number of researchers > 2
+4 - number of visits that require fiets / total number of visits that require fiets
+5 - number of already assigned visits for this researcher to this project / by total number of visits for this project
+
+Each criteria has different weights. The weights are as follows:
+1 - travel time: 4
+2 - already assigned: 32
+3 - number of assigned visits where number of researchers > 2 / total number of planned visits where number of researchers > 2: 3
+4 - number of visits that require fiets / total number of visits that require fiets: 1
+5 - number of already assigned visits for this researcher to this project / by total number of visits for this project: 1
+
+The values should be multiplied by the weights and then added up to get a final score. The researcher(s) with the lowest score should be assigned the visit.
+
+
