@@ -27,6 +27,7 @@ from app.schemas.species import SpeciesCompactRead
 from app.services.security import require_admin
 from app.services.visit_generation import (
     duplicate_cluster_with_visits,
+    resolve_protocols_for_combos,
     generate_visits_for_cluster,
     derive_start_time_text_for_visit,
 )
@@ -166,7 +167,9 @@ async def list_clusters_flat(
         for v in visits:
             if not getattr(v, "start_time_text", None):
                 setattr(
-                    v, "start_time_text", derive_start_time_text_for_visit(v.part_of_day, None)
+                    v,
+                    "start_time_text",
+                    derive_start_time_text_for_visit(v.part_of_day, None),
                 )
             rows.append(
                 ClusterVisitRow(
@@ -238,14 +241,16 @@ async def create_cluster(
         db.add(cluster)
         await db.flush()
 
-    # Generate visits (append-only)
+    # Generate visits (append-only) from distinct union of protocols resolved from combos
     warnings: list[str] = []
-    if payload.function_ids or payload.species_ids:
+    if payload.combos:
+        combos_dicts = [
+            {"function_ids": c.function_ids, "species_ids": c.species_ids}
+            for c in payload.combos
+        ]
+        protocols = await resolve_protocols_for_combos(db=db, combos=combos_dicts)
         _, warnings = await generate_visits_for_cluster(
-            db=db,
-            cluster=cluster,
-            function_ids=payload.function_ids,
-            species_ids=payload.species_ids,
+            db=db, cluster=cluster, function_ids=[], species_ids=[], protocols=protocols
         )
     await db.commit()
     await db.refresh(cluster)

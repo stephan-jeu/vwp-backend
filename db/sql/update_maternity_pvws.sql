@@ -46,9 +46,9 @@ upd_first AS (
   RETURNING pvw.protocol_id
 )
 
--- Update second visit window (if present) to start at the end of the maternity window
+-- Update second visit window (if present) to also start at the start of the maternity window
 UPDATE protocol_visit_windows pvw
-SET window_from = k.kraam_to
+SET window_from = k.kraam_from
 FROM kraam_first k
 WHERE pvw.protocol_id = k.protocol_id
   AND pvw.visit_index = 2;

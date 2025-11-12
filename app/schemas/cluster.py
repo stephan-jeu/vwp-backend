@@ -8,6 +8,21 @@ from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead
 
 
+class SpeciesFunctionCombo(BaseModel):
+    """Species–function combination input for visit generation.
+
+    Args:
+        function_ids: One or more function ids.
+        species_ids: One or more species ids.
+
+    Returns:
+        Validated combination object used to resolve matching protocols.
+    """
+
+    function_ids: list[int] = Field(min_length=1)
+    species_ids: list[int] = Field(min_length=1)
+
+
 class ClusterCreate(BaseModel):
     """Payload to create a cluster and optionally generate visits.
 
@@ -15,15 +30,13 @@ class ClusterCreate(BaseModel):
         project_id: Parent project identifier.
         address: Address string.
         cluster_number: Cluster sequence number within project.
-        function_ids: Selected function ids used for visit generation.
-        species_ids: Selected species ids used for visit generation.
+        combos: One or more species–function combinations to resolve to protocols.
     """
 
     project_id: int
     address: str = Field(min_length=1, max_length=255)
     cluster_number: int
-    function_ids: list[int] = []
-    species_ids: list[int] = []
+    combos: list[SpeciesFunctionCombo] = Field(default_factory=list)
 
 
 class ClusterDuplicate(BaseModel):

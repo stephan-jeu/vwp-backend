@@ -6,7 +6,7 @@ from uuid import uuid4
 import os
 import logging
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, select, and_, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -203,7 +203,7 @@ def _derive_part_options(protocol: Protocol) -> set[str] | None:
 
     # Overnight window defined by separate start/end allows both
     if ref_start == "SUNSET" and ref_end == "SUNRISE":
-        return {"Ochtend", "Avond"}
+        return {"Avond", "Ochtend"}
     if ref_start == "SUNSET":
         return {"Avond"}
     if ref_start == "SUNRISE":
@@ -246,13 +246,29 @@ def _coalesce_visits(entries: list[dict]) -> list[dict]:
         placed = False
         for b in bins:
             # Check if protocols in v are compatible with all protocols already in bin
-            if all(_allow_together(p, q) for p in v["protocols"] for q in b["protocols"]):
+            if all(
+                _allow_together(p, q) for p in v["protocols"] for q in b["protocols"]
+            ):
                 # Merge unique protocols
                 existing_ids = {p.id for p in b["protocols"]}
                 for p in v["protocols"]:
                     if p.id not in existing_ids:
                         b["protocols"].append(p)
                         existing_ids.add(p.id)
+                # Merge proto_parts if present, keeping stricter constraints (intersection)
+                if "proto_parts" in v or "proto_parts" in b:
+                    b.setdefault("proto_parts", {})
+                    incoming = v.get("proto_parts", {}) or {}
+                    merged = b["proto_parts"]
+                    for pid, parts in incoming.items():
+                        cur = merged.get(pid)
+                        if cur is None:
+                            merged[pid] = parts
+                        elif parts is None:
+                            # keep current restriction
+                            continue
+                        else:
+                            merged[pid] = cur & parts if (cur is not None and parts is not None) else (cur or parts)
                 placed = True
                 break
         if not placed:
@@ -262,6 +278,7 @@ def _coalesce_visits(entries: list[dict]) -> list[dict]:
                     "to_date": v["to_date"],
                     "chosen_part_of_day": v.get("chosen_part_of_day"),
                     "protocols": list(v["protocols"]),
+                    "proto_parts": (v.get("proto_parts") or {}),
                 }
             )
     # Flatten bins preserving stable order by from_date
@@ -480,6 +497,8 @@ async def generate_visits_for_cluster(
     cluster: Cluster,
     function_ids: list[int],
     species_ids: list[int],
+    *,
+    protocols: list[Protocol] | None = None,
 ) -> tuple[list[Visit], list[str]]:
     """Generate visits for a cluster based on selected functions and species.
 
@@ -498,35 +517,42 @@ async def generate_visits_for_cluster(
 
     if _DEBUG_VISIT_GEN:
         _logger.info(
-            "visit_gen start cluster=%s functions=%s species=%s",
+            "visit_gen start cluster=%s functions=%s species=%s protocols=%s",
             getattr(cluster, "id", None),
             function_ids,
             species_ids,
+            [getattr(p, "id", None) for p in (protocols or [])] or None,
         )
 
     warnings: list[str] = []
 
-    if not function_ids or not species_ids:
+    # When protocols are provided, skip the legacy ids guard
+    if protocols is None and (not function_ids or not species_ids):
         return [], warnings
 
-    # Fetch all protocols for selected pairs and their windows (eager-load windows)
-    stmt: Select[tuple[Protocol]] = (
-        select(Protocol)
-        .where(
-            Protocol.function_id.in_(function_ids), Protocol.species_id.in_(species_ids)
+    # Resolve protocols if not provided
+    if protocols is None:
+        # Fetch all protocols for selected pairs and their windows (eager-load windows)
+        stmt: Select[tuple[Protocol]] = (
+            select(Protocol)
+            .where(
+                Protocol.function_id.in_(function_ids),
+                Protocol.species_id.in_(species_ids),
+            )
+            .options(
+                selectinload(Protocol.visit_windows),
+                selectinload(Protocol.species).selectinload(Species.family),
+                selectinload(Protocol.function),
+            )
         )
-        .options(
-            selectinload(Protocol.visit_windows),
-            selectinload(Protocol.species).selectinload(Species.family),
-            selectinload(Protocol.function),
-        )
-    )
-    protocols: list[Protocol] = (await db.execute(stmt)).scalars().unique().all()
+        protocols = (await db.execute(stmt)).scalars().unique().all()
 
     if not protocols:
         return [], warnings
 
     # Windows loaded via selectinload
+    
+    # continue with bucketing logic
 
     # 1) Precompute shifted windows per protocol and tightness key
     #    Shift only the start per visit_index using the protocol's own min period;
@@ -542,7 +568,33 @@ async def generate_visits_for_cluster(
                 wf = _to_current_year(w.window_from)
                 wt = _to_current_year(w.window_to)
                 if wf <= wt:
-                    items.append((vidx, wf, wt, _derive_part_options(p)))
+                    natural_parts = _derive_part_options(p)
+                    parts = natural_parts
+                    # Force required morning/evening on first visit index by constraining allowed parts
+                    if vidx == 1:
+                        forced: set[str] | None = None
+                        if getattr(p, "requires_morning_visit", False):
+                            forced = {"Ochtend"}
+                        elif getattr(p, "requires_evening_visit", False):
+                            forced = {"Avond"}
+                        if forced is not None:
+                            if natural_parts is None:
+                                parts = forced
+                            else:
+                                inter = natural_parts & forced
+                                if len(inter) == 0:
+                                    if _DEBUG_VISIT_GEN:
+                                        _logger.warning(
+                                            "proto %s first-visit forced part incompatible with natural parts; forced=%s natural=%s",
+                                            getattr(p, "id", None),
+                                            list(forced),
+                                            list(natural_parts),
+                                        )
+                                    # Keep natural parts to avoid collapsing windows; requirement may not be met
+                                    parts = natural_parts
+                                else:
+                                    parts = inter
+                    items.append((vidx, wf, wt, parts))
         if items:
             proto_windows[p.id] = items
             if _DEBUG_VISIT_GEN:
@@ -602,12 +654,15 @@ async def generate_visits_for_cluster(
             parts: set[str] | None,
             first_proto: Protocol,
             vidx: int,
+            first_parts: set[str] | None,
         ):
             self.from_date = wf
             self.to_date = wt
             self.parts = parts
             self.proto_ids: set[int] = {first_proto.id}
             self.last_from_by_proto: dict[int, date] = {first_proto.id: wf}
+            # carry per-protocol allowed parts as derived for the window placed in this bucket
+            self.proto_parts: dict[int, set[str] | None] = {first_proto.id: first_parts}
 
         def _inter(self, a: set[str] | None, b: set[str] | None) -> set[str] | None:
             if a is None and b is None:
@@ -642,10 +697,8 @@ async def generate_visits_for_cluster(
                 required_from = last_from_p + timedelta(days=(proto_days or 0))
                 if new_from < required_from:
                     return (False, (self.from_date, self.to_date), self.parts)
-            new_parts = self._inter(self.parts, parts)
-            if new_parts is not None and len(new_parts) == 0:
-                return (False, (self.from_date, self.to_date), self.parts)
-            return (True, (new_from, new_to), new_parts)
+            # Ignore parts-of-day intersection in Phase 1; decide parts in a later split phase
+            return (True, (new_from, new_to), self.parts)
 
         def place(
             self,
@@ -659,9 +712,11 @@ async def generate_visits_for_cluster(
         ):
             self.from_date = new_from
             self.to_date = new_to
-            self.parts = new_parts
+            # Keep parts unchanged in Phase 1; splitting decides later
+            self.parts = self.parts
             self.proto_ids.add(p.id)
             self.last_from_by_proto[p.id] = new_from
+            self.proto_parts[p.id] = parts
 
     buckets: list[_Bucket] = []
     if ordered:
@@ -683,7 +738,8 @@ async def generate_visits_for_cluster(
                     )
                 continue
             seen_keys.add(key)
-            buckets.append(_Bucket(wf, wt, parts, first, vidx))
+            # Seed without parts for Phase 1
+            buckets.append(_Bucket(wf, wt, None, first, vidx, parts))
 
     for p in ordered[1:]:
         last_from_p: date | None = None
@@ -758,7 +814,8 @@ async def generate_visits_for_cluster(
                             adj_wf.isoformat(),
                         )
                 if adj_wf <= wt:
-                    b = _Bucket(adj_wf, wt, parts, p, vidx)
+                    # Create without parts for Phase 1
+                    b = _Bucket(adj_wf, wt, None, p, vidx, parts)
                     buckets.append(b)
                     last_from_p = adj_wf
                     if _DEBUG_VISIT_GEN:
@@ -783,19 +840,14 @@ async def generate_visits_for_cluster(
     visits_to_create: list[dict] = []
     for b in buckets:
         chosen_part = None
-        if b.parts and len(b.parts) > 0:
-            if "Ochtend" in b.parts:
-                chosen_part = "Ochtend"
-            elif "Avond" in b.parts:
-                chosen_part = "Avond"
-            elif "Dag" in b.parts:
-                chosen_part = "Dag"
+        # Phase 1: chosen_part is intentionally left None; decided in split phase
         visits_to_create.append(
             {
                 "from_date": b.from_date,
                 "to_date": b.to_date,
                 "protocols": [proto_id_to_protocol[pid] for pid in sorted(b.proto_ids)],
                 "chosen_part_of_day": chosen_part,
+                "proto_parts": {pid: b.proto_parts.get(pid) for pid in b.proto_ids},
             }
         )
     if _DEBUG_VISIT_GEN and visits_to_create:
@@ -818,6 +870,128 @@ async def generate_visits_for_cluster(
         if _DEBUG_VISIT_GEN:
             _logger.info(
                 "post-coalesce visits: %s",
+                [
+                    (
+                        v["from_date"].isoformat(),
+                        v["to_date"].isoformat(),
+                        v.get("chosen_part_of_day"),
+                        [getattr(p, "id", None) for p in v["protocols"]],
+                    )
+                    for v in visits_to_create
+                ],
+            )
+
+    # Phase 2: split buckets by incompatible parts-of-day and assign chosen_part
+    def _split_buckets_by_parts(entries: list[dict]) -> list[dict]:
+        result: list[dict] = []
+        for e in entries:
+            protos: list[Protocol] = e.get("protocols", [])
+            per_proto_parts: dict[int, set[str] | None] = e.get("proto_parts", {}) or {}
+            allows: list[set[str]] = []
+            for p in protos:
+                pp = per_proto_parts.get(p.id)
+                allows.append(pp or (_derive_part_options(p) or set()))
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "split parts per entry %s->%s: %s",
+                    e["from_date"].isoformat(),
+                    e["to_date"].isoformat(),
+                    [
+                        (getattr(p, "id", None), sorted(list(allows[idx])) if allows[idx] else None)
+                        for idx, p in enumerate(protos)
+                    ],
+                )
+
+            # Classify by allowed parts in this bucket
+            morning_only: list[Protocol] = []
+            evening_only: list[Protocol] = []
+            day_only: list[Protocol] = []
+            flex: list[Protocol] = []
+            for p, s in zip(protos, allows):
+                has_m = "Ochtend" in s
+                has_e = "Avond" in s
+                has_d = "Dag" in s
+                cnt = int(has_m) + int(has_e) + int(has_d)
+                if cnt >= 2:
+                    flex.append(p)
+                elif has_m:
+                    morning_only.append(p)
+                elif has_e:
+                    evening_only.append(p)
+                elif has_d:
+                    day_only.append(p)
+                else:
+                    flex.append(p)
+
+            # Special case: only flex present -> default to a single Morning bucket
+            if not morning_only and not evening_only and not day_only and flex:
+                result.append(
+                    {
+                        "from_date": e["from_date"],
+                        "to_date": e["to_date"],
+                        "protocols": flex,
+                        "chosen_part_of_day": "Ochtend",
+                        "proto_parts": {p.id: per_proto_parts.get(p.id) for p in flex},
+                    }
+                )
+                continue
+
+            # Morning bucket: only if strictly required by morning-only protocols
+            if morning_only:
+                assigned = set(id(p) for p in morning_only)
+                morning_protos = morning_only + [p for p in flex if id(p) not in assigned]
+                if morning_protos:
+                    result.append(
+                        {
+                            "from_date": e["from_date"],
+                            "to_date": e["to_date"],
+                            "protocols": morning_protos,
+                            "chosen_part_of_day": "Ochtend",
+                            "proto_parts": {p.id: per_proto_parts.get(p.id) for p in morning_protos},
+                        }
+                    )
+                # remove flex assigned to morning
+                flex = [p for p in flex if p not in morning_protos]
+
+            # Evening bucket gets evening-only plus remaining flex
+            if evening_only or flex:
+                evening_protos = evening_only + flex
+                if evening_protos:
+                    result.append(
+                        {
+                            "from_date": e["from_date"],
+                            "to_date": e["to_date"],
+                            "protocols": evening_protos,
+                            "chosen_part_of_day": "Avond",
+                            "proto_parts": {p.id: per_proto_parts.get(p.id) for p in evening_protos},
+                        }
+                    )
+
+            # Only daytime and no morning/evening present
+            if day_only and not morning_only and not evening_only:
+                result.append(
+                    {
+                        "from_date": e["from_date"],
+                        "to_date": e["to_date"],
+                        "protocols": day_only,
+                        "chosen_part_of_day": "Dag",
+                        "proto_parts": {p.id: per_proto_parts.get(p.id) for p in day_only},
+                    }
+                )
+
+            # If nothing classified, keep original
+            if not morning_only and not evening_only and not day_only and not flex:
+                result.append(e)
+        return result
+
+    if visits_to_create:
+        # Decide parts-of-day by splitting incompatible sets
+        visits_to_create = _split_buckets_by_parts(visits_to_create)
+        # Re-coalesce as multiple buckets may now share same keys
+        visits_to_create = _coalesce_visits(visits_to_create)
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "post-part-split visits: %s",
                 [
                     (
                         v["from_date"].isoformat(),
@@ -889,7 +1063,11 @@ async def generate_visits_for_cluster(
                         parts is None or chosen_part is None or chosen_part in parts
                     )
                     compatible = all(_allow_together(p, q) for q in entry["protocols"])
-                    if overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS and part_ok and compatible:
+                    if (
+                        overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS
+                        and part_ok
+                        and compatible
+                    ):
                         if all(pp.id != p.id for pp in entry["protocols"]):
                             entry["protocols"].append(p)
                             planned.append(entry["from_date"])  # count toward coverage
@@ -1054,138 +1232,13 @@ async def generate_visits_for_cluster(
         )
     _assign_at_least_one(visits_to_create)
 
-    # Split pass: if a protocol requires morning/evening and cannot be satisfied by part assignment
-    # create a sibling visit from the earliest bucket window and move all protocols with the same
-    # requirement (and compatible) there. This helps produce one morning and one evening in common cases.
-    def can_visit_allow_part(entry: dict, part: str) -> bool:
-        allowed = _compute_allowed_parts_for_entry(entry["protocols"])
-        return allowed is None or part in allowed
-
-    def split_for_required_part(required_part: str) -> None:
-        # Build map proto_id -> list of entry indexes containing it
-        proto_to_entries: dict[int, list[int]] = defaultdict(list)
-        for i, e in enumerate(visits_to_create):
-            for p in e["protocols"]:
-                proto_to_entries[p.id].append(i)
-
-        # Protocols that require this part
-        required_protos = [
-            p
-            for p in protocols
-            if getattr(
-                p,
-                f"requires_{'morning' if required_part=='Ochtend' else 'evening'}_visit",
-                False,
-            )
-        ]
-        # Iterate protocols in deterministic id order
-        for p in sorted(required_protos, key=lambda x: x.id):
-            entries = sorted(
-                proto_to_entries.get(p.id, []),
-                key=lambda idx: visits_to_create[idx]["from_date"],
-            )
-            if not entries:
-                continue
-            # If already satisfied by an existing chosen_part, skip here; assignment will confirm
-            if any(
-                visits_to_create[i].get("chosen_part_of_day") == required_part
-                for i in entries
-            ):
-                continue
-            # Pick earliest entry containing this protocol; sibling will include only protocols that allow the part
-            chosen_idx = entries[0]
-            base = visits_to_create[chosen_idx]
-            # Determine which protocols to move with the same requirement and compatibility
-            to_move: list[Protocol] = []
-            for q in list(base["protocols"]):
-                req_flag = getattr(
-                    q,
-                    f"requires_{'morning' if required_part=='Ochtend' else 'evening'}_visit",
-                    False,
-                )
-                if not req_flag:
-                    continue
-                if not can_visit_allow_part({"protocols": [q]}, required_part):
-                    continue
-                # Ensure compatibility within the moving set
-                if all(_allow_together(q, r) for r in to_move):
-                    to_move.append(q)
-            if not to_move:
-                continue
-            # Also include protocols with the same species as any moved protocol (species grouping)
-            companion: list[Protocol] = []
-            target_species_ids: set[int] = set(
-                getattr(q, "species_id", None)
-                for q in to_move
-                if getattr(q, "species_id", None) is not None
-            )
-            # First pass: same-species companions that allow the required part and are compatible
-            for q in list(base["protocols"]):
-                if q in to_move:
-                    continue
-                sid = getattr(q, "species_id", None)
-                if sid not in target_species_ids:
-                    continue
-                if not can_visit_allow_part({"protocols": [q]}, required_part):
-                    continue
-                if all(_allow_together(q, r) for r in to_move + companion):
-                    companion.append(q)
-            # Optional second pass: other flexible protocols that allow the required part and are compatible
-            for q in list(base["protocols"]):
-                if q in to_move or q in companion:
-                    continue
-                if not can_visit_allow_part({"protocols": [q]}, required_part):
-                    continue
-                if all(_allow_together(q, r) for r in to_move + companion):
-                    companion.append(q)
-
-            sibling_protocols = to_move[:] + companion[:]
-            if _DEBUG_VISIT_GEN:
-                _logger.info(
-                    "split-pass plan: base %s->%s required_part=%s to_move=%s companion=%s",
-                    base["from_date"].isoformat(),
-                    base["to_date"].isoformat(),
-                    required_part,
-                    [getattr(q, "id", None) for q in to_move],
-                    [getattr(q, "id", None) for q in companion],
-                )
-
-            # Create sibling entry
-            sibling = {
-                "from_date": base["from_date"],
-                "to_date": base["to_date"],
-                "protocols": sibling_protocols,
-                "chosen_part_of_day": required_part,
-            }
-            # Remove moved protocols (required + companions) from base
-            moved_ids = {r.id for r in (to_move + companion)}
-            base["protocols"] = [q for q in base["protocols"] if q.id not in moved_ids]
-            visits_to_create.append(sibling)
-            if _DEBUG_VISIT_GEN:
-                _logger.info(
-                    "split-pass: created %s sibling %s->%s protos=%s (companions=%s)",
-                    required_part,
-                    sibling["from_date"].isoformat(),
-                    sibling["to_date"].isoformat(),
-                    [getattr(q, "id", None) for q in to_move],
-                    [getattr(q, "id", None) for q in companion],
-                )
-
-        # Drop empties
-        non_empty = [e for e in visits_to_create if e.get("protocols")]
-        visits_to_create.clear()
-        visits_to_create.extend(non_empty)
-
-    # Run split for morning then evening
-    split_for_required_part("Ochtend")
-    split_for_required_part("Avond")
-
-    # Re-coalesce after split
+    # Split pass removed: forcing is applied at proto window parts for first index; keep visits as-is
+    # Re-coalesce to ensure any exact-duplicate windows are merged
     if visits_to_create:
         visits_to_create = _coalesce_visits(visits_to_create)
         if _DEBUG_VISIT_GEN:
             _logger.info(
-                "post-split visits: %s",
+                "post-assign visits: %s",
                 [
                     (
                         v["from_date"].isoformat(),
@@ -1506,6 +1559,45 @@ async def generate_visits_for_cluster(
         created.append(visit)
 
     return created, warnings
+
+
+async def resolve_protocols_for_combos(
+    db: AsyncSession, combos: list[dict]
+) -> list[Protocol]:
+    """Resolve a distinct union of protocols for multiple species–function combos.
+
+    Args:
+        db: Async session.
+        combos: List of dicts with keys 'function_ids' and 'species_ids'.
+
+    Returns:
+        Unique list of Protocol ORM instances with visit_windows/species/function eager-loaded.
+    """
+
+    if not combos:
+        return []
+
+    # Build disjunction across combos: (function_id IN fset AND species_id IN sset) OR ...
+    predicates = []
+    for c in combos:
+        f_ids = list({int(x) for x in c.get("function_ids", [])})
+        s_ids = list({int(x) for x in c.get("species_ids", [])})
+        if not f_ids or not s_ids:
+            continue
+        predicates.append(and_(Protocol.function_id.in_(f_ids), Protocol.species_id.in_(s_ids)))
+    if not predicates:
+        return []
+
+    stmt: Select[tuple[Protocol]] = (
+        select(Protocol)
+        .where(or_(*predicates))
+        .options(
+            selectinload(Protocol.visit_windows),
+            selectinload(Protocol.species).selectinload(Species.family),
+            selectinload(Protocol.function),
+        )
+    )
+    return (await db.execute(stmt)).scalars().unique().all()
 
 
 async def duplicate_cluster_with_visits(

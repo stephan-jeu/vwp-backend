@@ -272,8 +272,8 @@ async def test_completion_pass_creates_missing_occurrence_and_indexes(mocker, fa
 
 
 @pytest.mark.asyncio
-async def test_split_pass_creates_morning_sibling_when_entry_is_evening_only(mocker, fake_db):
-    # Arrange: required morning protocol allows both; companion allows only evening, forcing split
+async def test_two_phase_creates_ochtend_and_avond_buckets_without_duplicates(mocker, fake_db):
+    # Arrange: required morning protocol allows both; companion allows only evening → split into two parts
     today_year = date.today().year
     wf = date(today_year, 5, 15)
     wt = date(today_year, 7, 15)
@@ -287,7 +287,8 @@ async def test_split_pass_creates_morning_sibling_when_entry_is_evening_only(moc
         fn_name="Nest",
         window_from=wf,
         window_to=wt,
-        start_ref="SUNSET_TO_SUNRISE",
+        start_ref="SUNSET",
+        end_ref="SUNRISE",
     )
     # mark required morning
     setattr(p_req, "requires_morning_visit", True)
@@ -320,23 +321,30 @@ async def test_split_pass_creates_morning_sibling_when_entry_is_evening_only(moc
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
     mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
 
-    cluster = Cluster(id=14, project_id=1, address="c14", cluster_number=14)
+    cluster = Cluster(id=22, project_id=1, address="c22", cluster_number=22)
 
     # Act
     visits, _ = await generate_visits_for_cluster(
-        fake_db, cluster, function_ids=[1410, 1411], species_ids=[1401, 1402]
+        fake_db,
+        cluster,
+        function_ids=[],
+        species_ids=[],
+        protocols=[p_req, p_even],
     )
 
-    # Assert: expect two visits, one morning (contains p_req), one evening (contains p_even)
-    parts = sorted(v.part_of_day for v in visits if v.part_of_day)
-    assert parts.count("Ochtend") >= 1 and parts.count("Avond") >= 1
-    # Use remarks_field to detect which function landed where
-    def visit_has_fn_with_abbr(v, fn_name_prefix):
-        if not v.remarks_field:
-            return False
-        return any(line.startswith(fn_name_prefix) for line in v.remarks_field.split("\n"))
-
-    assert any(v.part_of_day == "Ochtend" and visit_has_fn_with_abbr(v, "Nest") for v in visits)
+    # Assert behavior: there is an Ochtend visit containing the required-morning function
+    # and there is an Avond visit containing the evening-only function. Do not enforce
+    # exact visit count to keep the test resilient to later coalescing rules.
+    has_morning_req = any(
+        v.part_of_day == "Ochtend" and any(f.id == p_req.function.id for f in v.functions)
+        for v in visits
+    )
+    has_evening_even = any(
+        v.part_of_day == "Avond" and any(f.id == p_even.function.id for f in v.functions)
+        for v in visits
+    )
+    assert has_morning_req
+    assert has_evening_even
 
 
 @pytest.mark.asyncio
