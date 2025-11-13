@@ -161,7 +161,9 @@ def _format_visit_line(v: Visit) -> str:
     snames = ", ".join(sorted({(s.name or "").strip() for s in (v.species or [])}))
     pod = v.part_of_day or "?"
     req = v.required_researchers or 1
-    assigned = [getattr(u, "full_name", "") or "" for u in (getattr(v, "researchers", []) or [])]
+    assigned = [
+        getattr(u, "full_name", "") or "" for u in (getattr(v, "researchers", []) or [])
+    ]
     return (
         f"- Functions: [{fnames}] | Species: [{snames}] | "
         f"From: {getattr(v, 'from_date', None)} To: {getattr(v, 'to_date', None)} | "
@@ -186,7 +188,9 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
         "roofvogel": "roofvogel",
         "schijfhoren": "schijfhoren",
         "vleermuis": "vleermuis",
-        "vlinder": "vlinder",
+        "grote vos": "grote_vos",
+        "iepenpage": "iepenpage",
+        "teunisbloempijlstaart": "teunisbloempijlstaart",
         "zangvogel": "zangvogel",
         "zwaluw": "zwaluw",
     }
@@ -195,11 +199,17 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
     # Fallbacks:
     # - if family name missing, use species name as key
     # - also enforce flags for any species names that directly match known keys
-    species_names_lower = [str(getattr(sp, "name", "")).strip().lower() for sp in (visit.species or [])]
-    for sp in (visit.species or []):
+    species_names_lower = [
+        str(getattr(sp, "name", "")).strip().lower() for sp in (visit.species or [])
+    ]
+    for sp in visit.species or []:
         fam: Family | None = getattr(sp, "family", None)
         fam_name = getattr(fam, "name", None)
-        key = (str(fam_name).strip().lower() if fam_name else str(getattr(sp, "name", "")).strip().lower())
+        key = (
+            str(fam_name).strip().lower()
+            if fam_name
+            else str(getattr(sp, "name", "")).strip().lower()
+        )
         attr = fam_to_user_attr.get(key)
         if attr and not bool(getattr(user, attr, False)):
             return False
@@ -210,8 +220,31 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
 
     # SMP function rule
     if _first_function_name(visit).lstrip().upper().startswith("SMP"):
-        if not bool(getattr(user, "smp", False)):
-            return False
+        # Determine SMP specialization by species/family
+        sp = (visit.species or [None])[0]
+        fam_name = str(getattr(getattr(sp, "family", None), "name", "")).strip().lower()
+        sp_name = str(getattr(sp, "name", "")).strip().lower()
+
+        # Map: bats -> smp_vleermuis, gierzwaluw -> smp_gierzwaluw, huismus -> smp_huismus
+        required_attr: str | None = None
+        if fam_name == "vleermuis":
+            required_attr = "smp_vleermuis"
+        elif sp_name == "gierzwaluw":
+            required_attr = "smp_gierzwaluw"
+        elif sp_name == "huismus":
+            required_attr = "smp_huismus"
+
+        if required_attr is not None:
+            if not bool(getattr(user, required_attr, False)):
+                return False
+        else:
+            # Fallback: require at least one SMP specialization
+            if not (
+                bool(getattr(user, "smp_huismus", False))
+                or bool(getattr(user, "smp_vleermuis", False))
+                or bool(getattr(user, "smp_gierzwaluw", False))
+            ):
+                return False
 
     # VRFG function rule
     if _any_function_contains(visit, ("Vliegroute", "Foerageergebied")):
@@ -252,7 +285,9 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
         part = (v.part_of_day or "").strip()
         if part not in DAYPART_TO_AVAIL_FIELD:
             _logger.warning(
-                "visit_select skip id=%s: unknown part_of_day=%s", getattr(v, "id", None), part or None
+                "visit_select skip id=%s: unknown part_of_day=%s",
+                getattr(v, "id", None),
+                part or None,
             )
             skipped.append(v)
             continue
@@ -272,7 +307,12 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
         for v in selected:
             needed = max(1, v.required_researchers or 1)
             # Filter qualifying and unused users, deterministic by id
-            eligible = [u for u in users if (getattr(u, "id", None) not in used_user_ids) and _qualifies_user_for_visit(u, v)]
+            eligible = [
+                u
+                for u in users
+                if (getattr(u, "id", None) not in used_user_ids)
+                and _qualifies_user_for_visit(u, v)
+            ]
             eligible.sort(key=lambda u: getattr(u, "id", 0))
             take = eligible[:needed]
             if take:

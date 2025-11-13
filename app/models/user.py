@@ -46,7 +46,9 @@ class User(TimestampMixin, Base):
         ),
         nullable=True,
     )
-    smp: Mapped[bool] = mapped_column(default=False, server_default="false")
+    smp_huismus: Mapped[bool] = mapped_column(default=False, server_default="false")
+    smp_vleermuis: Mapped[bool] = mapped_column(default=False, server_default="false")
+    smp_gierzwaluw: Mapped[bool] = mapped_column(default=False, server_default="false")
     pad: Mapped[bool] = mapped_column(default=False, server_default="false")
     langoor: Mapped[bool] = mapped_column(default=False, server_default="false")
     roofvogel: Mapped[bool] = mapped_column(default=False, server_default="false")
@@ -57,7 +59,11 @@ class User(TimestampMixin, Base):
     vrfg: Mapped[bool] = mapped_column(default=False, server_default="false")
     vleermuis: Mapped[bool] = mapped_column(default=False, server_default="false")
     zwaluw: Mapped[bool] = mapped_column(default=False, server_default="false")
-    vlinder: Mapped[bool] = mapped_column(default=False, server_default="false")
+    grote_vos: Mapped[bool] = mapped_column(default=False, server_default="false")
+    iepenpage: Mapped[bool] = mapped_column(default=False, server_default="false")
+    teunisbloempijlstaart: Mapped[bool] = mapped_column(
+        default=False, server_default="false"
+    )
     zangvogel: Mapped[bool] = mapped_column(default=False, server_default="false")
     biggenkruid: Mapped[bool] = mapped_column(default=False, server_default="false")
     schijfhoren: Mapped[bool] = mapped_column(default=False, server_default="false")

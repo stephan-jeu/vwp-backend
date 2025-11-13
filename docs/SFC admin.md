@@ -42,7 +42,6 @@ When species are part of the following families, they can be combined into one v
 Vleermuis en Zwaluw (with some particular rules I'll describe below)
 Zangvogel
 Roofvogel
-Vlinder
 Leporidae
 
 An important principle is that the most restrictive conditions should be applied to the grouped species and functions. That means for example if the protocol for function A and species B has a visit window for the first visit from 1 april until 1 june and function A for species C has a visit window from 15 april to 1 july, the grouped visit should take place between 15 april and 1 june. The same choose the strictest condition principle applies to the weather (e.g. minimum temperature is 5, 7 and 10 you should choose 10), the time (between start at sunrise or start 2 hours after sunrise, choose start time sunrise), duration and minimum time between visits.

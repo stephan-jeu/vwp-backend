@@ -69,7 +69,9 @@ def week_monday() -> date:
 
 
 @pytest.mark.asyncio
-async def test_select_respects_capacity_and_priority_order_async(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_select_respects_capacity_and_priority_order_async(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 3, "Dag": 0, "Avond": 0, "Flex": 1}
 
@@ -132,7 +134,9 @@ async def test_select_respects_capacity_and_priority_order_async(monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_unknown_part_of_day_is_skipped(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_unknown_part_of_day_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
 
@@ -172,7 +176,9 @@ async def test_unknown_part_of_day_is_skipped(monkeypatch: pytest.MonkeyPatch, w
 
 
 @pytest.mark.asyncio
-async def test_required_researchers_consumes_capacity_and_flex(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_required_researchers_consumes_capacity_and_flex(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         # Ochtend capacity = 2, flex = 1
         return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 1}
@@ -206,7 +212,9 @@ async def test_required_researchers_consumes_capacity_and_flex(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_spare_capacity_is_applied(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_spare_capacity_is_applied(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     # We simulate AvailabilityWeek sum via fake _load_week_capacity directly pre-spared
     # Here we ensure behavior by forcing caps to reflect post-spare numbers
     async def fake_load_caps(_db: Any, _week: int) -> dict:
@@ -248,7 +256,9 @@ async def test_spare_capacity_is_applied(monkeypatch: pytest.MonkeyPatch, week_m
 
 
 @pytest.mark.asyncio
-async def test_priority_tiers_global_order(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_priority_tiers_global_order(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         # plenty of capacity so all are selected
         return {"Ochtend": 10, "Dag": 0, "Avond": 0, "Flex": 0}
@@ -257,22 +267,102 @@ async def test_priority_tiers_global_order(monkeypatch: pytest.MonkeyPatch, week
     base_from = week_monday
     base_to = week_monday + timedelta(days=20)
 
-    v_prio = make_visit(vid=1, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, priority=True, function_names=["X"], species_defs=[("A", 5)])
-    v_dead = make_visit(vid=2, part_of_day="Ochtend", from_date=base_from, to_date=week_monday + timedelta(days=10), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
-    v_fam3 = make_visit(vid=3, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, function_names=["X"], species_defs=[("B", 3)])
-    v_smp = make_visit(vid=4, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, function_names=["SMP Groep"], species_defs=[("A", 5)])
-    v_route = make_visit(vid=5, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, function_names=["Vliegroute inspectie"], species_defs=[("A", 5)])
-    v_hub = make_visit(vid=6, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, hub=True, function_names=["X"], species_defs=[("A", 5)])
-    v_sleut = make_visit(vid=7, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, sleutel=True, function_names=["X"], species_defs=[("A", 5)])
-    v_misc = make_visit(vid=8, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, fiets=True, function_names=["X"], species_defs=[("A", 5)])
-    v_none = make_visit(vid=9, part_of_day="Ochtend", from_date=base_from, to_date=base_to, required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
+    v_prio = make_visit(
+        vid=1,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        priority=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_dead = make_visit(
+        vid=2,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=week_monday + timedelta(days=10),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_fam3 = make_visit(
+        vid=3,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("B", 3)],
+    )
+    v_smp = make_visit(
+        vid=4,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        function_names=["SMP Groep"],
+        species_defs=[("A", 5)],
+    )
+    v_route = make_visit(
+        vid=5,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        function_names=["Vliegroute inspectie"],
+        species_defs=[("A", 5)],
+    )
+    v_hub = make_visit(
+        vid=6,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        hub=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_sleut = make_visit(
+        vid=7,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        sleutel=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_misc = make_visit(
+        vid=8,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        fiets=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_none = make_visit(
+        vid=9,
+        part_of_day="Ochtend",
+        from_date=base_from,
+        to_date=base_to,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         # Deliberately shuffled
         return [v_none, v_misc, v_sleut, v_hub, v_route, v_smp, v_fam3, v_dead, v_prio]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -280,23 +370,84 @@ async def test_priority_tiers_global_order(monkeypatch: pytest.MonkeyPatch, week
 
 
 @pytest.mark.asyncio
-async def test_tie_breakers_by_dates_then_id(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_tie_breakers_by_dates_then_id(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 10, "Dag": 0, "Avond": 0, "Flex": 0}
 
     # All no-tiers so weight=0; ordering by to_date, then from_date, then id
-    v_late = make_visit(vid=30, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=30), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
-    v_early = make_visit(vid=31, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=5), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
-    v_same_to_from_earlier = make_visit(vid=32, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=10), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
-    v_same_to_from_later = make_visit(vid=33, part_of_day="Ochtend", from_date=week_monday + timedelta(days=1), to_date=week_monday + timedelta(days=10), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
-    v_same_dates_lower_id = make_visit(vid=10, part_of_day="Ochtend", from_date=week_monday + timedelta(days=2), to_date=week_monday + timedelta(days=15), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
-    v_same_dates_higher_id = make_visit(vid=99, part_of_day="Ochtend", from_date=week_monday + timedelta(days=2), to_date=week_monday + timedelta(days=15), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
+    v_late = make_visit(
+        vid=30,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=30),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_early = make_visit(
+        vid=31,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=5),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_same_to_from_earlier = make_visit(
+        vid=32,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=10),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_same_to_from_later = make_visit(
+        vid=33,
+        part_of_day="Ochtend",
+        from_date=week_monday + timedelta(days=1),
+        to_date=week_monday + timedelta(days=10),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_same_dates_lower_id = make_visit(
+        vid=10,
+        part_of_day="Ochtend",
+        from_date=week_monday + timedelta(days=2),
+        to_date=week_monday + timedelta(days=15),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_same_dates_higher_id = make_visit(
+        vid=99,
+        part_of_day="Ochtend",
+        from_date=week_monday + timedelta(days=2),
+        to_date=week_monday + timedelta(days=15),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
-        return [v_late, v_same_to_from_later, v_same_dates_higher_id, v_same_to_from_earlier, v_same_dates_lower_id, v_early]
+        return [
+            v_late,
+            v_same_to_from_later,
+            v_same_dates_higher_id,
+            v_same_to_from_earlier,
+            v_same_dates_lower_id,
+            v_early,
+        ]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -305,19 +456,50 @@ async def test_tie_breakers_by_dates_then_id(monkeypatch: pytest.MonkeyPatch, we
 
 
 @pytest.mark.asyncio
-async def test_capacity_insufficient_selects_highest_weight(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_capacity_insufficient_selects_highest_weight(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
 
-    v_high = make_visit(vid=1, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=20), required_researchers=1, priority=True, function_names=["X"], species_defs=[("A", 5)])
-    v_mid = make_visit(vid=2, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=20), required_researchers=1, function_names=["SMP Z"], species_defs=[("A", 5)])
-    v_low = make_visit(vid=3, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=20), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
+    v_high = make_visit(
+        vid=1,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=20),
+        required_researchers=1,
+        priority=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_mid = make_visit(
+        vid=2,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=20),
+        required_researchers=1,
+        function_names=["SMP Z"],
+        species_defs=[("A", 5)],
+    )
+    v_low = make_visit(
+        vid=3,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=20),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v_low, v_mid, v_high]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -326,19 +508,52 @@ async def test_capacity_insufficient_selects_highest_weight(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_sleutel_between_hub_and_misc(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_sleutel_between_hub_and_misc(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 3, "Dag": 0, "Avond": 0, "Flex": 0}
 
-    v_hub = make_visit(vid=1, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=20), required_researchers=1, hub=True, function_names=["X"], species_defs=[("A", 5)])
-    v_sleut = make_visit(vid=2, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=20), required_researchers=1, sleutel=True, function_names=["X"], species_defs=[("A", 5)])
-    v_misc = make_visit(vid=3, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=20), required_researchers=1, fiets=True, function_names=["X"], species_defs=[("A", 5)])
+    v_hub = make_visit(
+        vid=1,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=20),
+        required_researchers=1,
+        hub=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_sleut = make_visit(
+        vid=2,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=20),
+        required_researchers=1,
+        sleutel=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_misc = make_visit(
+        vid=3,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=20),
+        required_researchers=1,
+        fiets=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v_misc, v_sleut, v_hub]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -346,21 +561,52 @@ async def test_sleutel_between_hub_and_misc(monkeypatch: pytest.MonkeyPatch, wee
 
 
 @pytest.mark.asyncio
-async def test_flex_consumed_when_period_deficit(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_flex_consumed_when_period_deficit(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         # No morning capacity, but flex can cover two
         return {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 2}
 
-    v_high = make_visit(vid=11, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=10), required_researchers=1, priority=True, function_names=["X"], species_defs=[("A", 5)])
-    v_mid = make_visit(vid=12, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=10), required_researchers=1, function_names=["SMP Alpha"], species_defs=[("A", 5)])
-    v_low = make_visit(vid=13, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=10), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
+    v_high = make_visit(
+        vid=11,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=10),
+        required_researchers=1,
+        priority=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_mid = make_visit(
+        vid=12,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=10),
+        required_researchers=1,
+        function_names=["SMP Alpha"],
+        species_defs=[("A", 5)],
+    )
+    v_low = make_visit(
+        vid=13,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=10),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         # unordered to ensure sorting
         return [v_low, v_mid, v_high]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -370,19 +616,42 @@ async def test_flex_consumed_when_period_deficit(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_required_researchers_consumes_multiple_slots(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_required_researchers_consumes_multiple_slots(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         # Two morning slots available, no flex
         return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
 
-    v_big = make_visit(vid=20, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=7), required_researchers=2, priority=True, function_names=["X"], species_defs=[("A", 5)])
-    v_small = make_visit(vid=21, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=7), required_researchers=1, function_names=["X"], species_defs=[("A", 5)])
+    v_big = make_visit(
+        vid=20,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=2,
+        priority=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_small = make_visit(
+        vid=21,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v_small, v_big]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -392,19 +661,49 @@ async def test_required_researchers_consumes_multiple_slots(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_function_name_detection_smp_and_route_case_insensitive(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_function_name_detection_smp_and_route_case_insensitive(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 3, "Dag": 0, "Avond": 0, "Flex": 0}
 
-    v_smp_weird = make_visit(vid=40, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=14), required_researchers=1, function_names=[" smp  Team"], species_defs=[("A", 5)])
-    v_route_case = make_visit(vid=41, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=14), required_researchers=1, function_names=["FoErAgEeRgEbIeD delta"], species_defs=[("A", 5)])
-    v_plain = make_visit(vid=42, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=14), required_researchers=1, function_names=["x"], species_defs=[("A", 5)])
+    v_smp_weird = make_visit(
+        vid=40,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=14),
+        required_researchers=1,
+        function_names=[" smp  Team"],
+        species_defs=[("A", 5)],
+    )
+    v_route_case = make_visit(
+        vid=41,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=14),
+        required_researchers=1,
+        function_names=["FoErAgEeRgEbIeD delta"],
+        species_defs=[("A", 5)],
+    )
+    v_plain = make_visit(
+        vid=42,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=14),
+        required_researchers=1,
+        function_names=["x"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v_plain, v_route_case, v_smp_weird]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -413,20 +712,43 @@ async def test_function_name_detection_smp_and_route_case_insensitive(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_flex_shared_across_parts_not_overdrawn(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_flex_shared_across_parts_not_overdrawn(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         # No dedicated capacity, only 1 flex for the whole week
         return {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 1}
 
-    v_high_morning = make_visit(vid=50, part_of_day="Ochtend", from_date=week_monday, to_date=week_monday + timedelta(days=7), required_researchers=1, priority=True, function_names=["X"], species_defs=[("A", 5)])
-    v_mid_evening = make_visit(vid=51, part_of_day="Avond", from_date=week_monday, to_date=week_monday + timedelta(days=7), required_researchers=1, function_names=["SMP Z"], species_defs=[("A", 5)])
+    v_high_morning = make_visit(
+        vid=50,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=1,
+        priority=True,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+    )
+    v_mid_evening = make_visit(
+        vid=51,
+        part_of_day="Avond",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=1,
+        function_names=["SMP Z"],
+        species_defs=[("A", 5)],
+    )
 
     async def fake_eligible(_db: Any, _week_monday: date):
         # lower-priority comes first to ensure sorting handles it
         return [v_mid_evening, v_high_morning]
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -479,7 +801,9 @@ def make_user(
     from types import SimpleNamespace
 
     defaults = {
-        "smp": False,
+        "smp_huismus": False,
+        "smp_vleermuis": False,
+        "smp_gierzwaluw": False,
         "vrfg": False,
         "hub": False,
         "fiets": False,
@@ -491,7 +815,9 @@ def make_user(
         "roofvogel": False,
         "vleermuis": False,
         "zwaluw": False,
-        "vlinder": False,
+        "grote_vos": False,
+        "iepenpage": False,
+        "teunisbloempijlstaart": False,
         "zangvogel": False,
         "biggenkruid": False,
         "schijfhoren": False,
@@ -521,7 +847,9 @@ async def _fake_db_with_users(users: list[Any]):
 
 
 @pytest.mark.asyncio
-async def test_assign_requires_all_families(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_assign_requires_all_families(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 5, "Dag": 0, "Avond": 0, "Flex": 0}
 
@@ -543,8 +871,12 @@ async def test_assign_requires_all_families(monkeypatch: pytest.MonkeyPatch, wee
     u2 = make_user(2, "B", vleermuis=True, pad=True)
     fake_db = await _fake_db_with_users([u1, u2])
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -569,12 +901,16 @@ async def test_assign_requires_smp(monkeypatch: pytest.MonkeyPatch, week_monday:
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v]
 
-    u1 = make_user(1, "A", smp=False)
-    u2 = make_user(2, "B", smp=True)
+    u1 = make_user(1, "A", smp_vleermuis=False)
+    u2 = make_user(2, "B", smp_vleermuis=True)
     fake_db = await _fake_db_with_users([u1, u2])
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -603,8 +939,12 @@ async def test_assign_requires_vrfg(monkeypatch: pytest.MonkeyPatch, week_monday
     u2 = make_user(2, "B", vrfg=True)
     fake_db = await _fake_db_with_users([u1, u2])
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -612,7 +952,9 @@ async def test_assign_requires_vrfg(monkeypatch: pytest.MonkeyPatch, week_monday
 
 
 @pytest.mark.asyncio
-async def test_assign_requires_visit_flags(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_assign_requires_visit_flags(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
 
@@ -638,8 +980,12 @@ async def test_assign_requires_visit_flags(monkeypatch: pytest.MonkeyPatch, week
     u2 = make_user(2, "B", hub=True, fiets=True, wbc=True, dvp=True, sleutel=True)
     fake_db = await _fake_db_with_users([u1, u2])
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -647,7 +993,9 @@ async def test_assign_requires_visit_flags(monkeypatch: pytest.MonkeyPatch, week
 
 
 @pytest.mark.asyncio
-async def test_do_not_reuse_user_across_visits(monkeypatch: pytest.MonkeyPatch, week_monday: date):
+async def test_do_not_reuse_user_across_visits(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
         return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
 
@@ -678,8 +1026,12 @@ async def test_do_not_reuse_user_across_visits(monkeypatch: pytest.MonkeyPatch, 
     u2 = make_user(2, "B", vleermuis=False)
     fake_db = await _fake_db_with_users([u1, u2])
 
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 

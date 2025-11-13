@@ -1628,6 +1628,52 @@ async def generate_visits_for_cluster(
             _derive_part_of_day(p) for p in protos if _derive_part_of_day(p) is not None
         ]
         part_of_day = chosen_bucket_part or (part_values[0] if part_values else None)
+        # If morning, recompute duration as (latest end) - (calculated start), where
+        # calculated start considers both explicit start refs and (end - proto duration).
+        calc_start_for_duration: int | None = None
+        end_candidates_for_duration = [
+            _derive_end_time_minutes(p)
+            for p in protos
+            if _derive_end_time_minutes(p) is not None
+        ]
+        start_candidates_for_duration = [
+            _derive_start_time_minutes(p)
+            for p in protos
+            if _derive_start_time_minutes(p) is not None
+        ]
+        # Also derive starts from end constraints minus per-protocol duration
+        starts_from_end_minus_duration: list[int] = []
+        for p in protos:
+            end_m = _derive_end_time_minutes(p)
+            dur_h = getattr(p, "visit_duration_hours", None)
+            if end_m is not None and dur_h is not None:
+                starts_from_end_minus_duration.append(int(end_m - int(dur_h * 60)))
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "duration inputs: part=%s start_refs=%s end_refs=%s starts_from_end=%s chosen_start(ref-only)=%s",
+                part_of_day,
+                start_candidates_for_duration,
+                end_candidates_for_duration,
+                starts_from_end_minus_duration,
+                start_time,
+            )
+        if part_of_day == "Ochtend" and end_candidates_for_duration:
+            all_start_candidates = start_candidates_for_duration + starts_from_end_minus_duration
+            if all_start_candidates:
+                calc_start_for_duration = int(min(all_start_candidates))
+                latest_end = int(max(end_candidates_for_duration))
+                new_duration = int(max(0, latest_end - calc_start_for_duration))
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "duration calc (Ochtend): protos=%s start_candidates_all=%s picked_start=%s latest_end=%s -> duration=%s (prev=%s)",
+                        [getattr(p, "id", None) for p in protos],
+                        all_start_candidates,
+                        calc_start_for_duration,
+                        latest_end,
+                        new_duration,
+                        duration_min,
+                    )
+                duration_min = new_duration
         # start time text: will be calculated from final part_of_day and earliest minutes
         start_time_text = None
         # remarks: select unique whitelisted phrases only (planning)
@@ -1707,8 +1753,17 @@ async def generate_visits_for_cluster(
             # compute local minutes for text derivation only (do not persist minutes)
             local_start_minutes: int | None = None
             if part_of_day == "Ochtend":
-                # Morning: derive by subtracting duration from earliest end if available
-                if end_candidates and duration_min is not None:
+                # Morning: Prefer the calculated start used for duration for consistent text.
+                if calc_start_for_duration is not None:
+                    local_start_minutes = int(calc_start_for_duration)
+                    if _DEBUG_VISIT_GEN:
+                        _logger.info(
+                            "start_time_text (Ochtend): using picked_start=%s for text; duration_min=%s",
+                            calc_start_for_duration,
+                            duration_min,
+                        )
+                # Fallback to previous behavior: earliest end minus duration
+                elif end_candidates and duration_min is not None:
                     earliest_end = min(end_candidates)
                     local_start_minutes = int(earliest_end - duration_min)
             else:  # Avond

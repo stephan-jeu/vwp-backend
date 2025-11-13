@@ -31,7 +31,9 @@ Pad -> pad
 Roofvogel -> roofvogel
 Schijfhoren -> schijfhoren
 Vleermuis -> vleermuis
-Vlinder -> vlinder
+Grote vos -> grote_vos
+Iepenpage -> iepenpage
+Teunisbloempijlstaart -> teunisbloempijlstaart
 Zangvogel -> zangvogel
 Zwaluw -> zwaluw
 

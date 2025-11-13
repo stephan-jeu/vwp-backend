@@ -24,7 +24,9 @@ class UserBase(BaseModel):
 
     contract: ContractType | None = None
     experience_bat: ExperienceBat | None = None
-    smp: bool = False
+    smp_huismus: bool = False
+    smp_vleermuis: bool = False
+    smp_gierzwaluw: bool = False
     pad: bool = False
     langoor: bool = False
     roofvogel: bool = False
@@ -35,7 +37,9 @@ class UserBase(BaseModel):
     vrfg: bool = False
     vleermuis: bool = False
     zwaluw: bool = False
-    vlinder: bool = False
+    grote_vos: bool = False
+    iepenpage: bool = False
+    teunisbloempijlstaart: bool = False
     zangvogel: bool = False
     biggenkruid: bool = False
     schijfhoren: bool = False
@@ -62,7 +66,9 @@ class UserUpdate(BaseModel):
     city: str | None = None
     contract: UserBase.ContractType | None = None
     experience_bat: UserBase.ExperienceBat | None = None
-    smp: bool | None = None
+    smp_huismus: bool | None = None
+    smp_vleermuis: bool | None = None
+    smp_gierzwaluw: bool | None = None
     pad: bool | None = None
     langoor: bool | None = None
     roofvogel: bool | None = None
@@ -73,7 +79,9 @@ class UserUpdate(BaseModel):
     vrfg: bool | None = None
     vleermuis: bool | None = None
     zwaluw: bool | None = None
-    vlinder: bool | None = None
+    grote_vos: bool | None = None
+    iepenpage: bool | None = None
+    teunisbloempijlstaart: bool | None = None
     zangvogel: bool | None = None
     biggenkruid: bool | None = None
     schijfhoren: bool | None = None
