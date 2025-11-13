@@ -42,3 +42,31 @@ async def async_client(app: FastAPI):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
+
+
+# Lightweight fallback for pytest-mock's 'mocker' fixture when the plugin isn't loaded
+@pytest.fixture()
+def mocker():
+    from unittest.mock import AsyncMock, create_autospec as _create_autospec, MagicMock, Mock, patch
+
+    class _SimpleMocker:
+        def __init__(self):
+            self._patchers: list = []
+            # expose common unittest.mock helpers as attributes
+            self.AsyncMock = AsyncMock
+            self.MagicMock = MagicMock
+            self.Mock = Mock
+            self.create_autospec = _create_autospec
+
+        def patch(self, target: str, *args, **kwargs):
+            p = patch(target, *args, **kwargs)
+            mocked = p.start()
+            self._patchers.append(p)
+            return mocked
+
+    m = _SimpleMocker()
+    try:
+        yield m
+    finally:
+        for p in reversed(m._patchers):
+            p.stop()

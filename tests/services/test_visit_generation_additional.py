@@ -402,3 +402,97 @@ async def test_cross_family_allowlist_non_smp_can_merge(mocker, fake_db):
 
     # Assert: should merge into a single visit under allowlist rule
     assert len(visits) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_respects_min_gap_when_attaching(mocker, fake_db):
+    # Arrange: one flex protocol with two identical windows and min gap 20d,
+    # plus a morning-only and an evening-only to create Ochtend and Avond buckets.
+    today_year = date.today().year
+    wf = date(today_year, 5, 15)
+    wt = date(today_year, 7, 15)
+
+    # Flex protocol X with two windows, both allowed
+    fam = Family(id=601, name="Vleermuis", priority=1)
+    spx = Species(id=1601, family_id=fam.id, name="BatXA", abbreviation="BX")
+    spx.family = fam
+    fnx = Function(id=1610, name="Nest")
+    pX = Protocol(
+        id=601,
+        species_id=spx.id,
+        function_id=fnx.id,
+        start_timing_reference="SUNSET",
+        end_timing_reference="SUNRISE",
+    )
+    pX.species = spx
+    pX.function = fnx
+    # two identical windows (vidx 1 and 2)
+    w1 = ProtocolVisitWindow(id=6011, protocol_id=pX.id, visit_index=1, window_from=wf, window_to=wt, required=True, label=None)
+    w2 = ProtocolVisitWindow(id=6012, protocol_id=pX.id, visit_index=2, window_from=wf, window_to=wt, required=True, label=None)
+    pX.visit_windows = [w1, w2]
+    # min gap 20 days
+    setattr(pX, "min_period_between_visits_value", 20)
+    setattr(pX, "min_period_between_visits_unit", "dagen")
+
+    # Morning-only protocol to create an Ochtend bucket at 05-15
+    pM = _make_protocol(
+        proto_id=602,
+        fam_name="Vleermuis",
+        species_id=1602,
+        species_name="BatXB",
+        fn_id=1611,
+        fn_name="Nest",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNRISE",
+    )
+
+    # Evening-only protocol to create an Avond bucket at 05-15 and a compatible later bucket
+    pE = _make_protocol(
+        proto_id=603,
+        fam_name="Vleermuis",
+        species_id=1603,
+        species_name="BatXC",
+        fn_id=1612,
+        fn_name="Nest",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNSET",
+    )
+
+    funcs = {fnx.id: fnx, pM.function.id: pM.function, pE.function.id: pE.function}
+    species = {spx.id: spx, pM.species.id: pM.species, pE.species.id: pE.species}
+
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql:
+            return _FakeResult([pX, pM, pE])
+        if "FROM functions" in sql:
+            return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql:
+            return _FakeResult(list(species.values()))
+        return _FakeResult([])
+
+    fake_db.execute = exec_stub  # type: ignore[attr-defined]
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
+    cluster = Cluster(id=16, project_id=1, address="c16", cluster_number=16)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[fnx.id, pM.function.id, pE.function.id],
+        species_ids=[spx.id, pM.species.id, pE.species.id],
+    )
+
+    # Assert: protocol X should appear in two visits at least 20 days apart,
+    # and must not be attached to both 05-15 visits (morning and evening).
+    vx = [v for v in visits if any(f.id == fnx.id for f in v.functions)]
+    assert len(vx) >= 2
+    vx_dates = sorted(v.from_date for v in vx)
+    assert (vx_dates[-1] - vx_dates[0]).days >= 20
+    # Ensure pX is not present in the 05-15 Avond visit if such exists
+    v_0515_even = next((v for v in visits if v.from_date == wf and v.part_of_day == "Avond"), None)
+    if v_0515_even is not None:
+        assert all(f.id != fnx.id for f in v_0515_even.functions)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, timedelta
 from uuid import uuid4
 import os
@@ -22,7 +23,7 @@ _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "ye
 _logger = logging.getLogger("uvicorn.error")
 
 # Minimum acceptable effective window length (days) for a combined bucket
-MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "14"))
+MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "15"))
 
 # ---- Exception rules scaffolding -------------------------------------------------
 
@@ -131,20 +132,7 @@ def _allow_together(a: Protocol, b: Protocol) -> bool:
     return _is_allowed_cross_family(a, b)
 
 
-def _apply_custom_recipe_if_any(
-    _protos: list[Protocol], _visit_index: int
-) -> list[list[Protocol]] | None:
-    """Optional custom recipe for specific family/function combinations.
-
-    Given the selected protocols and a visit_index, return an ordered list of protocol
-    buckets if a custom sequencing rule applies. Returning None means no custom recipe
-    is applied; the generic bucketing logic should be used instead.
-
-    Current implementation returns None (placeholder). Extend later to support rules like:
-      - For family A with functions {B, C}: [[B@1], [B@2, C@1], [C@2]].
-    """
-
-    return None
+ 
 
 
 async def _next_visit_nr(db: AsyncSession, cluster_id: int) -> int:
@@ -258,17 +246,7 @@ def _coalesce_visits(entries: list[dict]) -> list[dict]:
                 # Merge proto_parts if present, keeping stricter constraints (intersection)
                 if "proto_parts" in v or "proto_parts" in b:
                     b.setdefault("proto_parts", {})
-                    incoming = v.get("proto_parts", {}) or {}
-                    merged = b["proto_parts"]
-                    for pid, parts in incoming.items():
-                        cur = merged.get(pid)
-                        if cur is None:
-                            merged[pid] = parts
-                        elif parts is None:
-                            # keep current restriction
-                            continue
-                        else:
-                            merged[pid] = cur & parts if (cur is not None and parts is not None) else (cur or parts)
+                    _merge_proto_parts(b["proto_parts"], v.get("proto_parts", {}) or {})
                 placed = True
                 break
         if not placed:
@@ -287,6 +265,217 @@ def _coalesce_visits(entries: list[dict]) -> list[dict]:
         result.extend(group)
     return result
 
+
+@dataclass
+class _BucketEntry:
+    """Lightweight structure for an intermediate visit bucket.
+
+    This mirrors the dict structure used throughout the pipeline and offers
+    helpers to convert back and forth to avoid a large refactor.
+    """
+
+    from_date: date
+    to_date: date
+    protocols: list[Protocol]
+    chosen_part_of_day: str | None = None
+    proto_parts: dict[int, set[str] | None] | None = None
+
+    @staticmethod
+    def from_dict(d: dict) -> "_BucketEntry":
+        return _BucketEntry(
+            from_date=d["from_date"],
+            to_date=d["to_date"],
+            protocols=list(d.get("protocols", [])),
+            chosen_part_of_day=d.get("chosen_part_of_day"),
+            proto_parts=(d.get("proto_parts") or {}),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "from_date": self.from_date,
+            "to_date": self.to_date,
+            "protocols": self.protocols,
+            "chosen_part_of_day": self.chosen_part_of_day,
+            "proto_parts": (self.proto_parts or {}),
+        }
+
+
+def _merge_proto_parts(into: dict[int, set[str] | None], incoming: dict[int, set[str] | None]) -> None:
+    """Merge incoming proto_parts into into using intersection for stricter constraints."""
+    for pid, parts in incoming.items():
+        cur = into.get(pid)
+        if cur is None:
+            into[pid] = parts
+        elif parts is None:
+            continue
+        else:
+            into[pid] = (cur & parts) if (cur is not None and parts is not None) else (cur or parts)
+
+
+def _respects_min_gap(planned: list[date], v_from: date, days: int | None) -> bool:
+    """Return True if v_from is allowed under min-gap rules against planned dates."""
+    if not days:
+        return True
+    last_before = max([d for d in planned if d <= v_from], default=None)
+    if last_before is None:
+        return True
+    return not (v_from < last_before + timedelta(days=days))
+
+
+def _entry_contains_protocol(entry: dict, p: Protocol) -> bool:
+    return any(pp.id == p.id for pp in entry["protocols"])
+
+
+def _overlap_days(v_from: date, v_to: date, wf: date, wt: date) -> int:
+    overlap_from = max(v_from, wf)
+    overlap_to = min(v_to, wt)
+    return (overlap_to - overlap_from).days
+
+
+def _part_allowed(chosen_part: str | None, parts: set[str] | None) -> bool:
+    return parts is None or chosen_part is None or chosen_part in parts
+
+
+def _add_protocol_to_entry(entry: dict, p: Protocol, parts: set[str] | None, planned: list[date]) -> None:
+    entry["protocols"].append(p)
+    entry.setdefault("proto_parts", {})[p.id] = parts
+    planned.append(entry["from_date"])
+    planned.sort()
+
+
+def _complete_missing_occurrences(
+    visits_to_create: list[dict],
+    proto_windows: dict[int, list[tuple[int, date, date, set[str] | None]]],
+    proto_id_to_protocol: dict[int, Protocol],
+) -> None:
+    """Ensure each protocol has required number of planned occurrences.
+
+    Mutates visits_to_create in place by either attaching to compatible entries or
+    creating new dedicated entries while respecting overlap, part-of-day, compatibility,
+    and per-protocol minimum gaps.
+    """
+    proto_to_planned_froms: dict[int, list[date]] = defaultdict(list)
+    for entry in visits_to_create:
+        for p in entry["protocols"]:
+            proto_to_planned_froms[p.id].append(entry["from_date"])
+
+    for pid, windows in proto_windows.items():
+        p = proto_id_to_protocol[pid]
+        # Group windows by (wf,wt)
+        group_counts: dict[tuple[date, date], dict] = {}
+        for _vidx, wf, wt, parts in windows:
+            key = (wf, wt)
+            g = group_counts.get(key)
+            if g is None:
+                group_counts[key] = {"count": 1, "parts": parts}
+            else:
+                g["count"] += 1
+                if g["parts"] is None:
+                    g["parts"] = parts
+                elif parts is not None:
+                    g["parts"] = set(g["parts"]) & set(parts)
+
+        planned = sorted(proto_to_planned_froms.get(pid, []))
+        if _DEBUG_VISIT_GEN:
+            _logger.info(
+                "completion grouped proto=%s groups=%s planned=%s",
+                getattr(p, "id", None),
+                [
+                    (
+                        wf.isoformat(),
+                        wt.isoformat(),
+                        grp["count"],
+                        list(grp["parts"]) if grp["parts"] else None,
+                    )
+                    for (wf, wt), grp in sorted(group_counts.items())
+                ],
+                [d.isoformat() for d in planned],
+            )
+        proto_days = _unit_to_days(
+            p.min_period_between_visits_value, p.min_period_between_visits_unit
+        )
+        for (wf, wt), grp in sorted(group_counts.items()):
+            required = grp["count"]
+            parts = grp["parts"]
+            have = sum(1 for d in planned if wf <= d <= wt)
+            missing = max(0, required - have)
+            for _ in range(missing):
+                attached = False
+                for entry in visits_to_create:
+                    v_from = entry["from_date"]
+                    v_to = entry["to_date"]
+                    if v_from in planned:
+                        continue
+                    if _overlap_days(v_from, v_to, wf, wt) < MIN_EFFECTIVE_WINDOW_DAYS:
+                        continue
+                    if not _part_allowed(entry.get("chosen_part_of_day"), parts):
+                        continue
+                    if not all(_allow_together(p, q) for q in entry["protocols"]):
+                        continue
+                    if not _respects_min_gap(planned, v_from, proto_days):
+                        continue
+                    if _entry_contains_protocol(entry, p):
+                        continue
+                    _add_protocol_to_entry(entry, p, parts, planned)
+                    attached = True
+                    if _DEBUG_VISIT_GEN:
+                        _logger.info(
+                            "completion attach proto=%s to existing visit %s->%s part=%s",
+                            getattr(p, "id", None),
+                            v_from.isoformat(),
+                            v_to.isoformat(),
+                            entry.get("chosen_part_of_day"),
+                        )
+                    break
+                if attached:
+                    continue
+                # Create new dedicated visit within [wf,wt]
+                last_planned = max([d for d in planned if d <= wt], default=None)
+                candidate_from = wf
+                if last_planned is not None and proto_days:
+                    candidate_from = max(candidate_from, last_planned + timedelta(days=proto_days))
+                if candidate_from > wt:
+                    if _DEBUG_VISIT_GEN:
+                        _logger.warning(
+                            "completion cannot place proto=%s within window %s->%s (min-gap or bounds)",
+                            getattr(p, "id", None),
+                            wf.isoformat(),
+                            wt.isoformat(),
+                        )
+                    continue
+                candidate_to = wt
+                nxt_candidates = [d for d in planned if d >= candidate_from]
+                nxt = min(nxt_candidates) if nxt_candidates else None
+                if nxt is not None:
+                    before_next = nxt - timedelta(days=1)
+                    if before_next >= candidate_from:
+                        candidate_to = min(candidate_to, before_next)
+                chosen_part = None
+                if parts and len(parts) > 0:
+                    if "Ochtend" in parts:
+                        chosen_part = "Ochtend"
+                    elif "Avond" in parts:
+                        chosen_part = "Avond"
+                    elif "Dag" in parts:
+                        chosen_part = "Dag"
+                visits_to_create.append(
+                    {
+                        "from_date": candidate_from,
+                        "to_date": candidate_to,
+                        "protocols": [p],
+                        "chosen_part_of_day": chosen_part,
+                    }
+                )
+                planned.append(candidate_from)
+                planned.sort()
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "completion create visit proto=%s (%s,%s) part=%s",
+                        getattr(p, "id", None),
+                        candidate_from.isoformat(),
+                        candidate_to.isoformat(),
+                        chosen_part,
+                    )
 
 def _derive_start_time_minutes(protocol: Protocol) -> int | None:
     """Compute start time in minutes relative to the timing reference.
@@ -551,7 +740,7 @@ async def generate_visits_for_cluster(
         return [], warnings
 
     # Windows loaded via selectinload
-    
+
     # continue with bucketing logic
 
     # 1) Precompute shifted windows per protocol and tightness key
@@ -897,7 +1086,10 @@ async def generate_visits_for_cluster(
                     e["from_date"].isoformat(),
                     e["to_date"].isoformat(),
                     [
-                        (getattr(p, "id", None), sorted(list(allows[idx])) if allows[idx] else None)
+                        (
+                            getattr(p, "id", None),
+                            sorted(list(allows[idx])) if allows[idx] else None,
+                        )
                         for idx, p in enumerate(protos)
                     ],
                 )
@@ -936,6 +1128,7 @@ async def generate_visits_for_cluster(
                 )
                 continue
 
+            morning_assigned_ids: set[int] = set()
             # Morning bucket: only if strictly required by morning-only protocols
             if morning_only:
                 assigned = set(id(p) for p in morning_only)
@@ -950,12 +1143,13 @@ async def generate_visits_for_cluster(
                             "proto_parts": {p.id: per_proto_parts.get(p.id) for p in morning_protos},
                         }
                     )
+                    morning_assigned_ids = {p.id for p in morning_protos}
                 # remove flex assigned to morning
                 flex = [p for p in flex if p not in morning_protos]
 
-            # Evening bucket gets evening-only plus remaining flex
+            # Evening bucket gets evening-only plus remaining flex (exclude anything assigned to morning)
             if evening_only or flex:
-                evening_protos = evening_only + flex
+                evening_protos = evening_only + [p for p in flex if p.id not in morning_assigned_ids]
                 if evening_protos:
                     result.append(
                         {
@@ -963,7 +1157,9 @@ async def generate_visits_for_cluster(
                             "to_date": e["to_date"],
                             "protocols": evening_protos,
                             "chosen_part_of_day": "Avond",
-                            "proto_parts": {p.id: per_proto_parts.get(p.id) for p in evening_protos},
+                            "proto_parts": {
+                                p.id: per_proto_parts.get(p.id) for p in evening_protos
+                            },
                         }
                     )
 
@@ -975,7 +1171,9 @@ async def generate_visits_for_cluster(
                         "to_date": e["to_date"],
                         "protocols": day_only,
                         "chosen_part_of_day": "Dag",
-                        "proto_parts": {p.id: per_proto_parts.get(p.id) for p in day_only},
+                        "proto_parts": {
+                            p.id: per_proto_parts.get(p.id) for p in day_only
+                        },
                     }
                 )
 
@@ -1063,25 +1261,40 @@ async def generate_visits_for_cluster(
                         parts is None or chosen_part is None or chosen_part in parts
                     )
                     compatible = all(_allow_together(p, q) for q in entry["protocols"])
+                    # Do not attach to an entry starting on a date already planned for this protocol
+                    if v_from in planned:
+                        continue
+                    # Enforce per-protocol minimum gap against already planned dates
+                    min_gap_ok = True
+                    if proto_days:
+                        last_before = max([d for d in planned if d <= v_from], default=None)
+                        if last_before is not None and v_from < last_before + timedelta(days=proto_days):
+                            min_gap_ok = False
                     if (
                         overlap_days >= MIN_EFFECTIVE_WINDOW_DAYS
                         and part_ok
                         and compatible
+                        and min_gap_ok
                     ):
                         if all(pp.id != p.id for pp in entry["protocols"]):
                             entry["protocols"].append(p)
-                            planned.append(entry["from_date"])  # count toward coverage
+                            # Record per-protocol parts for this entry, if available
+                            entry.setdefault("proto_parts", {})[p.id] = parts
+                            planned.append(entry["from_date"])
                             planned.sort()
                             attached = True
                             if _DEBUG_VISIT_GEN:
                                 _logger.info(
-                                    "completion attach proto=%s to visit (%s,%s) part=%s",
+                                    "completion attach proto=%s to existing visit %s->%s part=%s",
                                     getattr(p, "id", None),
                                     v_from.isoformat(),
                                     v_to.isoformat(),
                                     chosen_part,
                                 )
-                        break
+                            break
+                        else:
+                            # Protocol already present in this entry; try next compatible entry
+                            continue
                 if attached:
                     continue
                 # Create new dedicated visit within [wf,wt]
@@ -1539,24 +1752,39 @@ async def generate_visits_for_cluster(
         visit.part_of_day = part_of_day
         setattr(visit, "start_time_text", start_time_text)
         next_nr += 1
-        # attach relations
-        # Attach existing entities by loading references to avoid transient instances
-        visit.functions = list(
-            (
-                await db.execute(
-                    select(Function).where(Function.id.in_(function_ids_set))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        visit.species = list(
-            (await db.execute(select(Species).where(Species.id.in_(species_ids_set))))
-            .scalars()
-            .all()
-        )
+        # attach relations from Protocol relations (dedup by id)
+        by_func: dict[int | None, Function] = {}
+        for p in protos:
+            f = getattr(p, "function", None)
+            if f is not None:
+                by_func[getattr(f, "id", None)] = f
+        visit.functions = list(by_func.values())
+
+        by_spec: dict[int | None, Species] = {}
+        for p in protos:
+            s = getattr(p, "species", None)
+            if s is not None:
+                by_spec[getattr(s, "id", None)] = s
+        visit.species = list(by_spec.values())
         db.add(visit)
         created.append(visit)
+
+    if _DEBUG_VISIT_GEN:
+        try:
+            _logger.info(
+                "created visits: %s",
+                [
+                    (
+                        v.from_date.isoformat(),
+                        v.to_date.isoformat(),
+                        getattr(v, "part_of_day", None),
+                        [getattr(f, "id", None) for f in getattr(v, "functions", [])],
+                    )
+                    for v in created
+                ],
+            )
+        except Exception:
+            pass
 
     return created, warnings
 
@@ -1584,7 +1812,9 @@ async def resolve_protocols_for_combos(
         s_ids = list({int(x) for x in c.get("species_ids", [])})
         if not f_ids or not s_ids:
             continue
-        predicates.append(and_(Protocol.function_id.in_(f_ids), Protocol.species_id.in_(s_ids)))
+        predicates.append(
+            and_(Protocol.function_id.in_(f_ids), Protocol.species_id.in_(s_ids))
+        )
     if not predicates:
         return []
 
