@@ -18,6 +18,7 @@ class User(TimestampMixin, Base):
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     admin: Mapped[bool] = mapped_column(default=False, server_default="false")
     city: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     class ContractType(StrEnum):
         INTERN = "Intern"

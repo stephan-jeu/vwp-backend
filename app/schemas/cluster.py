@@ -46,6 +46,16 @@ class ClusterDuplicate(BaseModel):
     address: str = Field(min_length=1, max_length=255)
 
 
+class ClusterUpdate(BaseModel):
+    """Payload to update fields on a cluster.
+
+    Attributes:
+        address: New address string.
+    """
+
+    address: str = Field(min_length=1, max_length=255)
+
+
 class VisitReadCompact(BaseModel):
     """Compact visit representation for tables.
 

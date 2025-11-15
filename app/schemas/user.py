@@ -10,6 +10,7 @@ class UserBase(BaseModel):
     full_name: str | None = None
     admin: bool = False
     city: str | None = None
+    address: str | None = None
 
     class ContractType(StrEnum):
         INTERN = "Intern"
@@ -64,6 +65,7 @@ class UserUpdate(BaseModel):
     full_name: str | None = None
     admin: bool | None = None
     city: str | None = None
+    address: str | None = None
     contract: UserBase.ContractType | None = None
     experience_bat: UserBase.ExperienceBat | None = None
     smp_huismus: bool | None = None

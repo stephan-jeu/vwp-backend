@@ -897,10 +897,13 @@ async def test_assign_requires_smp(monkeypatch: pytest.MonkeyPatch, week_monday:
         function_names=["SMP Inspectie"],
         species_defs=[("A", 5)],
     )
+    # Ensure family name is present so SMP specialization can be determined (Vleermuis -> smp_vleermuis)
+    v.species[0].family.name = "Vleermuis"
 
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v]
 
+    # Both users qualify for the Vleermuis family; only B has the SMP specialization
     u1 = make_user(1, "A", smp_vleermuis=False)
     u2 = make_user(2, "B", smp_vleermuis=True)
     fake_db = await _fake_db_with_users([u1, u2])

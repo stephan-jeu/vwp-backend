@@ -21,9 +21,11 @@ from app.schemas.cluster import (
     ClusterWithVisitsRead,
     VisitReadCompact,
     ClusterVisitRow,
+    ClusterUpdate,
 )
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
+from app.schemas.user import UserNameRead
 from app.services.security import require_admin
 from app.services.visit_generation import (
     duplicate_cluster_with_visits,
@@ -347,6 +349,26 @@ async def duplicate_cluster(
         project_id=new_cluster.project_id,
         address=new_cluster.address,
         cluster_number=new_cluster.cluster_number,
+    )
+
+
+@router.patch("/{cluster_id}", response_model=ClusterRead)
+async def update_cluster(
+    _: AdminDep, db: DbDep, cluster_id: int, payload: ClusterUpdate
+) -> ClusterRead:
+    """Update mutable fields on a cluster (currently only address)."""
+
+    cluster = await db.get(Cluster, cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    cluster.address = payload.address
+    await db.commit()
+    await db.refresh(cluster)
+    return ClusterRead(
+        id=cluster.id,
+        project_id=cluster.project_id,
+        address=cluster.address,
+        cluster_number=cluster.cluster_number,
     )
 
 
