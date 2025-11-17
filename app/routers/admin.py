@@ -12,6 +12,7 @@ from app.models.user import User
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
+from app.services.activity_log_service import log_activity
 from app.services.security import require_admin
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
@@ -26,7 +27,7 @@ router = APIRouter()
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[object, Depends(require_admin)]
+AdminDep = Annotated[User, Depends(require_admin)]
 
 
 @router.get("")
@@ -65,21 +66,62 @@ async def list_users_full(
 
 
 @router.post("/users", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-async def create_user(_: AdminDep, db: DbDep, payload: UserCreate) -> User:
+async def create_user(admin: AdminDep, db: DbDep, payload: UserCreate) -> User:
     """Create a new user (admin only)."""
-    return await svc_create_user(db, payload)
+
+    user = await svc_create_user(db, payload)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="user_created",
+        target_type="user",
+        target_id=user.id,
+        details={
+            "email": user.email,
+            "full_name": user.full_name,
+        },
+    )
+
+    return user
 
 
 @router.patch("/users/{user_id}", response_model=UserRead)
 async def update_user(
-    _: AdminDep, db: DbDep, user_id: int, payload: UserUpdate
+    admin: AdminDep, db: DbDep, user_id: int, payload: UserUpdate
 ) -> User:
     """Update an existing user (admin only)."""
-    return await svc_update_user(db, user_id, payload)
+
+    user = await svc_update_user(db, user_id, payload)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="user_updated",
+        target_type="user",
+        target_id=user.id,
+        details={
+            "email": user.email,
+            "full_name": user.full_name,
+        },
+    )
+
+    return user
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(_: AdminDep, db: DbDep, user_id: int) -> Response:
+async def delete_user(admin: AdminDep, db: DbDep, user_id: int) -> Response:
     """Delete a user (admin only)."""
+
     await svc_delete_user(db, user_id)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="user_deleted",
+        target_type="user",
+        target_id=user_id,
+        details={},
+    )
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

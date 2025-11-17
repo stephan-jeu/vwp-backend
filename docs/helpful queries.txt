@@ -1,0 +1,11 @@
+select f.name, p.max_wind_force_bft from protocols p, species s, functions f where s.id = p.species_id and f.id = p.function_id and s.abbreviation = 'MV';
+
+select f.name, p.end_time_relative_minutes from protocols p, species s, functions f where s.id = p.species_id and f.id = p.function_id and s.abbreviation = 'MV';
+
+select p.id,  f.name, s.name, requires_morning_visit, pvw.visit_index, pvw.window_from, pvw.window_to from protocols p, functions f, species s, protocol_visit_windows pvw where  p.function_id = f.id and s.id = p.species_id and pvw.protocol_id = p.id and p.id in (27,28,33,44,45,50) ;
+
+ select p.id, pvw.window_from, pvw.window_to, f.name, s.abbreviation, p.requires_morning_visit, p.requires_evening_visit, p.start_timing_reference, p.end_timing_reference from protocols p, functions f, species s, protocol_visit_windows pvw where function_id = f.id and p.species_id = s.id and pvw.protocol_id = p.id and p.id in (617,618, 619, 622, 623, 631, 634, 635,636, 639, 640);
+ 
+ select p.id, pvw.window_from, pvw.window_to, f.name, s.abbreviation, p.requires_morning_visit, p.requires_evening_visit, p.start_timing_reference, p.end_timing_reference from protocols p, functions f, species s, protocol_visit_windows pvw where function_id = f.id and p.species_id = s.id and pvw.protocol_id = p.id and p.id in (618,619,623,635,636,640);
+ 
+select p.id, f.name, s.abbreviation, p.start_timing_reference, p.end_timing_reference, p.end_time_relative_minutes, p.start_time_relative_minutes, p.visit_duration_hours from protocols p, functions f, species s where function_id = f.id and p.species_id = s.id and f.name = 'Zomerverblijfplaats' and s.abbreviation in ('GrG');

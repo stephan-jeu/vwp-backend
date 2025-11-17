@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
-from sqlalchemy import Select, select, delete
+from sqlalchemy import Select, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
+from app.models.user import User
 from app.models.visit import (
     Visit,
     visit_functions,
@@ -33,6 +34,8 @@ from app.services.visit_generation import (
     generate_visits_for_cluster,
     derive_start_time_text_for_visit,
 )
+from app.services.activity_log_service import log_activity
+from app.services.soft_delete import soft_delete_entity
 from db.session import get_db
 
 
@@ -40,7 +43,7 @@ router = APIRouter()
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[object, Depends(require_admin)]
+AdminDep = Annotated[User, Depends(require_admin)]
 
 
 @router.get("", response_model=list[ClusterWithVisitsRead])
@@ -216,7 +219,7 @@ async def list_clusters_flat(
     "", response_model=ClusterWithVisitsRead, status_code=status.HTTP_201_CREATED
 )
 async def create_cluster(
-    _: AdminDep, db: DbDep, payload: ClusterCreate
+    admin: AdminDep, db: DbDep, payload: ClusterCreate
 ) -> ClusterWithVisitsRead:
     """Create cluster and append generated visits based on selected functions/species."""
 
@@ -245,15 +248,23 @@ async def create_cluster(
 
     # Generate visits (append-only) from distinct union of protocols resolved from combos
     warnings: list[str] = []
+    visits_created_ids: list[int] = []
     if payload.combos:
         combos_dicts = [
             {"function_ids": c.function_ids, "species_ids": c.species_ids}
             for c in payload.combos
         ]
         protocols = await resolve_protocols_for_combos(db=db, combos=combos_dicts)
-        _, warnings = await generate_visits_for_cluster(
-            db=db, cluster=cluster, function_ids=[], species_ids=[], protocols=protocols
+        visits_created, warnings = await generate_visits_for_cluster(
+            db=db,
+            cluster=cluster,
+            function_ids=[],
+            species_ids=[],
+            protocols=protocols,
         )
+        # IDs will be assigned on commit; collect after commit below
+        visits_created_ids = [v.id for v in visits_created]
+
     await db.commit()
     await db.refresh(cluster)
 
@@ -329,7 +340,7 @@ async def create_cluster(
 
 @router.post("/{cluster_id}/duplicate", response_model=ClusterRead)
 async def duplicate_cluster(
-    _: AdminDep, db: DbDep, cluster_id: int, payload: ClusterDuplicate
+    admin: AdminDep, db: DbDep, cluster_id: int, payload: ClusterDuplicate
 ) -> ClusterRead:
     """Duplicate cluster including its visits into a new cluster row."""
 
@@ -344,6 +355,29 @@ async def duplicate_cluster(
     )
     await db.commit()
     await db.refresh(new_cluster)
+
+    # All visits on the new cluster are considered created here
+    visits_stmt: Select[tuple[Visit]] = select(Visit).where(
+        Visit.cluster_id == new_cluster.id
+    )
+    new_visits = (await db.execute(visits_stmt)).scalars().all()
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="cluster_duplicated",
+        target_type="cluster",
+        target_id=new_cluster.id,
+        details={
+            "source_cluster_id": source.id,
+            "project_id": new_cluster.project_id,
+            "cluster_number": new_cluster.cluster_number,
+            "address": new_cluster.address,
+            "visits_created": [v.id for v in new_visits],
+            "visit_count": len(new_visits),
+        },
+    )
+
     return ClusterRead(
         id=new_cluster.id,
         project_id=new_cluster.project_id,
@@ -354,7 +388,7 @@ async def duplicate_cluster(
 
 @router.patch("/{cluster_id}", response_model=ClusterRead)
 async def update_cluster(
-    _: AdminDep, db: DbDep, cluster_id: int, payload: ClusterUpdate
+    admin: AdminDep, db: DbDep, cluster_id: int, payload: ClusterUpdate
 ) -> ClusterRead:
     """Update mutable fields on a cluster (currently only address)."""
 
@@ -364,6 +398,20 @@ async def update_cluster(
     cluster.address = payload.address
     await db.commit()
     await db.refresh(cluster)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="cluster_updated",
+        target_type="cluster",
+        target_id=cluster.id,
+        details={
+            "project_id": cluster.project_id,
+            "cluster_number": cluster.cluster_number,
+            "address": cluster.address,
+        },
+    )
+
     return ClusterRead(
         id=cluster.id,
         project_id=cluster.project_id,
@@ -375,28 +423,26 @@ async def update_cluster(
 @router.delete(
     "/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response
 )
-async def delete_cluster(_: AdminDep, db: DbDep, cluster_id: int) -> Response:
-    """Delete a cluster by id; rely on cascade for visits."""
+async def delete_cluster(admin: AdminDep, db: DbDep, cluster_id: int) -> Response:
+    """Soft-delete a cluster by id; cascade to visits."""
 
     cluster = await db.get(Cluster, cluster_id)
     if cluster is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    # Manually delete associations and visits referencing this cluster
-    visit_ids_subq = select(Visit.id).where(Visit.cluster_id == cluster.id)
-    # Association tables first to satisfy FKs
-    await db.execute(
-        delete(visit_researchers).where(
-            visit_researchers.c.visit_id.in_(visit_ids_subq)
-        )
-    )
-    await db.execute(
-        delete(visit_functions).where(visit_functions.c.visit_id.in_(visit_ids_subq))
-    )
-    await db.execute(
-        delete(visit_species).where(visit_species.c.visit_id.in_(visit_ids_subq))
-    )
-    # Now delete the visits themselves
-    await db.execute(delete(Visit).where(Visit.cluster_id == cluster.id))
-    await db.delete(cluster)
+    await soft_delete_entity(db, cluster, cascade=True)
     await db.commit()
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="cluster_deleted",
+        target_type="cluster",
+        target_id=cluster_id,
+        details={
+            "project_id": getattr(cluster, "project_id", None),
+            "cluster_number": getattr(cluster, "cluster_number", None),
+            "address": getattr(cluster, "address", None),
+        },
+    )
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

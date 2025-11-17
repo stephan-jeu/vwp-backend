@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User
 from app.services.auth_service import decode_token
 from db.session import get_db
+import logging
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -28,20 +29,30 @@ async def get_current_user(
     """
 
     if creds is None or creds.scheme.lower() != "bearer":
+        logging.getLogger("uvicorn.error").debug(
+            "Auth: missing or non-bearer credentials"
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     try:
         claims = decode_token(creds.credentials)
     except Exception:
+        logging.getLogger("uvicorn.error").debug(
+            "Auth: token decode failed", exc_info=True
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     subject = claims.get("sub")
     if not subject:
+        logging.getLogger("uvicorn.error").debug("Auth: JWT missing subject 'sub'")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     result = await db.execute(select(User).where(User.email == subject))
     user: User | None = result.scalar_one_or_none()
     if user is None:
         # No auto-registration for now
+        logging.getLogger("uvicorn.error").debug(
+            "Auth: user not found for subject %s", subject
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return user
 
@@ -76,4 +87,3 @@ async def assert_admin(db: AsyncSession, subject_email: str) -> None:
     user: User | None = result.scalar_one_or_none()
     if user is None or not user.admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-

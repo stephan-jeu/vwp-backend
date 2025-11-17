@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.visit import Visit
+from app.models.cluster import Cluster
+from app.models.project import Project
 from app.models.species import Species
 from app.models.family import Family
 from app.models.function import Function
@@ -126,17 +128,20 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
 
     stmt = (
         select(Visit)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id)
         .where(
             and_(
                 Visit.from_date <= week_friday,
                 Visit.to_date >= week_monday,
+                Project.quote.is_(False),
             )
         )
         .options(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
-            selectinload(Visit.cluster),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
         )
     )
     return (await db.execute(stmt)).scalars().unique().all()

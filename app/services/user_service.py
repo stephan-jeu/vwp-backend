@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate, UserBase
+from app.services.soft_delete import soft_delete_entity
 
 
 def _enum_to_value(value: Any, enum_cls: type[Enum]) -> Any:
@@ -32,8 +33,6 @@ def _enum_to_value(value: Any, enum_cls: type[Enum]) -> Any:
             return enum_cls[value].value  # type: ignore[index]
         except KeyError:
             return value
-
-
 
 
 async def list_users_full(db: AsyncSession, q: str | None = None) -> list[User]:
@@ -134,5 +133,5 @@ async def delete_user(db: AsyncSession, user_id: int) -> None:
     row = await db.get(User, user_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    await db.delete(row)
+    await soft_delete_entity(db, row, cascade=False)
     await db.commit()

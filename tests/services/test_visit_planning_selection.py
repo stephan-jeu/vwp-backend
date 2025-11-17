@@ -1040,3 +1040,38 @@ async def test_do_not_reuse_user_across_visits(
 
     counts = [len(getattr(v, "researchers", [])) for v in (v1, v2)]
     assert sorted(counts) == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_eligible_visits_query_filters_quote_projects(week_monday: date):
+    from app.services.visit_planning_selection import _eligible_visits_for_week
+
+    captured_stmt = {}
+
+    class FakeResult:
+        def scalars(self):
+            class S:
+                def unique(self_non):
+                    return self_non
+
+                def all(self_non):
+                    return []
+
+            return S()
+
+    class FakeDB:
+        async def execute(self, stmt):  # type: ignore[no-untyped-def]
+            captured_stmt["stmt"] = stmt
+            return FakeResult()
+
+    fake_db = FakeDB()
+
+    visits = await _eligible_visits_for_week(fake_db, week_monday)  # type: ignore[arg-type]
+
+    # No rows returned from fake DB
+    assert visits == []
+
+    sql_str = str(captured_stmt["stmt"])
+    # Ensure the generated query joins the projects table and references the quote flag
+    assert "projects" in sql_str
+    assert "quote" in sql_str

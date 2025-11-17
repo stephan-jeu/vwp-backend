@@ -7,6 +7,7 @@ class ProjectBase(BaseModel):
     code: str
     location: str
     google_drive_folder: str | None = None
+    quote: bool = False
 
 
 class ProjectCreate(ProjectBase):

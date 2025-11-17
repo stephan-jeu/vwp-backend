@@ -19,6 +19,7 @@ from app.schemas.auth import GoogleCallbackRequest, AuthMeResponse
 from app.models.user import User
 from db.session import get_db
 from app.services.security import get_current_user
+import logging
 
 
 router = APIRouter()
@@ -141,12 +142,17 @@ async def refresh_token(refresh_token: str) -> dict[str, str]:
     try:
         claims = decode_token(refresh_token)
     except Exception:
+        logging.getLogger("uvicorn.error").debug(
+            "Auth: refresh token decode failed", exc_info=True
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     if claims.get("typ") != "refresh":
+        logging.getLogger("uvicorn.error").debug("Auth: token typ is not refresh")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     sub = claims.get("sub")
     if not sub:
+        logging.getLogger("uvicorn.error").debug("Auth: refresh token missing sub")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     new_access = create_access_token(subject=sub)

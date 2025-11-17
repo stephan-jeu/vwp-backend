@@ -30,3 +30,21 @@ class TimestampMixin:
         server_default=func.now(),
         nullable=False,
     )
+
+
+class SoftDeleteMixin:
+    """Mixin that adds soft-delete support via a nullable ``deleted_at`` timestamp.
+
+    The presence of a non-null ``deleted_at`` indicates the row is soft-deleted.
+    All application queries will exclude soft-deleted rows via a global
+    with_loader_criteria filter registered on the async session.
+
+    Attributes:
+        deleted_at: Timestamp set to the UTC time when the row is soft-deleted.
+    """
+
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )

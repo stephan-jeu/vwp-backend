@@ -1,66 +1,48 @@
 from __future__ import annotations
 
-from datetime import date
-from enum import Enum
-
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models import Base, TimestampMixin
 from app.models.user import User
-from app.models.visit import Visit
 
 
-class VisitActionEnum(str, Enum):
-    COMPLETED = "Completed"
-    APPROVED = "Approved"
-    REDO = "Redo"
-    CANCELLED = "Cancelled"
-    SCHEDULED = "Scheduled"
+class ActivityLog(TimestampMixin, Base):
+    """Generic audit log entry for important domain actions.
 
-
-class DayPeriodEnum(str, Enum):
-    MORNING = "morning"
-    DAY = "day"
-    EVENING = "evening"
-    NIGHT = "night"
-
-
-class VisitLog(TimestampMixin, Base):
-    """Audit log for visits, capturing outcomes, statuses, and deviations.
+    This model replaces the visit-specific ``VisitLog`` and is intended to be
+    used across projects, clusters, visits, users, planning runs, and other
+    entities.
 
     Args:
-        visit_id: The linked visit primary key.
-        action: The lifecycle event recorded for this log entry.
-        researcher_id: Optional user responsible for the action or visit.
-        visit_date: The date the visit occurred (for completed-like actions).
-        day_period: Day period classification for the visit.
-        deviated: Whether there was a deviation from the protocol.
-        deviation_reason: Optional text describing the deviation and rationale.
+        actor_id: Optional id of the user that performed the action. ``NULL``
+            is allowed for system-initiated actions.
+        action: Machine-friendly action label (e.g. ``"project_created"``,
+            ``"cluster_created"``, ``"visit_executed"``).
+        target_type: Logical target type of the action (e.g. ``"project"``,
+            ``"cluster"``, ``"visit"``, ``"planning_week"``, ``"user"``).
+        target_id: Optional primary key of the target entity when applicable.
+        details: Optional JSON payload with structured context such as
+            ``{"visits_created": [101, 102]}``.
+        batch_id: Optional correlation identifier used to group multiple log
+            entries that belong to a single high-level operation.
 
     Returns:
-        Persisted VisitLog rows for auditing and compliance checks.
+        Persisted ``ActivityLog`` rows for auditing and reporting.
     """
 
-    __tablename__ = "visit_logs"
+    __tablename__ = "activity_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
-    visit_id: Mapped[int] = mapped_column(
-        ForeignKey(Visit.id), nullable=False, index=True
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey(User.id), nullable=True, index=True
     )
-    visit: Mapped[Visit] = relationship(Visit)
+    actor: Mapped[User | None] = relationship(User)
 
-    action: Mapped["VisitActionEnum"] = mapped_column(String(32), nullable=False)
-    researcher_id: Mapped[int | None] = mapped_column(
-        ForeignKey(User.id), nullable=True
-    )
-    researcher: Mapped[User | None] = relationship(User)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
-    visit_date: Mapped[date | None] = mapped_column(nullable=True)
-    day_period: Mapped["DayPeriodEnum" | None] = mapped_column(
-        String(16), nullable=True
-    )
-
-    deviated: Mapped[bool] = mapped_column(default=False, nullable=False)
-    deviation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import date
 
 from pydantic import BaseModel
-from app.schemas.function import FunctionRead
-from app.schemas.species import SpeciesRead
+
+from app.schemas.function import FunctionRead, FunctionCompactRead
+from app.schemas.species import SpeciesRead, SpeciesCompactRead
 from app.schemas.user import UserNameRead
+from app.services.visit_status_service import VisitStatusCode
 
 
 class VisitBase(BaseModel):
@@ -101,3 +103,164 @@ class VisitUpdate(BaseModel):
     start_time_text: str | None = None
     function_ids: list[int] | None = None
     species_ids: list[int] | None = None
+
+
+class VisitExecuteRequest(BaseModel):
+    """Payload for marking a visit as executed without protocol deviation.
+
+    Args:
+        execution_date: Calendar date when the visit was executed.
+        comment: Optional free-text comment from the executor.
+    """
+
+    execution_date: date
+    comment: str | None = None
+
+
+class VisitExecuteDeviationRequest(BaseModel):
+    """Payload for marking a visit as executed with a protocol deviation.
+
+    Args:
+        execution_date: Calendar date when the visit was executed.
+        reason: Required explanation of the deviation.
+        comment: Optional additional context.
+    """
+
+    execution_date: date
+    reason: str
+    comment: str | None = None
+
+
+class VisitNotExecutedRequest(BaseModel):
+    """Payload for marking a visit as not executed.
+
+    Args:
+        date: Calendar date relevant to the non-execution decision.
+        reason: Required explanation why the visit was not executed.
+    """
+
+    date: date
+    reason: str
+
+
+class VisitApprovalRequest(BaseModel):
+    """Payload for approving a visit result.
+
+    Args:
+        comment: Required approval comment or justification.
+    """
+
+    comment: str
+
+
+class VisitRejectionRequest(BaseModel):
+    """Payload for rejecting a visit result.
+
+    Args:
+        reason: Required explanation for the rejection.
+    """
+
+    reason: str
+
+
+class VisitListRow(BaseModel):
+    """Flattened row for the visits overview table.
+
+    This combines project, cluster and visit information plus a derived
+    lifecycle status for efficient table rendering.
+
+    Attributes:
+        id: Visit primary key.
+        project_code: Project code for grouping and filters.
+        project_location: Human-readable project location.
+        cluster_id: Owning cluster identifier.
+        cluster_number: Cluster number within the project.
+        cluster_address: Address associated with the cluster.
+        status: Derived lifecycle status code.
+        function_ids: Selected function ids on the visit.
+        species_ids: Selected species ids on the visit.
+        functions: Compact function representations.
+        species: Compact species representations.
+        required_researchers: Required researcher count.
+        visit_nr: Visit sequence number within the cluster.
+        from_date: Start date of the visit window.
+        to_date: End date of the visit window.
+        duration: Duration in minutes.
+        min_temperature_celsius: Minimum temperature constraint.
+        max_wind_force_bft: Maximum wind force constraint.
+        max_precipitation: Maximum precipitation description.
+        expertise_level: Required expertise level, if any.
+        wbc: WBC flag.
+        fiets: Bicycle required flag.
+        hub: HUB flag.
+        dvp: DvP flag.
+        sleutel: Key required flag.
+        remarks_planning: Planner remarks.
+        remarks_field: Field remarks.
+        priority: Priority flag.
+        part_of_day: Optional part-of-day helper.
+        start_time_text: Human-readable start time description.
+        preferred_researcher_id: Optional preferred researcher id.
+        preferred_researcher: Compact preferred researcher representation.
+        researchers: Assigned researchers for the visit.
+    """
+
+    id: int
+    project_code: str
+    project_location: str
+    cluster_id: int
+    cluster_number: int
+    cluster_address: str
+    status: VisitStatusCode
+    function_ids: list[int]
+    species_ids: list[int]
+    functions: list[FunctionCompactRead] = []
+    species: list[SpeciesCompactRead] = []
+    required_researchers: int | None
+    visit_nr: int | None
+    from_date: date | None
+    to_date: date | None
+    duration: int | None
+    min_temperature_celsius: int | None
+    max_wind_force_bft: int | None
+    max_precipitation: str | None
+    expertise_level: str | None
+    wbc: bool
+    fiets: bool
+    hub: bool
+    dvp: bool
+    sleutel: bool
+    remarks_planning: str | None
+    remarks_field: str | None
+    priority: bool
+    part_of_day: str | None = None
+    start_time_text: str | None = None
+    preferred_researcher_id: int | None = None
+    preferred_researcher: UserNameRead | None = None
+    researchers: list[UserNameRead] = []
+
+
+class VisitListResponse(BaseModel):
+    """Paginated response model for the visits overview listing.
+
+    Attributes:
+        items: Current page of flattened visit rows.
+        total: Total number of visits matching the filters.
+        page: 1-based page index.
+        page_size: Number of items per page.
+    """
+
+    items: list[VisitListRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class VisitCancelRequest(BaseModel):
+    """Payload for cancelling a visit.
+
+    Args:
+        reason: Required explanation for the cancellation decision.
+    """
+
+    reason: str

@@ -1,5 +1,6 @@
 import pytest
 from fastapi import status
+from uuid import uuid4
 
 
 @pytest.mark.asyncio
@@ -19,18 +20,26 @@ async def test_create_update_delete_project_flow(async_client, app, mocker):
     # Arrange: bypass admin guard by patching require_admin to a no-op
     from app.services.security import require_admin
 
-    app.dependency_overrides[require_admin] = lambda: None
+    class _FakeAdmin:
+        id = 1
+
+    app.dependency_overrides[require_admin] = lambda: _FakeAdmin()
+
+    # Use a unique code per test run to avoid conflicts with existing data
+    code = f"P-{uuid4()}"
 
     # Create
     payload = {
-        "code": "P-001",
+        "code": code,
         "location": "Loc A",
         "google_drive_folder": None,
+        "quote": False,
     }
     resp_create = await async_client.post("/projects", json=payload)
     assert resp_create.status_code == status.HTTP_201_CREATED
     created = resp_create.json()
-    assert created["code"] == "P-001"
+    assert created["code"] == code
+    assert created["quote"] is False
     pid = created["id"]
 
     # List
@@ -43,11 +52,18 @@ async def test_create_update_delete_project_flow(async_client, app, mocker):
     assert resp_dup.status_code == status.HTTP_409_CONFLICT
 
     # Update
-    upd = {"code": "P-001", "location": "Loc B", "google_drive_folder": "folder"}
+    upd = {
+        "code": code,
+        "location": "Loc B",
+        "google_drive_folder": "folder",
+        "quote": True,
+    }
     resp_upd = await async_client.put(f"/projects/{pid}", json=upd)
     assert resp_upd.status_code == status.HTTP_200_OK
     assert resp_upd.json()["location"] == "Loc B"
-    assert resp_upd.json()["google_drive_folder"] == "folder"
+    body = resp_upd.json()
+    assert body["google_drive_folder"] == "folder"
+    assert body["quote"] is True
 
     # Update missing -> 404
     resp_upd_404 = await async_client.put("/projects/999999", json=upd)

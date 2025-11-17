@@ -13,6 +13,21 @@ if str(_BACKEND_DIR) not in sys.path:
 from app.main import create_app  # noqa: E402
 
 
+@pytest.fixture(scope="session", autouse=True)
+def apply_migrations():
+    """Ensure the database schema is up-to-date for tests.
+
+    Runs Alembic upgrade to head before any tests execute. This is necessary
+    when models gained new columns (e.g., deleted_at) that tests rely on.
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    command.upgrade(cfg, "head")
+    yield
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     loop = asyncio.get_event_loop_policy().new_event_loop()
@@ -47,7 +62,13 @@ async def async_client(app: FastAPI):
 # Lightweight fallback for pytest-mock's 'mocker' fixture when the plugin isn't loaded
 @pytest.fixture()
 def mocker():
-    from unittest.mock import AsyncMock, create_autospec as _create_autospec, MagicMock, Mock, patch
+    from unittest.mock import (
+        AsyncMock,
+        create_autospec as _create_autospec,
+        MagicMock,
+        Mock,
+        patch,
+    )
 
     class _SimpleMocker:
         def __init__(self):

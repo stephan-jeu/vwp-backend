@@ -5,16 +5,16 @@ from enum import StrEnum
 from sqlalchemy import Enum, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models import Base, TimestampMixin
+from app.models import Base, TimestampMixin, SoftDeleteMixin
 
 
-class User(TimestampMixin, Base):
+class User(TimestampMixin, SoftDeleteMixin, Base):
     """User entity representing an application user."""
 
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     admin: Mapped[bool] = mapped_column(default=False, server_default="false")
     city: Mapped[str | None] = mapped_column(String(255), nullable=True)

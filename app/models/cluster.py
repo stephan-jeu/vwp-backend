@@ -3,11 +3,11 @@ from __future__ import annotations
 from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models import Base, TimestampMixin
+from app.models import Base, TimestampMixin, SoftDeleteMixin
 from app.models.project import Project
 
 
-class Cluster(TimestampMixin, Base):
+class Cluster(TimestampMixin, SoftDeleteMixin, Base):
     """Cluster within a project.
 
     Attributes:

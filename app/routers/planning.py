@@ -15,16 +15,17 @@ from app.models.function import Function
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
-from db.session import get_db
+from app.services.activity_log_service import log_activity
 from app.services.security import require_admin
 from app.services.visit_planning_selection import select_visits_for_week
+from db.session import get_db
 
 
 router = APIRouter()
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[object, Depends(require_admin)]
+AdminDep = Annotated[User, Depends(require_admin)]
 
 
 def _work_week_bounds(current_year: int, iso_week: int) -> tuple[date, date]:
@@ -45,14 +46,11 @@ async def get_planning(
     work week (Mon–Fri) of the current year for the given ISO week.
     """
 
-    stmt = (
-        select(Visit)
-        .options(
-            selectinload(Visit.researchers),
-            selectinload(Visit.functions),
-            selectinload(Visit.species),
-            selectinload(Visit.cluster).selectinload(Cluster.project),
-        )
+    stmt = select(Visit).options(
+        selectinload(Visit.researchers),
+        selectinload(Visit.functions),
+        selectinload(Visit.species),
+        selectinload(Visit.cluster).selectinload(Cluster.project),
     )
 
     visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
@@ -96,13 +94,15 @@ async def get_planning(
         )
 
     # Sort for stable UI: project, cluster, from_date
-    items.sort(key=lambda it: (it.project_code, it.cluster_number, it.from_date or date.max))
+    items.sort(
+        key=lambda it: (it.project_code, it.cluster_number, it.from_date or date.max)
+    )
     return items
 
 
 @router.post("/generate")
 async def generate_planning(
-    _: AdminDep,
+    admin: AdminDep,
     db: DbDep,
     payload: PlanningGenerateRequest,
 ) -> dict:
@@ -114,11 +114,31 @@ async def generate_planning(
 
     week = payload.week
     if week < 1 or week > 53:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="week must be between 1 and 53")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="week must be between 1 and 53",
+        )
 
     # Compute Monday for current year ISO week
-    week_monday = date.fromisocalendar(date.today().year, week, 1)
+    current_year = date.today().year
+    week_monday = date.fromisocalendar(current_year, week, 1)
     result = await select_visits_for_week(db, week_monday)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="planning_generated",
+        target_type="planning_week",
+        target_id=week,
+        details={
+            "week": week,
+            "year": current_year,
+            "selected_visit_ids": result.get("selected_visit_ids", []),
+            "skipped_visit_ids": result.get("skipped_visit_ids", []),
+            "capacity_remaining": result.get("capacity_remaining", {}),
+        },
+    )
+
     return result
 
 
@@ -139,15 +159,12 @@ async def clear_planned_researchers(
     stmt = select(Visit)
     if week is not None:
         week_start, week_end = _work_week_bounds(date.today().year, week)
-        stmt = (
-            stmt.where(
-                and_(
-                    Visit.from_date <= week_end,
-                    Visit.to_date >= week_start,
-                )
+        stmt = stmt.where(
+            and_(
+                Visit.from_date <= week_end,
+                Visit.to_date >= week_start,
             )
-            .options(selectinload(Visit.researchers))
-        )
+        ).options(selectinload(Visit.researchers))
     else:
         stmt = stmt.options(selectinload(Visit.researchers))
 
@@ -158,4 +175,3 @@ async def clear_planned_researchers(
     await db.commit()
 
     return {"cleared": len(visits)}
-
