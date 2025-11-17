@@ -167,7 +167,12 @@ async def get_me(current_user: User = Depends(get_current_user)) -> AuthMeRespon
         current_user: Injected authenticated user instance.
 
     Returns:
-        A dictionary with the user's subject email and admin status.
+        AuthMeResponse including id, subject email, full name and admin flag.
     """
 
-    return AuthMeResponse(sub=current_user.email, admin=bool(current_user.admin))
+    return AuthMeResponse(
+        id=current_user.id,
+        sub=current_user.email,
+        full_name=current_user.full_name,
+        admin=bool(current_user.admin),
+    )

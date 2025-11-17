@@ -11,9 +11,11 @@ from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.user import User
 from app.models.visit import Visit, visit_functions, visit_species, visit_researchers
+from app.models.visit_log import ActivityLog
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead
+from app.schemas.activity_log import ActivityLogRead
 from app.schemas.visit import (
     VisitApprovalRequest,
     VisitCancelRequest,
@@ -21,6 +23,7 @@ from app.schemas.visit import (
     VisitExecuteDeviationRequest,
     VisitExecuteRequest,
     VisitListResponse,
+    VisitListRow,
     VisitNotExecutedRequest,
     VisitRead,
     VisitRejectionRequest,
@@ -198,10 +201,102 @@ async def list_visits(
                 "researchers": [
                     UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
                 ],
+                "advertized": v.advertized,
+                "quote": v.quote,
             }
         )
 
     return VisitListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/{visit_id}", response_model=VisitListRow)
+async def get_visit_detail(
+    _: UserDep,
+    db: DbDep,
+    visit_id: int,
+) -> VisitListRow:
+    """Return detailed information for a single visit.
+
+    The payload matches :class:`VisitListRow` used by the overview table,
+    so the frontend can reuse the same data model for detail views.
+    """
+
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.functions),
+            selectinload(Visit.species),
+            selectinload(Visit.researchers),
+            selectinload(Visit.preferred_researcher),
+        )
+    )
+    visit = (await db.execute(stmt)).scalars().first()
+    if visit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found"
+        )
+
+    status = await resolve_visit_status(db, visit)
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+    project_code = project.code if project else ""
+    project_location = project.location if project else ""
+
+    return VisitListRow(
+        id=visit.id,
+        project_code=project_code,
+        project_location=project_location,
+        cluster_id=cluster.id if cluster else 0,
+        cluster_number=cluster.cluster_number if cluster else 0,
+        cluster_address=cluster.address if cluster else "",
+        status=status,
+        function_ids=[f.id for f in visit.functions],
+        species_ids=[s.id for s in visit.species],
+        functions=[FunctionCompactRead(id=f.id, name=f.name) for f in visit.functions],
+        species=[
+            SpeciesCompactRead(
+                id=s.id,
+                name=s.name,
+                abbreviation=s.abbreviation,
+            )
+            for s in visit.species
+        ],
+        required_researchers=visit.required_researchers,
+        visit_nr=visit.visit_nr,
+        from_date=visit.from_date,
+        to_date=visit.to_date,
+        duration=visit.duration,
+        min_temperature_celsius=visit.min_temperature_celsius,
+        max_wind_force_bft=visit.max_wind_force_bft,
+        max_precipitation=visit.max_precipitation,
+        expertise_level=visit.expertise_level,
+        wbc=visit.wbc,
+        fiets=visit.fiets,
+        hub=visit.hub,
+        dvp=visit.dvp,
+        sleutel=visit.sleutel,
+        remarks_planning=visit.remarks_planning,
+        remarks_field=visit.remarks_field,
+        priority=visit.priority,
+        part_of_day=visit.part_of_day,
+        start_time_text=visit.start_time_text,
+        preferred_researcher_id=visit.preferred_researcher_id,
+        preferred_researcher=(
+            None
+            if visit.preferred_researcher is None
+            else UserNameRead(
+                id=visit.preferred_researcher.id,
+                full_name=visit.preferred_researcher.full_name,
+            )
+        ),
+        researchers=[
+            UserNameRead(id=r.id, full_name=r.full_name) for r in visit.researchers
+        ],
+        advertized=visit.advertized,
+        quote=visit.quote,
+    )
 
 
 @router.post("", response_model=VisitRead)
@@ -254,6 +349,40 @@ async def create_visit(
     )
     visit_loaded = (await db.execute(stmt)).scalars().first()
     return visit_loaded or visit
+
+
+@router.get("/{visit_id}/activity", response_model=list[ActivityLogRead])
+async def list_visit_activity(
+    _: UserDep,
+    db: DbDep,
+    visit_id: int,
+) -> list[ActivityLogRead]:
+    """Return activity log entries related to a single visit.
+
+    Entries are filtered by ``target_type="visit"`` and the given
+    ``visit_id`` and ordered from newest to oldest so the most recent
+    actions are visible first in the UI.
+
+    Args:
+        _: Ensures the caller is authenticated.
+        db: Async SQLAlchemy session.
+        visit_id: Primary key of the visit whose activity we want.
+
+    Returns:
+        List of :class:`ActivityLogRead` entries.
+    """
+
+    stmt = (
+        select(ActivityLog)
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.target_id == visit_id,
+        )
+        .options(selectinload(ActivityLog.actor))
+        .order_by(ActivityLog.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
 
 
 @router.put("/{visit_id}", response_model=VisitRead)
@@ -326,6 +455,18 @@ async def update_visit(
                     for sid in payload.species_ids
                 ],
             )
+    if payload.researcher_ids is not None:
+        await db.execute(
+            delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
+        )
+        if payload.researcher_ids:
+            await db.execute(
+                insert(visit_researchers),
+                [
+                    {"visit_id": visit.id, "user_id": rid}
+                    for rid in payload.researcher_ids
+                ],
+            )
 
     await db.commit()
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
@@ -342,26 +483,41 @@ async def update_visit(
     return visit_loaded or visit
 
 
+async def _get_visit_for_status_change(db: AsyncSession, visit_id: int) -> Visit:
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.researchers))
+    )
+    visit = (await db.execute(stmt)).scalars().first()
+    if visit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found"
+        )
+    return visit
+
+
 @router.post(
     "/{visit_id}/execute",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
 async def execute_visit(
-    admin: AdminDep,
+    user: UserDep,
     db: DbDep,
     visit_id: int,
     payload: VisitExecuteRequest,
 ) -> Response:
     """Mark a visit as executed without protocol deviation."""
 
-    visit = await db.get(Visit, visit_id)
-    if visit is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    visit = await _get_visit_for_status_change(db, visit_id)
+
+    if not user.admin and all(r.id != user.id for r in visit.researchers):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     await log_activity(
         db,
-        actor_id=admin.id,
+        actor_id=user.id,
         action="visit_executed",
         target_type="visit",
         target_id=visit_id,
@@ -380,20 +536,21 @@ async def execute_visit(
     response_class=Response,
 )
 async def execute_visit_with_deviation(
-    admin: AdminDep,
+    user: UserDep,
     db: DbDep,
     visit_id: int,
     payload: VisitExecuteDeviationRequest,
 ) -> Response:
     """Mark a visit as executed with a protocol deviation."""
 
-    visit = await db.get(Visit, visit_id)
-    if visit is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    visit = await _get_visit_for_status_change(db, visit_id)
+
+    if not user.admin and all(r.id != user.id for r in visit.researchers):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     await log_activity(
         db,
-        actor_id=admin.id,
+        actor_id=user.id,
         action="visit_executed_with_deviation",
         target_type="visit",
         target_id=visit_id,
@@ -413,20 +570,21 @@ async def execute_visit_with_deviation(
     response_class=Response,
 )
 async def mark_visit_not_executed(
-    admin: AdminDep,
+    user: UserDep,
     db: DbDep,
     visit_id: int,
     payload: VisitNotExecutedRequest,
 ) -> Response:
     """Mark a visit as not executed."""
 
-    visit = await db.get(Visit, visit_id)
-    if visit is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    visit = await _get_visit_for_status_change(db, visit_id)
+
+    if not user.admin and all(r.id != user.id for r in visit.researchers):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     await log_activity(
         db,
-        actor_id=admin.id,
+        actor_id=user.id,
         action="visit_not_executed",
         target_type="visit",
         target_id=visit_id,

@@ -103,6 +103,7 @@ class VisitUpdate(BaseModel):
     start_time_text: str | None = None
     function_ids: list[int] | None = None
     species_ids: list[int] | None = None
+    researcher_ids: list[int] | None = None
 
 
 class VisitExecuteRequest(BaseModel):
@@ -238,6 +239,8 @@ class VisitListRow(BaseModel):
     preferred_researcher_id: int | None = None
     preferred_researcher: UserNameRead | None = None
     researchers: list[UserNameRead] = []
+    advertized: bool
+    quote: bool
 
 
 class VisitListResponse(BaseModel):
