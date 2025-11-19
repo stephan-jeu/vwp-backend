@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.function import FunctionRead, FunctionCompactRead
 from app.schemas.species import SpeciesRead, SpeciesCompactRead
@@ -144,14 +144,42 @@ class VisitNotExecutedRequest(BaseModel):
     reason: str
 
 
+class VisitAuditPayload(BaseModel):
+    """Audit metadata captured when approving or rejecting a visit.
+
+    Args:
+        errors: Machine-readable error codes representing protocol deviations.
+        errors_comment: Optional free-text comment explaining the errors.
+        errors_fixed: Whether the errors have been corrected.
+        pg_hm_function: Optional text for PG: HM-functie.
+        pg_vm_function: Optional text for PG: VM-functie.
+        pg_gz_function: Optional text for PG: GZ-functie.
+        pg_other_species: Optional text for PG: andere soort.
+        remarks_outside_pg: Optional text for bijzonderheden buiten PG.
+        remarks: Optional general remarks.
+    """
+
+    errors: list[str] = Field(default_factory=list)
+    errors_comment: str | None = None
+    errors_fixed: bool = False
+    pg_hm_function: str | None = None
+    pg_vm_function: str | None = None
+    pg_gz_function: str | None = None
+    pg_other_species: str | None = None
+    remarks_outside_pg: str | None = None
+    remarks: str | None = None
+
+
 class VisitApprovalRequest(BaseModel):
     """Payload for approving a visit result.
 
     Args:
         comment: Required approval comment or justification.
+        audit: Optional structured audit metadata captured during review.
     """
 
     comment: str
+    audit: VisitAuditPayload | None = None
 
 
 class VisitRejectionRequest(BaseModel):
@@ -159,9 +187,11 @@ class VisitRejectionRequest(BaseModel):
 
     Args:
         reason: Required explanation for the rejection.
+        audit: Optional structured audit metadata captured during review.
     """
 
     reason: str
+    audit: VisitAuditPayload | None = None
 
 
 class VisitListRow(BaseModel):
@@ -174,6 +204,8 @@ class VisitListRow(BaseModel):
         id: Visit primary key.
         project_code: Project code for grouping and filters.
         project_location: Human-readable project location.
+        project_google_drive_folder: Optional Google Drive folder URL for the
+            parent project.
         cluster_id: Owning cluster identifier.
         cluster_number: Cluster number within the project.
         cluster_address: Address associated with the cluster.
@@ -187,6 +219,7 @@ class VisitListRow(BaseModel):
         from_date: Start date of the visit window.
         to_date: End date of the visit window.
         duration: Duration in minutes.
+        execution_date: Optional date the visit was executed, when known.
         min_temperature_celsius: Minimum temperature constraint.
         max_wind_force_bft: Maximum wind force constraint.
         max_precipitation: Maximum precipitation description.
@@ -209,6 +242,7 @@ class VisitListRow(BaseModel):
     id: int
     project_code: str
     project_location: str
+    project_google_drive_folder: str | None = None
     cluster_id: int
     cluster_number: int
     cluster_address: str
@@ -222,6 +256,7 @@ class VisitListRow(BaseModel):
     from_date: date | None
     to_date: date | None
     duration: int | None
+    execution_date: date | None = None
     min_temperature_celsius: int | None
     max_wind_force_bft: int | None
     max_precipitation: str | None

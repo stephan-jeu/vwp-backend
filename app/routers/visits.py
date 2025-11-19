@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import delete, insert, select
@@ -155,6 +156,9 @@ async def list_visits(
                 "id": v.id,
                 "project_code": project_code,
                 "project_location": project_location,
+                "project_google_drive_folder": (
+                    project.google_drive_folder if project else None
+                ),
                 "cluster_id": cluster.id if cluster else 0,
                 "cluster_number": cluster.cluster_number if cluster else 0,
                 "cluster_address": cluster.address if cluster else "",
@@ -243,11 +247,13 @@ async def get_visit_detail(
     project: Project | None = getattr(cluster, "project", None)
     project_code = project.code if project else ""
     project_location = project.location if project else ""
+    project_google_drive_folder = project.google_drive_folder if project else None
 
     return VisitListRow(
         id=visit.id,
         project_code=project_code,
         project_location=project_location,
+        project_google_drive_folder=project_google_drive_folder,
         cluster_id=cluster.id if cluster else 0,
         cluster_number=cluster.cluster_number if cluster else 0,
         cluster_address=cluster.address if cluster else "",
@@ -530,6 +536,162 @@ async def execute_visit(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/audit/list", response_model=list[VisitListRow])
+async def list_visits_for_audit(
+    _: AdminDep,
+    db: DbDep,
+) -> list[VisitListRow]:
+    """Return all visits that are relevant for admin audit.
+
+    The listing is restricted to admins and includes all visits whose
+    lifecycle status indicates that a visit was executed (with or
+    without deviation). The result is not paginated as the expected
+    volume is manageable for the audit workflow.
+
+    Args:
+        _: Ensures the caller is an admin user.
+        db: Async SQLAlchemy session.
+
+    Returns:
+        List of :class:`VisitListRow` entries for visits that require or
+        have undergone audit.
+    """
+
+    stmt = select(Visit).options(
+        selectinload(Visit.cluster).selectinload(Cluster.project),
+        selectinload(Visit.functions),
+        selectinload(Visit.species),
+        selectinload(Visit.researchers),
+        selectinload(Visit.preferred_researcher),
+    )
+    visits = (await db.execute(stmt)).scalars().all()
+
+    status_map: dict[int, VisitStatusCode] = {}
+    for v in visits:
+        status_map[v.id] = await resolve_visit_status(db, v)
+
+    relevant_statuses: set[VisitStatusCode] = {
+        VisitStatusCode.EXECUTED,
+        VisitStatusCode.EXECUTED_WITH_DEVIATION,
+    }
+    visits = [v for v in visits if status_map.get(v.id) in relevant_statuses]
+
+    execution_logs: dict[int, ActivityLog] = {}
+    if visits:
+        visit_ids = [v.id for v in visits]
+        stmt_logs = (
+            select(ActivityLog)
+            .where(
+                ActivityLog.target_type == "visit",
+                ActivityLog.target_id.in_(visit_ids),
+                ActivityLog.action.in_(
+                    {"visit_executed", "visit_executed_with_deviation"}
+                ),
+            )
+            .order_by(ActivityLog.target_id, ActivityLog.created_at.desc())
+        )
+        log_rows = (await db.execute(stmt_logs)).scalars().all()
+        for log in log_rows:
+            if log.target_id is None:
+                continue
+            if log.target_id in execution_logs:
+                continue
+            execution_logs[log.target_id] = log
+
+    def _sort_key(v: Visit) -> tuple:
+        cluster = v.cluster
+        project: Project | None = getattr(cluster, "project", None)
+        from_date = v.from_date or date.max
+        project_code = project.code if project else ""
+        cluster_number = cluster.cluster_number if cluster else 0
+        visit_nr = v.visit_nr or 0
+        return (from_date, project_code, cluster_number, visit_nr)
+
+    visits.sort(key=_sort_key)
+
+    items: list[VisitListRow] = []
+    for v in visits:
+        cluster = v.cluster
+        project: Project | None = getattr(cluster, "project", None)
+        project_code = project.code if project else ""
+        project_location = project.location if project else ""
+        status = status_map.get(v.id, VisitStatusCode.CREATED)
+
+        execution_date = None
+        log = execution_logs.get(v.id)
+        if log is not None and log.details:
+            raw_date = log.details.get("execution_date")
+            if isinstance(raw_date, str):
+                try:
+                    execution_date = date.fromisoformat(raw_date)
+                except ValueError:
+                    execution_date = None
+
+        items.append(
+            VisitListRow(
+                id=v.id,
+                project_code=project_code,
+                project_location=project_location,
+                project_google_drive_folder=(
+                    project.google_drive_folder if project else None
+                ),
+                cluster_id=cluster.id if cluster else 0,
+                cluster_number=cluster.cluster_number if cluster else 0,
+                cluster_address=cluster.address if cluster else "",
+                status=status,
+                function_ids=[f.id for f in v.functions],
+                species_ids=[s.id for s in v.species],
+                functions=[
+                    FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
+                ],
+                species=[
+                    SpeciesCompactRead(
+                        id=s.id,
+                        name=s.name,
+                        abbreviation=s.abbreviation,
+                    )
+                    for s in v.species
+                ],
+                required_researchers=v.required_researchers,
+                visit_nr=v.visit_nr,
+                from_date=v.from_date,
+                to_date=v.to_date,
+                duration=v.duration,
+                execution_date=execution_date,
+                min_temperature_celsius=v.min_temperature_celsius,
+                max_wind_force_bft=v.max_wind_force_bft,
+                max_precipitation=v.max_precipitation,
+                expertise_level=v.expertise_level,
+                wbc=v.wbc,
+                fiets=v.fiets,
+                hub=v.hub,
+                dvp=v.dvp,
+                sleutel=v.sleutel,
+                remarks_planning=v.remarks_planning,
+                remarks_field=v.remarks_field,
+                priority=v.priority,
+                part_of_day=v.part_of_day,
+                start_time_text=v.start_time_text,
+                preferred_researcher_id=v.preferred_researcher_id,
+                preferred_researcher=(
+                    None
+                    if v.preferred_researcher is None
+                    else UserNameRead(
+                        id=v.preferred_researcher.id,
+                        full_name=v.preferred_researcher.full_name,
+                    )
+                ),
+                researchers=[
+                    UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
+                ],
+                advertized=v.advertized,
+                quote=v.quote,
+            )
+        )
+
+    return items
+
+
 @router.post(
     "/{visit_id}/execute-deviation",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -622,6 +784,7 @@ async def approve_visit(
         target_id=visit_id,
         details={
             "comment": payload.comment,
+            "audit": None if payload.audit is None else payload.audit.model_dump(),
         },
     )
 
@@ -653,6 +816,7 @@ async def reject_visit(
         target_id=visit_id,
         details={
             "reason": payload.reason,
+            "audit": None if payload.audit is None else payload.audit.model_dump(),
         },
     )
 
