@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.logging import logger
 from app.models.visit import Visit
-from app.models.visit_log import ActivityLog
+from app.models.activity_log import ActivityLog
 
 
 class VisitStatusCode(StrEnum):

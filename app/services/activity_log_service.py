@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
-from app.models.visit_log import ActivityLog
+from app.models.activity_log import ActivityLog
 
 
 async def log_activity(

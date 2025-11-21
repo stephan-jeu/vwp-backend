@@ -317,20 +317,22 @@ def _bucketize_travel(minutes: int) -> int | None:
     return None  # excluded if >75
 
 
-async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
-    """Select visits for the given work week (Mon–Fri) according to business rules.
+async def _select_visits_for_week_core(
+    db: AsyncSession | None, week_monday: date
+) -> tuple[list[Visit], list[Visit], dict]:
+    """Core selection logic shared between planning and simulations.
 
-    Selection respects weekly capacity per daypart (minus spare) and uses flex to
-    cover deficits. No per-day simulation and no researcher qualification matching
-    in this phase. Returns a structured summary and logs a human-readable list.
+    This helper loads weekly capacity, fetches eligible visits, applies the
+    configured priority ordering and consumes capacity per daypart using the
+    same rules as the planner. It returns the selected and skipped visits
+    together with the remaining capacity buckets.
     """
 
     week = week_monday.isocalendar().week
-    caps = await _load_week_capacity(db, week)
+    caps = await _load_week_capacity(db, week)  # type: ignore[arg-type]
 
-    visits = await _eligible_visits_for_week(db, week_monday)
+    visits = await _eligible_visits_for_week(db, week_monday)  # type: ignore[arg-type]
 
-    # Sort by priority tiers
     visits_sorted = sorted(
         visits,
         key=lambda v: _priority_key(week_monday, v),
@@ -355,8 +357,21 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
         else:
             skipped.append(v)
 
+    return selected, skipped, caps
+
+
+async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
+    """Select visits for the given work week (Mon–Fri) according to business rules.
+
+    Selection respects weekly capacity per daypart (minus spare) and uses flex to
+    cover deficits. No per-day simulation and no researcher qualification matching
+    in this phase. Returns a structured summary and logs a human-readable list.
+    """
+
+    selected, skipped, caps = await _select_visits_for_week_core(db, week_monday)
+
     # Assign researchers based on qualifications with weighted scoring
-    if visits_sorted and db is not None:
+    if selected and db is not None:
         # Load users and capacities once
         users: list[User] = await _load_all_users(db)
         week = week_monday.isocalendar().week

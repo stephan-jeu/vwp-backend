@@ -12,7 +12,7 @@ from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.user import User
 from app.models.visit import Visit, visit_functions, visit_species, visit_researchers
-from app.models.visit_log import ActivityLog
+from app.models.activity_log import ActivityLog
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead

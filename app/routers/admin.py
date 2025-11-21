@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import Select, select
@@ -12,7 +13,9 @@ from app.models.user import User
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
+from app.schemas.capacity import CapacitySimulationResponse
 from app.services.activity_log_service import log_activity
+from app.services.capacity_simulation_service import simulate_capacity_horizon
 from app.services.security import require_admin
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
@@ -34,6 +37,23 @@ AdminDep = Annotated[User, Depends(require_admin)]
 async def admin_status() -> dict[str, str]:
     """Return admin status placeholder."""
     return {"status": "admin-ok"}
+
+
+@router.get("/capacity/visits/families", response_model=CapacitySimulationResponse)
+async def get_family_capacity(
+    _: AdminDep,
+    db: DbDep,
+    start: date | None = Query(None),
+) -> CapacitySimulationResponse:
+    """Run a long-term family capacity simulation (admin only).
+
+    The simulation starts at the Monday of the ISO week for the supplied
+    ``start`` date (or the current week if omitted) and runs until the
+    end of that calendar year. It returns a per-week, per-family,
+    per-part-of-day grid with required, assigned and shortfall counts.
+    """
+
+    return await simulate_capacity_horizon(db, start)
 
 
 @router.get("/functions", response_model=list[FunctionRead])
