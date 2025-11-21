@@ -20,6 +20,7 @@ class FamilyDaypartCapacity(BaseModel):
     required: int
     assigned: int
     shortfall: int
+    spare: int = 0
 
 
 class CapacitySimulationResponse(BaseModel):
@@ -28,8 +29,8 @@ class CapacitySimulationResponse(BaseModel):
     Attributes:
         horizon_start: First Monday included in the simulation horizon.
         horizon_end: Last Monday included in the simulation horizon.
-        grid: Nested mapping of ISO week (e.g. "2025-W48") to family
-            name to part-of-day label ("Ochtend", "Dag", "Avond").
+        grid: Nested mapping of Family name to Part-of-day label to
+            Deadline Week (ISO week e.g. "2025-W48").
             Each leaf value is a :class:`FamilyDaypartCapacity`.
     """
 

@@ -15,7 +15,7 @@ from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
 from app.schemas.capacity import CapacitySimulationResponse
 from app.services.activity_log_service import log_activity
-from app.services.capacity_simulation_service import simulate_capacity_horizon
+from app.services.capacity_simulation_service import simulate_capacity_planning
 from app.services.security import require_admin
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
@@ -53,7 +53,7 @@ async def get_family_capacity(
     per-part-of-day grid with required, assigned and shortfall counts.
     """
 
-    return await simulate_capacity_horizon(db, start)
+    return await simulate_capacity_planning(db, start)
 
 
 @router.get("/functions", response_model=list[FunctionRead])

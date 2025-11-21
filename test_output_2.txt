@@ -1,0 +1,357 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________________ test_simulate_capacity_planning_stateful ___________________
+
+self = <sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_cursor object at 0x10e035120>
+operation = 'INSERT INTO clusters (project_id, address, cluster_number, created_at, updated_at, deleted_at) VALUES ($1::INTEGER, $...TEGER, $4::TIMESTAMP WITH TIME ZONE, $5::TIMESTAMP WITH TIME ZONE, $6::TIMESTAMP WITH TIME ZONE) RETURNING clusters.id'
+parameters = (132, None, 1, datetime.datetime(2025, 11, 21, 15, 12, 43, 360678, tzinfo=datetime.timezone.utc), datetime.datetime(2025, 11, 21, 15, 12, 43, 360680, tzinfo=datetime.timezone.utc), None)
+
+    async def _prepare_and_execute(self, operation, parameters):
+        adapt_connection = self._adapt_connection
+    
+        async with adapt_connection._execute_mutex:
+            if not adapt_connection._started:
+                await adapt_connection._start_transaction()
+    
+            if parameters is None:
+                parameters = ()
+    
+            try:
+                prepared_stmt, attributes = await adapt_connection._prepare(
+                    operation, self._invalidate_schema_cache_asof
+                )
+    
+                if attributes:
+                    self.description = [
+                        (
+                            attr.name,
+                            attr.type.oid,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        for attr in attributes
+                    ]
+                else:
+                    self.description = None
+    
+                if self.server_side:
+                    self._cursor = await prepared_stmt.cursor(*parameters)
+                    self.rowcount = -1
+                else:
+>                   self._rows = await prepared_stmt.fetch(*parameters)
+
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:538: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/lib/python3.11/site-packages/asyncpg/prepared_stmt.py:176: in fetch
+    data = await self.__bind_execute(args, 0, timeout)
+/opt/homebrew/lib/python3.11/site-packages/asyncpg/prepared_stmt.py:267: in __bind_execute
+    data, status, _ = await self.__do_execute(
+/opt/homebrew/lib/python3.11/site-packages/asyncpg/prepared_stmt.py:256: in __do_execute
+    return await executor(protocol)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.NotNullViolationError: null value in column "address" of relation "clusters" violates not-null constraint
+E   DETAIL:  Failing row contains (205, 132, null, 2025-11-21 16:12:43.360678+01, 2025-11-21 16:12:43.36068+01, 1, null).
+
+asyncpg/protocol/protocol.pyx:206: NotNullViolationError
+
+The above exception was the direct cause of the following exception:
+
+self = <sqlalchemy.engine.base.Connection object at 0x10e0c21d0>
+dialect = <sqlalchemy.dialects.postgresql.asyncpg.PGDialect_asyncpg object at 0x10dfc5e10>
+context = <sqlalchemy.dialects.postgresql.asyncpg.PGExecutionContext_asyncpg object at 0x10e0e2e10>
+statement = <sqlalchemy.dialects.postgresql.asyncpg.PGCompiler_asyncpg object at 0x10e0e2e50>
+parameters = [(132, None, 1, datetime.datetime(2025, 11, 21, 15, 12, 43, 360678, tzinfo=datetime.timezone.utc), datetime.datetime(2025, 11, 21, 15, 12, 43, 360680, tzinfo=datetime.timezone.utc), None)]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+    
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+    
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+    
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+    
+        effective_parameters: Optional[_AnyExecuteParams]
+    
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+    
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+    
+        if self._echo:
+            self._log_info(str_statement)
+    
+            stats = context._get_cache_stats()
+    
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+    
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:1960: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/default.py:924: in do_execute
+    cursor.execute(statement, parameters)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:572: in execute
+    self._adapt_connection.await_(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py:127: in await_only
+    return current.driver.switch(awaitable)  # type: ignore[no-any-return]
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py:192: in greenlet_spawn
+    value = await result
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:550: in _prepare_and_execute
+    self._handle_exception(error)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:501: in _handle_exception
+    self._adapt_connection._handle_exception(error)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AdaptedConnection <asyncpg.connection.Connection object at 0x10e0c6020>>
+error = NotNullViolationError('null value in column "address" of relation "clusters" violates not-null constraint')
+
+    def _handle_exception(self, error):
+        if self._connection.is_closed():
+            self._transaction = None
+            self._started = False
+    
+        if not isinstance(error, AsyncAdapt_asyncpg_dbapi.Error):
+            exception_mapping = self.dbapi._asyncpg_error_translate
+    
+            for super_ in type(error).__mro__:
+                if super_ in exception_mapping:
+                    translated_error = exception_mapping[super_](
+                        "%s: %s" % (type(error), error)
+                    )
+                    translated_error.pgcode = translated_error.sqlstate = (
+                        getattr(error, "sqlstate", None)
+                    )
+>                   raise translated_error from error
+E                   sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_dbapi.IntegrityError: <class 'asyncpg.exceptions.NotNullViolationError'>: null value in column "address" of relation "clusters" violates not-null constraint
+E                   DETAIL:  Failing row contains (205, 132, null, 2025-11-21 16:12:43.360678+01, 2025-11-21 16:12:43.36068+01, 1, null).
+
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:789: IntegrityError
+
+The above exception was the direct cause of the following exception:
+
+db = <sqlalchemy.ext.asyncio.session.AsyncSession object at 0x10db0e350>
+
+    @pytest.mark.asyncio
+    async def test_simulate_capacity_planning_stateful(db: AsyncSession):
+        # Setup:
+        # 1. Create a Family
+        fam = Family(name=f"TestFamily-{uuid4()}", priority=1)
+        db.add(fam)
+        await db.flush()
+    
+        # 2. Create Species
+        sp = Species(name=f"TestSpecies-{uuid4()}", family_id=fam.id)
+        db.add(sp)
+        await db.flush()
+    
+        # 2b. Create Project and Cluster
+        from app.models.project import Project
+        from app.models.cluster import Cluster
+    
+        proj = Project(code=f"TEST-P-{uuid4()}", location="Test Location", quote=False)
+        db.add(proj)
+        await db.flush()
+    
+        clust = Cluster(project_id=proj.id, cluster_number=1)
+        db.add(clust)
+>       await db.flush()
+
+tests/services/test_capacity_simulation_stateful.py:51: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/ext/asyncio/session.py:791: in flush
+    await greenlet_spawn(self.sync_session.flush, objects=objects)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py:199: in greenlet_spawn
+    result = context.switch(value)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/session.py:4296: in flush
+    self._flush(objects)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/session.py:4431: in _flush
+    with util.safe_reraise():
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/util/langhelpers.py:146: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/session.py:4392: in _flush
+    flush_context.execute()
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/unitofwork.py:466: in execute
+    rec.execute(self)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/unitofwork.py:642: in execute
+    util.preloaded.orm_persistence.save_obj(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/persistence.py:93: in save_obj
+    _emit_insert_statements(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/orm/persistence.py:1233: in _emit_insert_statements
+    result = connection.execute(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:1408: in execute
+    return meth(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/sql/elements.py:513: in _execute_on_connection
+    return connection._execute_clauseelement(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:1630: in _execute_clauseelement
+    ret = self._execute_context(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:1839: in _execute_context
+    return self._exec_single_context(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:1979: in _exec_single_context
+    self._handle_dbapi_exception(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:2335: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/base.py:1960: in _exec_single_context
+    self.dialect.do_execute(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/engine/default.py:924: in do_execute
+    cursor.execute(statement, parameters)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:572: in execute
+    self._adapt_connection.await_(
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py:127: in await_only
+    return current.driver.switch(awaitable)  # type: ignore[no-any-return]
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py:192: in greenlet_spawn
+    value = await result
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:550: in _prepare_and_execute
+    self._handle_exception(error)
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:501: in _handle_exception
+    self._adapt_connection._handle_exception(error)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AdaptedConnection <asyncpg.connection.Connection object at 0x10e0c6020>>
+error = NotNullViolationError('null value in column "address" of relation "clusters" violates not-null constraint')
+
+    def _handle_exception(self, error):
+        if self._connection.is_closed():
+            self._transaction = None
+            self._started = False
+    
+        if not isinstance(error, AsyncAdapt_asyncpg_dbapi.Error):
+            exception_mapping = self.dbapi._asyncpg_error_translate
+    
+            for super_ in type(error).__mro__:
+                if super_ in exception_mapping:
+                    translated_error = exception_mapping[super_](
+                        "%s: %s" % (type(error), error)
+                    )
+                    translated_error.pgcode = translated_error.sqlstate = (
+                        getattr(error, "sqlstate", None)
+                    )
+>                   raise translated_error from error
+E                   sqlalchemy.exc.IntegrityError: (sqlalchemy.dialects.postgresql.asyncpg.IntegrityError) <class 'asyncpg.exceptions.NotNullViolationError'>: null value in column "address" of relation "clusters" violates not-null constraint
+E                   DETAIL:  Failing row contains (205, 132, null, 2025-11-21 16:12:43.360678+01, 2025-11-21 16:12:43.36068+01, 1, null).
+E                   [SQL: INSERT INTO clusters (project_id, address, cluster_number, created_at, updated_at, deleted_at) VALUES ($1::INTEGER, $2::VARCHAR, $3::INTEGER, $4::TIMESTAMP WITH TIME ZONE, $5::TIMESTAMP WITH TIME ZONE, $6::TIMESTAMP WITH TIME ZONE) RETURNING clusters.id]
+E                   [parameters: (132, None, 1, datetime.datetime(2025, 11, 21, 15, 12, 43, 360678, tzinfo=datetime.timezone.utc), datetime.datetime(2025, 11, 21, 15, 12, 43, 360680, tzinfo=datetime.timezone.utc), None)]
+E                   (Background on this error at: https://sqlalche.me/e/20/gkpj)
+
+/opt/homebrew/lib/python3.11/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:789: IntegrityError
+---------------------------- Captured stderr setup -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+=============================== warnings summary ===============================
+tests/services/test_capacity_simulation_stateful.py::test_simulate_capacity_planning_stateful
+  /opt/homebrew/lib/python3.11/site-packages/pytest_asyncio/plugin.py:769: DeprecationWarning: The event_loop fixture provided by pytest-asyncio has been redefined in
+  /Users/stephanvandenberg/git/veldwerkplanning/backend/tests/conftest.py:31
+  Replacing the event_loop fixture with a custom implementation is deprecated
+  and will lead to errors in the future.
+  If you want to request an asyncio event loop with a scope other than function
+  scope, use the "scope" argument to the asyncio mark when marking the tests.
+  If you want to return different types of event loops, use the event_loop_policy
+  fixture.
+  
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/services/test_capacity_simulation_stateful.py::test_simulate_capacity_planning_stateful
+1 failed, 1 warning in 0.38s

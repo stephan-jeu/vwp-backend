@@ -1,3 +1,9 @@
+## Introduction
+This application is build for a dutch ecological consultancy agency called Habitus. The purpose is to generate and plan field visits to check for the presence of protected species. These visits have to follow specific protocols such as the Vleermuisprotocol 2021 that specify things like periods, time of day, number of visits, weather conditions etc. Other protocols are for example for Roofvogels, Huismus, Zwaluw etc. I have tried to encode these protocols into sqlalchmemy models (see @protocol.py and its relationships).
+Most of the visits are generated using project cluster species/functions combinations. This is probably the most complex part of the application and you can find the logic in @visit_generation.py 
+
+Another important module is actually planning visits for researchers. At the moment this is done on a weekly basis (although in the future it will probably be done specifying a period). See @visit_planning_selection.py  All researchers have certain weekly availability by day part: evening (usually around sunset), morning (usually a few hours before sunrise), daytime and flex (can be used for all three). They also have certain capabilities per species families, type of research like SMP (soort management plan), or facilites like a bike or a 'warmte beeld camera'. These are matched with the requirements of the visit, so that we can assign visits to the right researchers. We prioritize visits on criteria like visits that have a short time window left, for species that don't have a lot of available researchers. Once we have identified potential researchers for a visit we try to optimize to who we assign by looking at factors like travel time, the number of already assigned visits etc.
+
 ## Backend: Database & Alembic Migrations
 
 ### Environment variables (Settings)
