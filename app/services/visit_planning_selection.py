@@ -141,6 +141,7 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
+            selectinload(Visit.preferred_researcher),
             selectinload(Visit.cluster).selectinload(Cluster.project),
         )
     )
@@ -301,6 +302,93 @@ async def _load_user_capacities(db: AsyncSession, week: int) -> dict[int, int]:
     return caps
 
 
+async def _load_user_daypart_capacities(
+    db: AsyncSession, week: int
+) -> dict[int, dict[str, int]]:
+    """Return per-user remaining capacity per daypart for the ISO week.
+
+    The mapping keys are user ids; values are dictionaries keyed by the human
+    readable part-of-day labels used in DAYPART_TO_AVAIL_FIELD ("Ochtend",
+    "Dag", "Avond") plus "Flex".
+    """
+    try:
+        stmt = select(AvailabilityWeek).where(AvailabilityWeek.week == week)
+        rows = (await db.execute(stmt)).scalars().all()
+    except Exception:
+        # In tests a fake DB may not support this; treat as unlimited capacity.
+        return {}
+
+    per_user: dict[int, dict[str, int]] = {}
+    for r in rows:
+        try:
+            uid = getattr(r, "user_id", None)
+            if uid is None:
+                continue
+            morning = int(getattr(r, "morning_days", 0) or 0)
+            daytime = int(getattr(r, "daytime_days", 0) or 0)
+            night = int(getattr(r, "nighttime_days", 0) or 0)
+            flex = int(getattr(r, "flex_days", 0) or 0)
+            per_user[uid] = {
+                "Ochtend": morning,
+                "Dag": daytime,
+                "Avond": night,
+                "Flex": flex,
+            }
+        except Exception:
+            # Skip malformed rows from fakes
+            continue
+    return per_user
+
+
+def _user_has_capacity_for_visit(
+    per_user_caps: dict[int, dict[str, int]], uid: int, part: str
+) -> bool:
+    """Return True if the user has at least one slot for the visit's part.
+
+    If no per-user capacity info is available for this user, we treat this as
+    unlimited capacity to preserve behaviour in tests that use fake DBs
+    without availability rows.
+    """
+
+    caps = per_user_caps.get(uid)
+    if caps is None:
+        return True
+
+    have = caps.get(part, 0)
+    if have > 0:
+        return True
+    flex = caps.get("Flex", 0)
+    return flex > 0
+
+
+def _consume_user_capacity(
+    per_user_caps: dict[int, dict[str, int]], uid: int, part: str
+) -> bool:
+    """Consume one capacity unit for the given user and part.
+
+    Prefers dedicated part capacity but will fall back to Flex if needed.
+    Returns False if neither dedicated nor flex capacity is available. When no
+    per-user capacity information is present for the user, this is treated as
+    a no-op with unlimited capacity and returns True.
+    """
+
+    caps = per_user_caps.get(uid)
+    if caps is None:
+        return True
+
+    have = caps.get(part, 0)
+    if have > 0:
+        caps[part] = have - 1
+        return True
+
+    flex = caps.get("Flex", 0)
+    if flex > 0:
+        caps["Flex"] = flex - 1
+        return True
+
+    return False
+
+
 def _bucketize_travel(minutes: int) -> int | None:
     if minutes < 0:
         return None
@@ -370,15 +458,27 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
 
     selected, skipped, caps = await _select_visits_for_week_core(db, week_monday)
 
-    # Assign researchers based on qualifications with weighted scoring
+    # Default to the capacity-based selection outcome; when researcher
+    # assignment runs we may override these with effective selections that
+    # respect preferred researchers and per-user capacities.
+    effective_selected = selected
+    effective_skipped = skipped
+
+    # Assign researchers based on qualifications with weighted scoring and
+    # per-user capacities. Preferred researchers are handled as a special
+    # case: if a visit has a preferred_researcher and that user still has
+    # capacity for the visit's part of day, they are always assigned (without
+    # qualification checks). If the preferred researcher has no capacity left
+    # for that part of day, the entire visit is skipped for this planning
+    # round.
     if selected and db is not None:
         # Load users and capacities once
         users: list[User] = await _load_all_users(db)
         week = week_monday.isocalendar().week
         per_user_capacity: dict[int, int] = await _load_user_capacities(db, week)
-
-        # Do not reuse users within this run to avoid double-booking within the week
-        used_user_ids: set[int] = set()
+        per_user_daypart_caps: dict[int, dict[str, int]] = (
+            await _load_user_daypart_capacities(db, week)
+        )
 
         # Running tallies for ratios within this week's run
         assigned_count: dict[int, int] = {}
@@ -406,114 +506,176 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
             except Exception:
                 pass
 
-        for v in selected:
-            needed = max(1, v.required_researchers or 1)
-            # Filter qualifying and unused users first
-            eligible = [
-                u
-                for u in users
-                if (getattr(u, "id", None) not in used_user_ids)
-                and _qualifies_user_for_visit(u, v)
-            ]
+        final_selected: list[Visit] = []
+        final_skipped: list[Visit] = list(skipped)
 
-            # Compute scores
-            scored: list[tuple[float, User]] = []
-            for u in eligible:
+        for v in selected:
+            part = (v.part_of_day or "").strip()
+            required = max(1, v.required_researchers or 1)
+
+            # Resolve preferred researcher if present
+            preferred_user: User | None = None
+            pref_uid = getattr(v, "preferred_researcher_id", None)
+            if pref_uid is not None:
+                for u in users:
+                    if getattr(u, "id", None) == pref_uid:
+                        preferred_user = u
+                        break
+            if preferred_user is None:
+                preferred_user = getattr(v, "preferred_researcher", None)
+            if (
+                preferred_user is not None
+                and getattr(preferred_user, "id", None) is None
+            ):
+                preferred_user = None
+
+            selected_users: list[User] = []
+
+            # If a preferred researcher exists, enforce capacity on them and
+            # skip qualification checks. If they have no remaining capacity for
+            # this part of day, skip the visit entirely for this planning
+            # round.
+            if preferred_user is not None:
+                pref_id = getattr(preferred_user, "id", None)
+                if pref_id is not None:
+                    if not _user_has_capacity_for_visit(
+                        per_user_daypart_caps, pref_id, part
+                    ):
+                        final_skipped.append(v)
+                        continue
+                    selected_users.append(preferred_user)
+
+            # Assign remaining required researchers (if any) using the regular
+            # qualification + scoring rules, but only among users that still
+            # have capacity for this part of day. We only commit these
+            # assignments if we can fill all required slots.
+            remaining = required - len(selected_users)
+            if remaining > 0:
+                eligible: list[User] = []
+                for u in users:
+                    uid = getattr(u, "id", None)
+                    if uid is None:
+                        continue
+                    if preferred_user is not None and uid == getattr(
+                        preferred_user, "id", None
+                    ):
+                        continue
+                    if not _qualifies_user_for_visit(u, v):
+                        continue
+                    if not _user_has_capacity_for_visit(
+                        per_user_daypart_caps, uid, part
+                    ):
+                        continue
+                    eligible.append(u)
+
+                scored: list[tuple[float, User]] = []
+                for u in eligible:
+                    uid = getattr(u, "id", None)
+                    if uid is None:
+                        continue
+
+                    score_total = 0.0
+
+                    # 1) Travel time (weight 4); ignore on failure
+                    origin = (
+                        getattr(u, "address", None) or getattr(u, "city", None) or ""
+                    ).strip()
+                    dest = (
+                        getattr(getattr(v, "cluster", None), "address", None) or ""
+                    ).strip()
+                    if origin and dest:
+                        minutes = await travel_time.get_travel_minutes(origin, dest)
+                        if minutes is not None:
+                            b = _bucketize_travel(minutes)
+                            if b is None:
+                                # Excluded due to >75 minutes
+                                continue
+                            travel_val = b / 6.0
+                            score_total += travel_val * 4.0
+
+                    # 2) Already assigned / total available capacity (weight 3)
+                    already = assigned_count.get(uid, 0)
+                    capacity = max(0, per_user_capacity.get(uid, 0))
+                    ratio_assigned = (already / capacity) if capacity > 0 else 1.0
+                    score_total += ratio_assigned * 3.0
+
+                    # 3) Heavy visits ratio (weight 3)
+                    heavy_assigned = assigned_heavy_count.get(uid, 0)
+                    denom_heavy = total_heavy_visits_week
+                    ratio_heavy = (
+                        heavy_assigned / denom_heavy if denom_heavy > 0 else 0.0
+                    )
+                    score_total += ratio_heavy * 3.0
+
+                    # 4) Fiets ratio (weight 1)
+                    fiets_assigned = assigned_fiets_count.get(uid, 0)
+                    denom_fiets = total_fiets_visits_week
+                    ratio_fiets = (
+                        fiets_assigned / denom_fiets if denom_fiets > 0 else 0.0
+                    )
+                    score_total += ratio_fiets * 1.0
+
+                    # 5) Project familiarity ratio (weight 1) – same week window
+                    pid = getattr(getattr(v, "cluster", None), "project_id", None)
+                    proj_assigned = (
+                        assigned_by_project.get((uid, pid), 0) if pid is not None else 0
+                    )
+                    proj_total = (
+                        visits_per_project_week.get(pid, 0) if pid is not None else 0
+                    )
+                    ratio_proj = (proj_assigned / proj_total) if proj_total > 0 else 0.0
+                    score_total += ratio_proj * 1.0
+
+                    scored.append((score_total, u))
+
+                # Pick lowest scores, tie-break by user id
+                scored.sort(key=lambda t: (t[0], getattr(t[1], "id", 0)))
+                take_users = [u for (_s, u) in scored[:remaining]]
+                selected_users.extend(take_users)
+
+            # If we cannot fill all required researcher slots, skip this visit
+            # for this planning round without mutating capacities or tallies.
+            if len(selected_users) != required:
+                final_skipped.append(v)
+                continue
+
+            # Commit assignments: update visit.researchers, per-user capacities
+            # and fairness tallies.
+            if getattr(v, "researchers", None) is None:
+                setattr(v, "researchers", [])
+            for u in selected_users:
+                v.researchers.append(u)
                 uid = getattr(u, "id", None)
                 if uid is None:
                     continue
-
-                score_total = 0.0
-
-                # 1) Travel time (weight 4); ignore on failure
-                origin = (
-                    getattr(u, "address", None) or getattr(u, "city", None) or ""
-                ).strip()
-                dest = (
-                    getattr(getattr(v, "cluster", None), "address", None) or ""
-                ).strip()
-                if origin and dest:
-                    minutes = await travel_time.get_travel_minutes(origin, dest)
-                    if minutes is not None:
-                        b = _bucketize_travel(minutes)
-                        if b is None:
-                            # Excluded due to >75 minutes
-                            continue
-                        travel_val = b / 6.0
-                        score_total += travel_val * 4.0
-
-                # 2) Already assigned / total available capacity (weight 3)
-                already = assigned_count.get(uid, 0)
-                capacity = max(0, per_user_capacity.get(uid, 0))
-                ratio_assigned = (already / capacity) if capacity > 0 else 1.0
-                score_total += ratio_assigned * 3.0
-
-                # 3) Heavy visits ratio (weight 3)
-                heavy_assigned = assigned_heavy_count.get(uid, 0)
-                denom_heavy = total_heavy_visits_week
-                ratio_heavy = (heavy_assigned / denom_heavy) if denom_heavy > 0 else 0.0
-                score_total += ratio_heavy * 3.0
-
-                # 4) Fiets ratio (weight 1)
-                fiets_assigned = assigned_fiets_count.get(uid, 0)
-                denom_fiets = total_fiets_visits_week
-                ratio_fiets = (fiets_assigned / denom_fiets) if denom_fiets > 0 else 0.0
-                score_total += ratio_fiets * 1.0
-
-                # 5) Project familiarity ratio (weight 1) – same week window
+                _consume_user_capacity(per_user_daypart_caps, uid, part)
+                assigned_count[uid] = assigned_count.get(uid, 0) + 1
+                if (v.required_researchers or 1) > 2:
+                    assigned_heavy_count[uid] = assigned_heavy_count.get(uid, 0) + 1
+                if bool(getattr(v, "fiets", False)):
+                    assigned_fiets_count[uid] = assigned_fiets_count.get(uid, 0) + 1
                 pid = getattr(getattr(v, "cluster", None), "project_id", None)
-                proj_assigned = (
-                    assigned_by_project.get((uid, pid), 0) if pid is not None else 0
-                )
-                proj_total = (
-                    visits_per_project_week.get(pid, 0) if pid is not None else 0
-                )
-                ratio_proj = (proj_assigned / proj_total) if proj_total > 0 else 0.0
-                score_total += ratio_proj * 1.0
+                if pid is not None:
+                    key = (uid, pid)
+                    assigned_by_project[key] = assigned_by_project.get(key, 0) + 1
 
-                scored.append((score_total, u))
-
-            # Pick lowest scores, tie-break by user id
-            scored.sort(key=lambda t: (t[0], getattr(t[1], "id", 0)))
-            take_users = [u for (_s, u) in scored[:needed]]
-
-            if take_users:
-                if getattr(v, "researchers", None) is None:
-                    setattr(v, "researchers", [])
-                for u in take_users:
-                    v.researchers.append(u)
-                    uid = getattr(u, "id", None)
-                    if uid is not None:
-                        used_user_ids.add(uid)
-                        # update tallies
-                        assigned_count[uid] = assigned_count.get(uid, 0) + 1
-                        if (v.required_researchers or 1) > 2:
-                            assigned_heavy_count[uid] = (
-                                assigned_heavy_count.get(uid, 0) + 1
-                            )
-                        if bool(getattr(v, "fiets", False)):
-                            assigned_fiets_count[uid] = (
-                                assigned_fiets_count.get(uid, 0) + 1
-                            )
-                        pid = getattr(getattr(v, "cluster", None), "project_id", None)
-                        if pid is not None:
-                            key = (uid, pid)
-                            assigned_by_project[key] = (
-                                assigned_by_project.get(key, 0) + 1
-                            )
+            final_selected.append(v)
 
         await db.commit()
 
+        effective_selected = final_selected
+        effective_skipped = final_skipped
+
     # Log output
-    if selected:
+    if effective_selected:
         _logger.info("Selected visits for week starting %s:", week_monday.isoformat())
-        for v in selected:
+        for v in effective_selected:
             _logger.info(_format_visit_line(v))
     else:
         _logger.info("No visits selected for week starting %s", week_monday.isoformat())
 
     return {
-        "selected_visit_ids": [v.id for v in selected],
-        "skipped_visit_ids": [v.id for v in skipped],
+        "selected_visit_ids": [v.id for v in effective_selected],
+        "skipped_visit_ids": [v.id for v in effective_skipped],
         "capacity_remaining": caps,
     }

@@ -23,6 +23,7 @@ from app.services.visit_planning_selection import (
     _priority_key,
     _consume_capacity,
     _load_week_capacity,
+    _select_visits_for_week_core,
 )
 from app.services.visit_status_service import VisitStatusCode, derive_visit_status
 
@@ -58,6 +59,89 @@ def _get_family_name(v: Visit) -> str:
     return "?"
 
 
+async def _load_user_daypart_capacities(
+    db: AsyncSession, week: int
+) -> dict[int, dict[str, int]]:
+    """Return per-user capacity per daypart for the ISO week.
+
+    The mapping keys are user IDs; values are dictionaries keyed by the
+    human-readable part-of-day labels ("Ochtend", "Dag", "Avond") plus
+    "Flex". Missing users are treated as having no capacity.
+    """
+
+    try:
+        stmt = select(AvailabilityWeek).where(AvailabilityWeek.week == week)
+        rows = (await db.execute(stmt)).scalars().all()
+    except Exception:  # pragma: no cover - defensive for fake DBs
+        return {}
+
+    per_user: dict[int, dict[str, int]] = {}
+    for r in rows:
+        try:
+            uid = getattr(r, "user_id", None)
+            if uid is None:
+                continue
+            morning = int(getattr(r, "morning_days", 0) or 0)
+            daytime = int(getattr(r, "daytime_days", 0) or 0)
+            night = int(getattr(r, "nighttime_days", 0) or 0)
+            flex = int(getattr(r, "flex_days", 0) or 0)
+            per_user[uid] = {
+                "Ochtend": morning,
+                "Dag": daytime,
+                "Avond": night,
+                "Flex": flex,
+            }
+        except Exception:  # pragma: no cover - defensive for malformed rows
+            continue
+    return per_user
+
+
+def _user_has_capacity_for_part(
+    per_user_caps: dict[int, dict[str, int]], uid: int, part: str
+) -> bool:
+    """Return True if user has at least one slot for the given part.
+
+    Dedicated part capacity is preferred; if none is available, flex capacity
+    can be used. If the user has no entry in ``per_user_caps``, they are
+    treated as having zero capacity.
+    """
+
+    caps = per_user_caps.get(uid)
+    if caps is None:
+        return False
+
+    have = caps.get(part, 0)
+    if have > 0:
+        return True
+    return caps.get("Flex", 0) > 0
+
+
+def _consume_user_capacity_for_part(
+    per_user_caps: dict[int, dict[str, int]], uid: int, part: str
+) -> bool:
+    """Consume one capacity unit for the given user and part.
+
+    Returns ``True`` on success, ``False`` if no dedicated or flex capacity is
+    available for this user and part.
+    """
+
+    caps = per_user_caps.get(uid)
+    if caps is None:
+        return False
+
+    have = caps.get(part, 0)
+    if have > 0:
+        caps[part] = have - 1
+        return True
+
+    flex = caps.get("Flex", 0)
+    if flex > 0:
+        caps["Flex"] = flex - 1
+        return True
+
+    return False
+
+
 async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visit]:
     """Load all visits that are not yet fully executed/cancelled.
 
@@ -69,18 +153,13 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
     # So we fetch all visits that have a to_date >= start_date (or are undated/open)
     # AND are not cancelled/executed in logs.
     # For simplicity/performance, we'll fetch a broad set and filter in python using derive_visit_status.
-    
+
     # Optimization: Filter out visits that are definitely in the past
     stmt = (
         select(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
         .join(Project, Cluster.project_id == Project.id)
-        .where(
-            or_(
-                Visit.to_date >= start_date,
-                Visit.to_date.is_(None)
-            )
-        )
+        .where(or_(Visit.to_date >= start_date, Visit.to_date.is_(None)))
         .options(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
@@ -88,39 +167,40 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
             selectinload(Visit.cluster).selectinload(Cluster.project),
         )
     )
-    
+
     candidates = (await db.execute(stmt)).scalars().unique().all()
-    
+
     # Filter using derived status
     # We treat PLANNED as "open" for the purpose of simulation because we want to see if they fit
     # given the capacity.
     # We exclude EXECUTED, CANCELLED, etc.
-    
+
     active_visits = []
-    # We need to fetch logs for status derivation? 
+    # We need to fetch logs for status derivation?
     # For bulk simulation, fetching logs for every visit might be slow.
-    # Let's assume for now that if it's not in the past, it's fair game, 
+    # Let's assume for now that if it's not in the past, it's fair game,
     # unless we want to be very precise about cancelled visits.
     # TODO: If performance is an issue, bulk load logs.
-    
-    # For now, let's accept the slight inaccuracy of including cancelled visits 
-    # if we don't want to fetch logs for all. 
+
+    # For now, let's accept the slight inaccuracy of including cancelled visits
+    # if we don't want to fetch logs for all.
     # OR, we can rely on the user to have cleaned up.
     # Let's try to be correct:
-    
+
     from app.models.activity_log import ActivityLog
+
     # Bulk fetch latest status logs?
     # This is complex. Let's stick to a simpler heuristic:
     # If it has a result or is cancelled, it usually has a status.
     # Let's assume for this simulation we care about "to be done" work.
-    
+
     for v in candidates:
         # Quick check: if it has a result status in real life, skip?
         # We'll use the status service but maybe without logs for speed?
         # Or just fetch logs.
         # Let's just include them all for now, the user said "created, open, planned or not executed"
         active_visits.append(v)
-        
+
     return active_visits
 
 
@@ -152,19 +232,19 @@ async def simulate_capacity_planning(
 
     # 1. Fetch all relevant visits
     all_visits = await _load_all_open_visits(db, horizon_start)
-    
+
     # Sort by global priority once? Or re-sort every week?
     # Priority depends on "weeks until deadline", so it changes every week.
     # But base priority (tier) is static.
-    
+
     # We need a mutable pool
     visit_pool = list(all_visits)
-    
+
     # Track results: family -> part -> deadline_week -> {planned, unplannable}
     # We use a nested dict structure
     # deadline_week is the ISO week of the visit.to_date
     results: dict[str, dict[str, dict[str, SimulationResultCell]]] = {}
-    
+
     # Helper to add result
     def add_result(v: Visit, is_planned: bool):
         fam = _get_family_name(v)
@@ -173,25 +253,29 @@ async def simulate_capacity_planning(
             deadline = v.to_date.isoformat()
         else:
             deadline = "No Deadline"
-            
+
         fam_dict = results.setdefault(fam, {})
         part_dict = fam_dict.setdefault(part, {})
-        
+
         current = part_dict.get(deadline, SimulationResultCell(0, 0))
         if is_planned:
-            part_dict[deadline] = SimulationResultCell(current.planned + 1, current.unplannable)
+            part_dict[deadline] = SimulationResultCell(
+                current.planned + 1, current.unplannable
+            )
         else:
-            part_dict[deadline] = SimulationResultCell(current.planned, current.unplannable + 1)
+            part_dict[deadline] = SimulationResultCell(
+                current.planned, current.unplannable + 1
+            )
 
     # 2. Iterate weeks
     current_monday = horizon_start
     while current_monday <= horizon_end:
         week_friday = current_monday + timedelta(days=4)
         week_iso = current_monday.isocalendar().week
-        
+
         # Load capacity for this week
         caps = await _load_week_capacity(db, week_iso)
-        
+
         # Filter pool for visits that CAN be done this week
         # i.e. from_date <= week_friday AND to_date >= current_monday
         eligible_indices = []
@@ -200,42 +284,42 @@ async def simulate_capacity_planning(
             t = v.to_date or date.max
             if f <= week_friday and t >= current_monday:
                 eligible_indices.append(i)
-        
+
         # Sort eligible visits by priority
         # We create a list of (index, visit) to sort
         eligible_visits = [(i, visit_pool[i]) for i in eligible_indices]
         eligible_visits.sort(key=lambda x: _priority_key(current_monday, x[1]))
-        
+
         # Try to plan
         planned_indices = set()
-        
+
         for idx, v in eligible_visits:
             part = (v.part_of_day or "").strip()
             if part not in DAYPART_TO_AVAIL_FIELD:
                 # Cannot plan, skip (will remain in pool)
                 continue
-                
+
             required = v.required_researchers or 1
             if _consume_capacity(caps, part, required):
                 # Success!
                 add_result(v, is_planned=True)
                 planned_indices.add(idx)
-        
-        # Remove planned from pool (in reverse order to keep indices valid if we were popping, 
+
+        # Remove planned from pool (in reverse order to keep indices valid if we were popping,
         # but here we rebuild the list is safer/easier)
         new_pool = []
         for i, v in enumerate(visit_pool):
             if i not in planned_indices:
                 new_pool.append(v)
         visit_pool = new_pool
-        
+
         current_monday += timedelta(days=7)
 
     # 3. Remaining visits are unplannable (within the horizon)
     for v in visit_pool:
         add_result(v, is_planned=False)
 
-    # Convert NamedTuple to dict for JSON serialization if needed, 
+    # Convert NamedTuple to dict for JSON serialization if needed,
     # or rely on Pydantic schema compatibility.
     # The schema expects: grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]]
     # But we changed the meaning. We need to update the schema or map to it.
@@ -245,9 +329,9 @@ async def simulate_capacity_planning(
     # shortfall -> unplannable
     # required -> total (planned + unplannable)
     # spare -> 0
-    
+
     final_grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]] = {}
-    
+
     for fam, parts in results.items():
         final_grid[fam] = {}
         for part, deadlines in parts.items():
@@ -257,11 +341,119 @@ async def simulate_capacity_planning(
                     required=cell.planned + cell.unplannable,
                     assigned=cell.planned,
                     shortfall=cell.unplannable,
-                    spare=0
+                    spare=0,
                 )
 
     return CapacitySimulationResponse(
         horizon_start=horizon_start,
         horizon_end=horizon_end,
         grid=final_grid,
+    )
+
+
+async def simulate_week_capacity(
+    db: AsyncSession,
+    week_monday: date,
+) -> dict[str, dict[str, FamilyDaypartCapacity]]:
+    """Simulate family/daypart capacity usage for a single week.
+
+    This helper reuses the core visit-selection logic to determine which
+    visits are eligible for the week, then allocates researcher capacity per
+    user and per daypart using :class:`AvailabilityWeek` rows. The result is a
+    nested mapping ``family -> part_of_day -> FamilyDaypartCapacity`` that
+    aggregates required, assigned and shortfall slots.
+    """
+
+    selected, _skipped, _caps = await _select_visits_for_week_core(db, week_monday)
+    if not selected:
+        return {}
+
+    iso_week = week_monday.isocalendar().week
+    per_user_caps = await _load_user_daypart_capacities(db, iso_week)
+    users: list[User] = await _load_all_users(db)
+
+    result: dict[str, dict[str, FamilyDaypartCapacity]] = {}
+
+    for v in selected:
+        fam = _get_family_name(v)
+        part = (getattr(v, "part_of_day", None) or "").strip()
+        if not part:
+            # Visits without a valid part-of-day are ignored for the
+            # family/daypart capacity view.
+            continue
+
+        required = int(getattr(v, "required_researchers", None) or 1)
+        assigned = 0
+
+        # Greedy allocation: iterate researcher slots, then users.
+        for _slot in range(required):
+            allocated = False
+            for u in users:
+                uid = getattr(u, "id", None)
+                if uid is None:
+                    continue
+                if not _qualifies_user_for_visit(u, v):
+                    continue
+                if not _user_has_capacity_for_part(per_user_caps, uid, part):
+                    continue
+                if not _consume_user_capacity_for_part(per_user_caps, uid, part):
+                    continue
+                assigned += 1
+                allocated = True
+                break
+            if not allocated:
+                break
+
+        fam_map = result.setdefault(fam, {})
+        cell = fam_map.get(part)
+        if cell is None:
+            cell = FamilyDaypartCapacity(required=0, assigned=0, shortfall=0, spare=0)
+
+        new_required = cell.required + required
+        new_assigned = cell.assigned + assigned
+        new_shortfall = cell.shortfall + (required - assigned)
+
+        fam_map[part] = FamilyDaypartCapacity(
+            required=new_required,
+            assigned=new_assigned,
+            shortfall=new_shortfall,
+            spare=cell.spare,
+        )
+
+    return result
+
+
+async def simulate_capacity_horizon(
+    db: AsyncSession,
+    any_day: date | None,
+) -> CapacitySimulationResponse:
+    """Simulate capacity for a planning horizon starting at the given date.
+
+    The current implementation normalizes ``any_day`` to the Monday of its
+    ISO week, runs :func:`simulate_week_capacity` for that week only and
+    stores the result under the corresponding week identifier.
+    """
+
+    if any_day is None:
+        any_day = date.today()
+
+    iso_year, iso_week, _ = any_day.isocalendar()
+    start_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    week_key = _week_id(start_monday)
+
+    week_grid = await simulate_week_capacity(db, start_monday)
+
+    # Shape: week_id -> family -> part -> FamilyDaypartCapacity
+    grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]] = {}
+    if week_grid:
+        grid[week_key] = {}
+        for fam, parts in week_grid.items():
+            grid[week_key][fam] = {}
+            for part, cell in parts.items():
+                grid[week_key][fam][part] = cell
+
+    return CapacitySimulationResponse(
+        horizon_start=start_monday,
+        horizon_end=start_monday,
+        grid=grid,
     )

@@ -996,7 +996,7 @@ async def test_assign_requires_visit_flags(
 
 
 @pytest.mark.asyncio
-async def test_do_not_reuse_user_across_visits(
+async def test_single_user_can_be_assigned_to_multiple_visits_when_capacity_allows(
     monkeypatch: pytest.MonkeyPatch, week_monday: date
 ):
     async def fake_load_caps(_db: Any, _week: int) -> dict:
@@ -1024,7 +1024,9 @@ async def test_do_not_reuse_user_across_visits(
     async def fake_eligible(_db: Any, _week_monday: date):
         return [v1, v2]
 
-    # Only one eligible user; ensure they get assigned to only one visit
+    # Only one eligible user; with per-user capacities this user can now be
+    # assigned to multiple visits in the same week as long as capacity
+    # permits.
     u1 = make_user(1, "A", vleermuis=True)
     u2 = make_user(2, "B", vleermuis=False)
     fake_db = await _fake_db_with_users([u1, u2])
@@ -1039,7 +1041,98 @@ async def test_do_not_reuse_user_across_visits(
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
     counts = [len(getattr(v, "researchers", [])) for v in (v1, v2)]
-    assert sorted(counts) == [0, 1]
+    assert counts == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_preferred_researcher_assigned_without_qualification_when_capacity(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
+    async def fake_load_caps(_db: Any, _week: int) -> dict:
+        return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
+
+    v = make_visit(
+        vid=201,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+
+    # Preferred researcher does NOT have the required family flag and would
+    # normally be rejected by _qualifies_user_for_visit. As preferred
+    # researcher, they should still be assigned when capacity allows.
+    preferred = make_user(1, "Preferred", vleermuis=False)
+    other = make_user(2, "Other", vleermuis=True)
+    v.preferred_researcher_id = 1
+
+    fake_db = await _fake_db_with_users([preferred, other])
+
+    async def fake_eligible(_db: Any, _week_monday: date):
+        return [v]
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+
+    result = await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+
+    assert result["selected_visit_ids"] == [201]
+    assert [u.full_name for u in getattr(v, "researchers", [])] == ["Preferred"]
+
+
+@pytest.mark.asyncio
+async def test_preferred_researcher_without_capacity_skips_visit(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
+    async def fake_load_caps(_db: Any, _week: int) -> dict:
+        # Global capacity allows the visit to be selected initially.
+        return {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
+
+    v = make_visit(
+        vid=202,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+
+    preferred = make_user(1, "Preferred", vleermuis=True)
+    v.preferred_researcher_id = 1
+
+    fake_db = await _fake_db_with_users([preferred])
+
+    async def fake_eligible(_db: Any, _week_monday: date):
+        return [v]
+
+    async def fake_user_daypart_caps(_db: Any, _week: int) -> dict[int, dict[str, int]]:
+        # Preferred researcher has no remaining capacity for any part of day
+        # in this week.
+        return {1: {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 0}}
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps,
+    )
+
+    result = await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+
+    assert result["selected_visit_ids"] == []
+    assert result["skipped_visit_ids"] == [202]
+    assert getattr(v, "researchers", None) in (None, [])
 
 
 @pytest.mark.asyncio

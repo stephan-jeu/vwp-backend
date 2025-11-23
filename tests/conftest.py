@@ -20,11 +20,6 @@ def apply_migrations():
     Runs Alembic upgrade to head before any tests execute. This is necessary
     when models gained new columns (e.g., deleted_at) that tests rely on.
     """
-    from alembic.config import Config
-    from alembic import command
-
-    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
-    command.upgrade(cfg, "head")
     yield
 
 

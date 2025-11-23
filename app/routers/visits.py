@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
 from app.models.project import Project
+from app.models.species import Species
 from app.models.user import User
 from app.models.visit import Visit, visit_functions, visit_species, visit_researchers
 from app.models.activity_log import ActivityLog
@@ -18,6 +19,7 @@ from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead
 from app.schemas.activity_log import ActivityLogRead
 from app.schemas.visit import (
+    VisitAdvertisedRequest,
     VisitApprovalRequest,
     VisitCancelRequest,
     VisitCreate,
@@ -33,7 +35,12 @@ from app.schemas.visit import (
 from app.services.activity_log_service import log_activity
 from app.services.security import get_current_user, require_admin
 from app.services.soft_delete import soft_delete_entity
-from app.services.visit_status_service import VisitStatusCode, resolve_visit_status
+from app.services.visit_planning_selection import _qualifies_user_for_visit
+from app.services.visit_status_service import (
+    VisitStatusCode,
+    resolve_visit_status,
+)
+from app.services.visit_execution_updates import update_subsequent_visits
 from db.session import get_db
 
 router = APIRouter()
@@ -357,6 +364,156 @@ async def create_visit(
     return visit_loaded or visit
 
 
+@router.get("/advertised/list", response_model=list[VisitListRow])
+async def list_advertised_visits(
+    user: UserDep,
+    db: DbDep,
+) -> list[VisitListRow]:
+    """Return all currently advertised visits available for takeover.
+
+    Visits are included when their ``advertized`` flag is true and their derived
+    lifecycle status is either ``planned`` or ``not_executed``. The response
+    includes the user who most recently advertised the visit and a boolean flag
+    indicating whether the current user qualifies to accept the visit.
+    """
+
+    stmt = (
+        select(Visit)
+        .where(Visit.advertized.is_(True))
+        .options(
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.functions),
+            selectinload(Visit.species).selectinload(Species.family),
+            selectinload(Visit.researchers),
+            selectinload(Visit.preferred_researcher),
+        )
+    )
+    visits = (await db.execute(stmt)).scalars().all()
+    if not visits:
+        return []
+
+    status_map: dict[int, VisitStatusCode] = {}
+    for v in visits:
+        status_map[v.id] = await resolve_visit_status(db, v)
+
+    allowed_statuses: set[VisitStatusCode] = {
+        VisitStatusCode.PLANNED,
+        VisitStatusCode.NOT_EXECUTED,
+    }
+    visits = [v for v in visits if status_map.get(v.id) in allowed_statuses]
+    if not visits:
+        return []
+
+    visit_ids = [v.id for v in visits]
+
+    stmt_logs = (
+        select(ActivityLog)
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.target_id.in_(visit_ids),
+            ActivityLog.action == "visit_advertised",
+        )
+        .options(selectinload(ActivityLog.actor))
+        .order_by(ActivityLog.target_id, ActivityLog.created_at.desc())
+    )
+    logs = (await db.execute(stmt_logs)).scalars().all()
+
+    advertised_by_map: dict[int, ActivityLog] = {}
+    for log in logs:
+        if log.target_id is None:
+            continue
+        if log.target_id in advertised_by_map:
+            continue
+        advertised_by_map[log.target_id] = log
+
+    items: list[VisitListRow] = []
+    user_id = getattr(user, "id", None)
+
+    for v in visits:
+        cluster = v.cluster
+        project: Project | None = getattr(cluster, "project", None)
+        project_code = project.code if project else ""
+        project_location = project.location if project else ""
+        status = status_map.get(v.id, VisitStatusCode.CREATED)
+
+        log = advertised_by_map.get(v.id)
+        advertised_by = None
+        if log is not None and log.actor is not None:
+            advertised_by = UserNameRead(id=log.actor.id, full_name=log.actor.full_name)
+
+        can_accept = False
+        if user_id is not None:
+            if _qualifies_user_for_visit(user, v) and all(
+                getattr(r, "id", None) != user_id for r in (v.researchers or [])
+            ):
+                can_accept = True
+
+        items.append(
+            VisitListRow(
+                id=v.id,
+                project_code=project_code,
+                project_location=project_location,
+                project_google_drive_folder=(
+                    project.google_drive_folder if project else None
+                ),
+                cluster_id=cluster.id if cluster else 0,
+                cluster_number=cluster.cluster_number if cluster else 0,
+                cluster_address=cluster.address if cluster else "",
+                status=status,
+                function_ids=[f.id for f in v.functions],
+                species_ids=[s.id for s in v.species],
+                functions=[
+                    FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
+                ],
+                species=[
+                    SpeciesCompactRead(
+                        id=s.id,
+                        name=s.name,
+                        abbreviation=s.abbreviation,
+                    )
+                    for s in v.species
+                ],
+                required_researchers=v.required_researchers,
+                visit_nr=v.visit_nr,
+                from_date=v.from_date,
+                to_date=v.to_date,
+                duration=v.duration,
+                min_temperature_celsius=v.min_temperature_celsius,
+                max_wind_force_bft=v.max_wind_force_bft,
+                max_precipitation=v.max_precipitation,
+                expertise_level=v.expertise_level,
+                wbc=v.wbc,
+                fiets=v.fiets,
+                hub=v.hub,
+                dvp=v.dvp,
+                sleutel=v.sleutel,
+                remarks_planning=v.remarks_planning,
+                remarks_field=v.remarks_field,
+                priority=v.priority,
+                part_of_day=v.part_of_day,
+                start_time_text=v.start_time_text,
+                preferred_researcher_id=v.preferred_researcher_id,
+                preferred_researcher=(
+                    None
+                    if v.preferred_researcher is None
+                    else UserNameRead(
+                        id=v.preferred_researcher.id,
+                        full_name=v.preferred_researcher.full_name,
+                    )
+                ),
+                researchers=[
+                    UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
+                ],
+                advertized=v.advertized,
+                quote=v.quote,
+                advertized_by=advertised_by,
+                can_accept=can_accept,
+            )
+        )
+
+    return items
+
+
 @router.get("/{visit_id}/activity", response_model=list[ActivityLogRead])
 async def list_visit_activity(
     _: UserDep,
@@ -393,7 +550,7 @@ async def list_visit_activity(
 
 @router.put("/{visit_id}", response_model=VisitRead)
 async def update_visit(
-    _: AdminDep, db: DbDep, visit_id: int, payload: VisitUpdate
+    admin: AdminDep, db: DbDep, visit_id: int, payload: VisitUpdate
 ) -> Visit:
     """Update a visit with provided fields.
 
@@ -404,6 +561,8 @@ async def update_visit(
     visit = await db.get(Visit, visit_id)
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    old_advertized = bool(getattr(visit, "advertized", False))
 
     # Map simple scalar fields if provided
     for field in (
@@ -434,6 +593,19 @@ async def update_visit(
         value = getattr(payload, field)
         if value is not None:
             setattr(visit, field, value)
+
+    new_advertized = bool(getattr(visit, "advertized", False))
+    if payload.advertized is not None and new_advertized != old_advertized:
+        action = "visit_advertised" if new_advertized else "visit_advertised_cancelled"
+        await log_activity(
+            db,
+            actor_id=admin.id,
+            action=action,
+            target_type="visit",
+            target_id=visit.id,
+            details=None,
+            commit=False,
+        )
 
     # Handle many-to-many updates
     if payload.function_ids is not None:
@@ -533,6 +705,57 @@ async def execute_visit(
         },
     )
 
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{visit_id}/advertised",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def set_visit_advertised(
+    user: UserDep,
+    db: DbDep,
+    visit_id: int,
+    payload: VisitAdvertisedRequest,
+) -> Response:
+    """Toggle the advertised flag for a visit.
+
+    Both admins and researchers assigned to the visit may change the
+    advertised state. When the flag changes we emit a corresponding
+    activity log entry (``visit_advertised`` or
+    ``visit_advertised_cancelled``).
+    """
+
+    visit = await _get_visit_for_status_change(db, visit_id)
+
+    if not user.admin and all(r.id != user.id for r in visit.researchers):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    old_advertized = bool(getattr(visit, "advertized", False))
+    new_advertized = bool(payload.advertized)
+
+    if new_advertized == old_advertized:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    visit.advertized = new_advertized
+
+    action = "visit_advertised" if new_advertized else "visit_advertised_cancelled"
+    await log_activity(
+        db,
+        actor_id=user.id,
+        action=action,
+        target_type="visit",
+        target_id=visit.id,
+        details=None,
+        commit=False,
+    )
+
+    # Update subsequent visits
+    if payload.execution_date:
+        await update_subsequent_visits(db, visit, payload.execution_date)
+
+    await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -723,6 +946,10 @@ async def execute_visit_with_deviation(
         },
     )
 
+    # Update subsequent visits
+    if payload.execution_date:
+        await update_subsequent_visits(db, visit, payload.execution_date)
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -864,5 +1091,120 @@ async def delete_visit(_: AdminDep, db: DbDep, visit_id: int) -> Response:
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     await soft_delete_entity(db, visit, cascade=False)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{visit_id}/accept-advertised",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def accept_advertised_visit(
+    user: UserDep,
+    db: DbDep,
+    visit_id: int,
+) -> Response:
+    """Accept an advertised visit and reassign researchers.
+
+    The current user must qualify for the visit according to the same rules used
+    by the planner. When accepted, the user is added as a researcher (if not
+    already present), the original advertiser is removed when known and the
+    advertised flag is cleared. Corresponding activity log entries are added
+    for auditing.
+    """
+
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.researchers),
+            selectinload(Visit.functions),
+            selectinload(Visit.species).selectinload(Species.family),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+        )
+    )
+    visit = (await db.execute(stmt)).scalars().first()
+    if visit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found"
+        )
+
+    if not visit.advertized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Visit is not advertised for takeover",
+        )
+
+    status_code_value = await resolve_visit_status(db, visit)
+    if status_code_value not in {
+        VisitStatusCode.PLANNED,
+        VisitStatusCode.NOT_EXECUTED,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Visit is not in a state that allows takeover",
+        )
+
+    if not _qualifies_user_for_visit(user, visit):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    stmt_log = (
+        select(ActivityLog)
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.target_id == visit.id,
+            ActivityLog.action == "visit_advertised",
+        )
+        .order_by(ActivityLog.created_at.desc())
+        .limit(1)
+    )
+    latest_advertised_log = (await db.execute(stmt_log)).scalars().first()
+    advertiser_id: int | None = None
+    if latest_advertised_log is not None and latest_advertised_log.actor_id is not None:
+        advertiser_id = latest_advertised_log.actor_id
+
+    if advertiser_id is not None:
+        await db.execute(
+            delete(visit_researchers).where(
+                visit_researchers.c.visit_id == visit.id,
+                visit_researchers.c.user_id == advertiser_id,
+            )
+        )
+
+    if all(getattr(r, "id", None) != user_id for r in (visit.researchers or [])):
+        await db.execute(
+            insert(visit_researchers),
+            [{"visit_id": visit.id, "user_id": user_id}],
+        )
+
+    visit.advertized = False
+
+    await log_activity(
+        db,
+        actor_id=user_id,
+        action="visit_takeover_accepted",
+        target_type="visit",
+        target_id=visit.id,
+        details={
+            "previous_researcher_id": advertiser_id,
+            "new_researcher_id": user_id,
+        },
+        commit=False,
+    )
+    await log_activity(
+        db,
+        actor_id=user_id,
+        action="visit_advertised_cancelled",
+        target_type="visit",
+        target_id=visit.id,
+        details=None,
+        commit=False,
+    )
+
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

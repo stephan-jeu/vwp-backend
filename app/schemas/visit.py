@@ -144,6 +144,17 @@ class VisitNotExecutedRequest(BaseModel):
     reason: str
 
 
+class VisitAdvertisedRequest(BaseModel):
+    """Payload for toggling the advertised flag of a visit.
+
+    Args:
+        advertized: Desired advertised state. ``True`` marks the visit as
+            advertised for takeover, ``False`` cancels the advertisement.
+    """
+
+    advertized: bool
+
+
 class VisitAuditPayload(BaseModel):
     """Audit metadata captured when approving or rejecting a visit.
 
@@ -276,6 +287,8 @@ class VisitListRow(BaseModel):
     researchers: list[UserNameRead] = []
     advertized: bool
     quote: bool
+    advertized_by: UserNameRead | None = None
+    can_accept: bool | None = None
 
 
 class VisitListResponse(BaseModel):

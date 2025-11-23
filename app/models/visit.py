@@ -11,6 +11,7 @@ from app.models.cluster import Cluster
 from app.models.function import Function
 from app.models.species import Species
 from app.models.user import User
+from app.models.protocol_visit_window import ProtocolVisitWindow
 
 
 # Association tables for many-to-many relationships
@@ -35,6 +36,17 @@ visit_researchers = Table(
     Column("user_id", ForeignKey("users.id"), primary_key=True),
 )
 
+visit_protocol_visit_windows = Table(
+    "visit_protocol_visit_windows",
+    Base.metadata,
+    Column("visit_id", ForeignKey("visits.id"), primary_key=True),
+    Column(
+        "protocol_visit_window_id",
+        ForeignKey("protocol_visit_windows.id"),
+        primary_key=True,
+    ),
+)
+
 
 class Visit(TimestampMixin, SoftDeleteMixin, Base):
     """Central planning entity representing a field visit."""
@@ -53,6 +65,9 @@ class Visit(TimestampMixin, SoftDeleteMixin, Base):
     )
     species: Mapped[list[Species]] = relationship(Species, secondary=visit_species)
     researchers: Mapped[list[User]] = relationship(User, secondary=visit_researchers)
+    protocol_visit_windows: Mapped[list[ProtocolVisitWindow]] = relationship(
+        ProtocolVisitWindow, secondary="visit_protocol_visit_windows"
+    )
 
     # Free-form grouping identifier to link related visits.
     # Populated with a random string (UUID4) on creation; can be edited to group visits.
