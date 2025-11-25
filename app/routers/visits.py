@@ -183,6 +183,7 @@ async def list_visits(
                 ],
                 "required_researchers": v.required_researchers,
                 "visit_nr": v.visit_nr,
+                "planned_week": v.planned_week,
                 "from_date": v.from_date,
                 "to_date": v.to_date,
                 "duration": v.duration,
@@ -475,6 +476,7 @@ async def list_advertised_visits(
                 ],
                 required_researchers=v.required_researchers,
                 visit_nr=v.visit_nr,
+                planned_week=v.planned_week,
                 from_date=v.from_date,
                 to_date=v.to_date,
                 duration=v.duration,
@@ -733,7 +735,7 @@ async def set_visit_advertised(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     old_advertized = bool(getattr(visit, "advertized", False))
-    new_advertized = bool(payload.advertized)
+    new_advertized = bool(payload.advertised)
 
     if new_advertized == old_advertized:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -877,6 +879,7 @@ async def list_visits_for_audit(
                 ],
                 required_researchers=v.required_researchers,
                 visit_nr=v.visit_nr,
+                planned_week=v.planned_week,
                 from_date=v.from_date,
                 to_date=v.to_date,
                 duration=v.duration,

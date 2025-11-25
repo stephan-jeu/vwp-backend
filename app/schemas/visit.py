@@ -264,6 +264,7 @@ class VisitListRow(BaseModel):
     species: list[SpeciesCompactRead] = []
     required_researchers: int | None
     visit_nr: int | None
+    planned_week: int | None = None
     from_date: date | None
     to_date: date | None
     duration: int | None

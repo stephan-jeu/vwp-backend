@@ -17,6 +17,11 @@ from app.models.function import Function
 from app.models.availability import AvailabilityWeek
 from app.models.user import User
 from app.services import travel_time
+from app.services.visit_status_service import (
+    VisitStatusCode,
+    derive_visit_status,
+    resolve_visit_status,
+)
 
 
 _logger = logging.getLogger("uvicorn.error")
@@ -421,6 +426,39 @@ async def _select_visits_for_week_core(
 
     visits = await _eligible_visits_for_week(db, week_monday)  # type: ignore[arg-type]
 
+    # Normalize planned_week vs researchers invariant before status filtering.
+    # - If there is a planned_week but no researchers, clear planned_week.
+    # - If there are researchers but no planned_week, clear the researchers
+    #   list so the visit is treated as unplanned again.
+    for v in visits:
+        research_list = getattr(v, "researchers", None)
+        researchers = research_list or []
+        has_researchers = bool(researchers)
+        has_planned_week = getattr(v, "planned_week", None) is not None
+        if has_planned_week and not has_researchers:
+            v.planned_week = None
+        elif has_researchers and not has_planned_week and research_list is not None:
+            research_list.clear()
+
+    # Filter to visits that are currently OPEN according to the centralized
+    # status service. When a real DB session is available we resolve status
+    # with ActivityLog data; for tests that pass ``db=None`` we fall back to
+    # the pure derive_visit_status heuristic.
+    if db is not None:
+        filtered: list[Visit] = []
+        for v in visits:
+            try:
+                status = await resolve_visit_status(db, v)
+            except Exception:  # pragma: no cover - defensive only
+                status = derive_visit_status(v, None)
+            if status == VisitStatusCode.OPEN:
+                filtered.append(v)
+        visits = filtered
+    else:
+        visits = [
+            v for v in visits if derive_visit_status(v, None) == VisitStatusCode.OPEN
+        ]
+
     visits_sorted = sorted(
         visits,
         key=lambda v: _priority_key(week_monday, v),
@@ -641,6 +679,7 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
 
             # Commit assignments: update visit.researchers, per-user capacities
             # and fairness tallies.
+            v.planned_week = week
             if getattr(v, "researchers", None) is None:
                 setattr(v, "researchers", [])
             for u in selected_users:

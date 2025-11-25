@@ -39,6 +39,7 @@ class VisitStatusCode(StrEnum):
     * ``executed`` – executed according to protocol.
     * ``executed_with_deviation`` – executed with a deviation log.
     * ``not_executed`` – explicitly logged as not executed.
+    * ``missed`` – derived status if researchers assigned but week number is in the past.
     * ``approved`` – result explicitly approved.
     * ``rejected`` – result explicitly rejected.
     * ``cancelled`` – visit was cancelled.
@@ -54,6 +55,7 @@ class VisitStatusCode(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+    MISSED = "missed"
 
 
 # ActivityLog.action values that influence lifecycle status, ordered by
@@ -156,14 +158,17 @@ def derive_visit_status(
     to_date = getattr(visit, "to_date", None)
     researchers = getattr(visit, "researchers", None) or []
     has_researchers = bool(researchers)
+    planned_week = getattr(visit, "planned_week", None)
 
     # No concrete window yet – considered just created
     if from_date is None or to_date is None:
         return VisitStatusCode.CREATED
 
-    # At least one researcher assigned – planned regardless of exact
-    # timing within the window.
-    if has_researchers:
+    # Planned week + researchers: PLANNED if the window is current/future,
+    # MISSED if the window is already in the past.
+    if has_researchers and planned_week is not None:
+        if to_date < today:
+            return VisitStatusCode.MISSED
         return VisitStatusCode.PLANNED
 
     # No researchers assigned and window is in the past

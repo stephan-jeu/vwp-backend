@@ -99,7 +99,12 @@ async def test_create_update_delete_project_flow(async_client, app, mocker):
 
     # Mock out side-effecting services
     mocker.patch("app.routers.projects.log_activity", return_value=None)
-    mocker.patch("app.routers.projects.soft_delete_entity", return_value=None)
+
+    async def _fake_soft_delete(_db, instance, cascade: bool = True):  # type: ignore[unused-argument]
+        # Mark as soft-deleted so subsequent lookups behave like production
+        setattr(instance, "deleted_at", 1)
+
+    mocker.patch("app.routers.projects.soft_delete_entity", _fake_soft_delete)
 
     # Use a unique code per test run to avoid conflicts within the fake session
     code = f"P-{uuid4()}"

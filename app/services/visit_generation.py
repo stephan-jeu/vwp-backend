@@ -30,7 +30,7 @@ _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "ye
 _logger = logging.getLogger("uvicorn.error")
 
 # Minimum acceptable effective window length (days) for a combined bucket
-MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "15"))
+MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "14"))
 
 # ---- Exception rules scaffolding -------------------------------------------------
 
