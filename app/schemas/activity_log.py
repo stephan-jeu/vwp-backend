@@ -42,3 +42,19 @@ class ActivityLogRead(ActivityLogBase):
     actor: UserNameRead | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ActivityLogListResponse(BaseModel):
+    """Paginated response with recent activity log entries.
+
+    Args:
+        items: List of activity log entries on the current page.
+        total: Total number of matching activity log entries.
+        page: 1-based page number of the current slice.
+        page_size: Maximum number of items per page.
+    """
+
+    items: list[ActivityLogRead]
+    total: int
+    page: int
+    page_size: int

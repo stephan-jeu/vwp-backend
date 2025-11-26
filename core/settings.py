@@ -12,6 +12,12 @@ class Settings(BaseModel):
     app_name: str = Field(default="Veldwerkplanning API")
     debug: bool = Field(default=False)
 
+    # Test mode
+    test_mode_enabled: bool = Field(
+        default_factory=lambda: os.getenv("TEST_MODE_ENABLED", "false").lower()
+        in {"1", "true", "yes"}
+    )
+
     # Database (asyncpg + SQLAlchemy)
     db_user: str = Field(default_factory=lambda: os.getenv("POSTGRES_USER", "postgres"))
     db_password: SecretStr = Field(

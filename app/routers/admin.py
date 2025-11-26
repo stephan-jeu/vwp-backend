@@ -4,12 +4,15 @@ from typing import Annotated
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.models.activity_log import ActivityLog
 from app.models.function import Function
 from app.models.species import Species
 from app.models.user import User
+from app.schemas.activity_log import ActivityLogListResponse, ActivityLogRead
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
@@ -37,6 +40,48 @@ AdminDep = Annotated[User, Depends(require_admin)]
 async def admin_status() -> dict[str, str]:
     """Return admin status placeholder."""
     return {"status": "admin-ok"}
+
+
+@router.get("/activity", response_model=ActivityLogListResponse)
+async def list_activity_logs(
+    _: AdminDep,
+    db: DbDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> ActivityLogListResponse:
+    """Return a paginated list of recent activity log entries.
+
+    Entries are ordered from newest to oldest so that the most recent
+    actions are shown first on the admin dashboard.
+
+    Args:
+        _: Ensures the caller is an admin user.
+        db: Async SQLAlchemy session.
+        page: 1-based page number.
+        page_size: Page size (max 50).
+
+    Returns:
+        Paginated :class:`ActivityLogListResponse` with recent entries.
+    """
+
+    count_stmt = select(func.count()).select_from(ActivityLog)
+    total = int((await db.execute(count_stmt)).scalar_one())
+
+    stmt: Select[tuple[ActivityLog]] = (
+        select(ActivityLog)
+        .options(selectinload(ActivityLog.actor))
+        .order_by(ActivityLog.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = list((await db.execute(stmt)).scalars().all())
+
+    return ActivityLogListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/capacity/visits/families", response_model=CapacitySimulationResponse)

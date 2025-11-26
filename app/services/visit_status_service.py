@@ -164,16 +164,17 @@ def derive_visit_status(
     if from_date is None or to_date is None:
         return VisitStatusCode.CREATED
 
-    # Planned week + researchers: PLANNED if the window is current/future,
-    # MISSED if the window is already in the past.
-    if has_researchers and planned_week is not None:
-        if to_date < today:
-            return VisitStatusCode.MISSED
-        return VisitStatusCode.PLANNED
-
     # No researchers assigned and window is in the past
     if to_date < today:
         return VisitStatusCode.OVERDUE
+
+    # Planned week + researchers: PLANNED if the window is current/future,
+    # MISSED if the window is already in the past.
+    if has_researchers and planned_week is not None:
+        current_week = today.isocalendar()[1]
+        if planned_week < current_week:
+            return VisitStatusCode.MISSED
+        return VisitStatusCode.PLANNED
 
     # Has a date window in the present/future but not yet planned
     return VisitStatusCode.OPEN
@@ -182,6 +183,8 @@ def derive_visit_status(
 async def resolve_visit_status(
     db: AsyncSession,
     visit: Visit,
+    *,
+    today: date | None = None,
 ) -> VisitStatusCode:
     """Resolve the status for an in-memory visit using ActivityLog data.
 
@@ -200,12 +203,14 @@ async def resolve_visit_status(
         return VisitStatusCode.CREATED
 
     last_log = await _latest_status_log_for_visit(db, visit.id)
-    return derive_visit_status(visit, last_log)
+    return derive_visit_status(visit, last_log, today=today)
 
 
 async def resolve_visit_status_by_id(
     db: AsyncSession,
     visit_id: int,
+    *,
+    today: date | None = None,
 ) -> VisitStatusCode | None:
     """Load a visit by id and return its derived status.
 
@@ -232,4 +237,4 @@ async def resolve_visit_status_by_id(
         return None
 
     last_log = await _latest_status_log_for_visit(db, visit_id)
-    return derive_visit_status(visit, last_log)
+    return derive_visit_status(visit, last_log, today=today)

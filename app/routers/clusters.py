@@ -8,6 +8,9 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
+from app.models.project import Project
+from app.models.function import Function
+from app.models.species import Species
 from app.models.user import User
 from app.models.visit import (
     Visit,
@@ -279,7 +282,7 @@ async def create_cluster(
         )
     )
     visits = (await db.execute(visits_stmt)).scalars().all()
-    return ClusterWithVisitsRead(
+    response = ClusterWithVisitsRead(
         id=cluster.id,
         project_id=cluster.project_id,
         address=cluster.address,
@@ -336,6 +339,62 @@ async def create_cluster(
         ],
         warnings=warnings,
     )
+
+    # Log cluster creation including high-level function/species context
+    project_code: str | None = None
+    if cluster.project_id is not None:
+        project_stmt: Select[tuple[Project]] = select(Project).where(
+            Project.id == cluster.project_id
+        )
+        project = (await db.execute(project_stmt)).scalars().first()
+        if project is not None:
+            project_code = getattr(project, "code", None)
+
+    function_ids: set[int] = set()
+    species_ids: set[int] = set()
+    for combo in payload.combos or []:
+        function_ids.update(combo.function_ids)
+        species_ids.update(combo.species_ids)
+
+    function_names: list[str] = []
+    species_abbreviations: list[str] = []
+
+    if function_ids:
+        func_stmt: Select[tuple[Function]] = select(Function).where(
+            Function.id.in_(sorted(function_ids))
+        )
+        funcs = (await db.execute(func_stmt)).scalars().all()
+        function_names = [f.name or "" for f in funcs if getattr(f, "name", None)]
+
+    if species_ids:
+        species_stmt: Select[tuple[Species]] = select(Species).where(
+            Species.id.in_(sorted(species_ids))
+        )
+        species_rows = (await db.execute(species_stmt)).scalars().all()
+        for s in species_rows:
+            label = getattr(s, "abbreviation", None) or getattr(s, "name", None)
+            if label:
+                species_abbreviations.append(label)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="cluster_created",
+        target_type="cluster",
+        target_id=cluster.id,
+        details={
+            "project_id": cluster.project_id,
+            "project_code": project_code,
+            "cluster_number": cluster.cluster_number,
+            "address": cluster.address,
+            "function_ids": sorted(function_ids),
+            "species_ids": sorted(species_ids),
+            "function_names": function_names,
+            "species_abbreviations": species_abbreviations,
+        },
+    )
+
+    return response
 
 
 @router.post("/{cluster_id}/duplicate", response_model=ClusterRead)
@@ -432,6 +491,14 @@ async def delete_cluster(admin: AdminDep, db: DbDep, cluster_id: int) -> Respons
     await soft_delete_entity(db, cluster, cascade=True)
     await db.commit()
 
+    project_code: str | None = None
+    project_id = getattr(cluster, "project_id", None)
+    if project_id is not None:
+        stmt: Select[tuple[Project]] = select(Project).where(Project.id == project_id)
+        project = (await db.execute(stmt)).scalars().first()
+        if project is not None:
+            project_code = getattr(project, "code", None)
+
     await log_activity(
         db,
         actor_id=admin.id,
@@ -442,6 +509,7 @@ async def delete_cluster(admin: AdminDep, db: DbDep, cluster_id: int) -> Respons
             "project_id": getattr(cluster, "project_id", None),
             "cluster_number": getattr(cluster, "cluster_number", None),
             "address": getattr(cluster, "address", None),
+            "project_code": project_code,
         },
     )
 
