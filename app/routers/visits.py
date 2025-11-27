@@ -20,6 +20,7 @@ from app.schemas.user import UserNameRead
 from app.schemas.activity_log import ActivityLogRead
 from app.schemas.visit import (
     VisitAdvertisedRequest,
+    VisitAdminPlanningStatusRequest,
     VisitApprovalRequest,
     VisitCancelRequest,
     VisitCreate,
@@ -39,8 +40,10 @@ from app.services.visit_planning_selection import _qualifies_user_for_visit
 from app.services.visit_status_service import (
     VisitStatusCode,
     resolve_visit_status,
+    resolve_visit_status_by_id,
 )
 from app.services.visit_execution_updates import update_subsequent_visits
+from core.settings import get_settings
 from db.session import get_db
 
 router = APIRouter()
@@ -53,12 +56,13 @@ UserDep = Annotated[User, Depends(get_current_user)]
 
 @router.get("", response_model=VisitListResponse)
 async def list_visits(
-    _: UserDep,
+    current_user: UserDep,
     db: DbDep,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
     search: Annotated[str | None, Query()] = None,
     statuses: Annotated[list[VisitStatusCode] | None, Query()] = None,
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> VisitListResponse:
     """Return a paginated list of visits for the overview table.
 
@@ -68,7 +72,7 @@ async def list_visits(
     still avoiding lazy-loading at response time.
 
     Args:
-        _: Ensures the caller is authenticated (admin or researcher).
+        current_user: Ensures the caller is authenticated (admin or researcher).
         db: Async SQLAlchemy session.
         page: 1-based page number.
         page_size: Page size (max 200).
@@ -80,6 +84,11 @@ async def list_visits(
     Returns:
         Paginated :class:`VisitListResponse` with flattened rows.
     """
+
+    settings = get_settings()
+    effective_today: date | None = None
+    if settings.test_mode_enabled and getattr(current_user, "admin", False):
+        effective_today = simulated_today
 
     stmt = select(Visit).options(
         selectinload(Visit.cluster).selectinload(Cluster.project),
@@ -127,7 +136,7 @@ async def list_visits(
     # Derive lifecycle status for each visit once, then filter by status
     status_map: dict[int, VisitStatusCode] = {}
     for v in visits:
-        status_map[v.id] = await resolve_visit_status(db, v)
+        status_map[v.id] = await resolve_visit_status(db, v, today=effective_today)
 
     if statuses:
         allowed = set(statuses)
@@ -223,15 +232,21 @@ async def list_visits(
 
 @router.get("/{visit_id}", response_model=VisitListRow)
 async def get_visit_detail(
-    _: UserDep,
+    current_user: UserDep,
     db: DbDep,
     visit_id: int,
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> VisitListRow:
     """Return detailed information for a single visit.
 
     The payload matches :class:`VisitListRow` used by the overview table,
     so the frontend can reuse the same data model for detail views.
     """
+
+    settings = get_settings()
+    effective_today: date | None = None
+    if settings.test_mode_enabled and getattr(current_user, "admin", False):
+        effective_today = simulated_today
 
     stmt = (
         select(Visit)
@@ -250,7 +265,7 @@ async def get_visit_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found"
         )
 
-    status = await resolve_visit_status(db, visit)
+    status = await resolve_visit_status(db, visit, today=effective_today)
     cluster = visit.cluster
     project: Project | None = getattr(cluster, "project", None)
     project_code = project.code if project else ""
@@ -369,6 +384,7 @@ async def create_visit(
 async def list_advertised_visits(
     user: UserDep,
     db: DbDep,
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> list[VisitListRow]:
     """Return all currently advertised visits available for takeover.
 
@@ -377,6 +393,11 @@ async def list_advertised_visits(
     includes the user who most recently advertised the visit and a boolean flag
     indicating whether the current user qualifies to accept the visit.
     """
+
+    settings = get_settings()
+    effective_today: date | None = None
+    if settings.test_mode_enabled and getattr(user, "admin", False):
+        effective_today = simulated_today
 
     stmt = (
         select(Visit)
@@ -395,7 +416,7 @@ async def list_advertised_visits(
 
     status_map: dict[int, VisitStatusCode] = {}
     for v in visits:
-        status_map[v.id] = await resolve_visit_status(db, v)
+        status_map[v.id] = await resolve_visit_status(db, v, today=effective_today)
 
     allowed_statuses: set[VisitStatusCode] = {
         VisitStatusCode.PLANNED,
@@ -711,6 +732,93 @@ async def execute_visit(
 
 
 @router.post(
+    "/{visit_id}/admin-planning-status",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def set_admin_planning_status(
+    admin: AdminDep,
+    db: DbDep,
+    visit_id: int,
+    payload: VisitAdminPlanningStatusRequest,
+) -> Response:
+    """Adjust the planning-oriented status for a visit as an admin.
+
+    This endpoint allows admins to reset a visit back to an "open" state by
+    clearing researchers and planned week, or to mark it as "planned" by
+    assigning a week and researchers. In both cases an audit log entry with
+    ``action="visit_status_cleared"`` is created so that the derived
+    lifecycle status is recomputed based on the updated planning data.
+    """
+
+    visit = await db.get(Visit, visit_id)
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    mode = (payload.mode or "").strip().lower()
+    if mode not in {"open", "planned"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="mode must be 'open' or 'planned'",
+        )
+
+    previous_status = await resolve_visit_status_by_id(db, visit_id)
+
+    if mode == "open":
+        visit.planned_week = None
+        await db.execute(
+            delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
+        )
+        planned_week = None
+        researcher_ids: list[int] | None = None
+    else:
+        if payload.planned_week is None or payload.researcher_ids is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "planned_week and researcher_ids are required when "
+                    "mode is 'planned'"
+                ),
+            )
+
+        visit.planned_week = payload.planned_week
+        await db.execute(
+            delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
+        )
+        if payload.researcher_ids:
+            await db.execute(
+                insert(visit_researchers),
+                [
+                    {"visit_id": visit.id, "user_id": rid}
+                    for rid in payload.researcher_ids
+                ],
+            )
+        planned_week = payload.planned_week
+        researcher_ids = list(payload.researcher_ids)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="visit_status_cleared",
+        target_type="visit",
+        target_id=visit.id,
+        details={
+            "mode": mode,
+            "previous_status": (
+                None if previous_status is None else previous_status.value
+            ),
+            "planned_week": planned_week,
+            "researcher_ids": researcher_ids,
+            "comment": payload.comment,
+        },
+        commit=False,
+    )
+
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
     "/{visit_id}/advertised",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
@@ -765,6 +873,7 @@ async def set_visit_advertised(
 async def list_visits_for_audit(
     _: AdminDep,
     db: DbDep,
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> list[VisitListRow]:
     """Return all visits that are relevant for admin audit.
 
@@ -782,6 +891,10 @@ async def list_visits_for_audit(
         have undergone audit.
     """
 
+    settings = get_settings()
+    effective_today: date | None = None
+    if settings.test_mode_enabled:
+        effective_today = simulated_today
     stmt = select(Visit).options(
         selectinload(Visit.cluster).selectinload(Cluster.project),
         selectinload(Visit.functions),

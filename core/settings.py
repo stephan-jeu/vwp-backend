@@ -14,7 +14,7 @@ class Settings(BaseModel):
 
     # Test mode
     test_mode_enabled: bool = Field(
-        default_factory=lambda: os.getenv("TEST_MODE_ENABLED", "false").lower()
+        default_factory=lambda: os.getenv("TEST_MODE_ENABLED", "true").lower()
         in {"1", "true", "yes"}
     )
 

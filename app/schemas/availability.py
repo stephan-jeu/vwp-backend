@@ -46,6 +46,9 @@ class AvailabilityCompact(BaseModel):
     daytime_days: int = Field(ge=0, le=7)
     nighttime_days: int = Field(ge=0, le=7)
     flex_days: int = Field(ge=0, le=7)
+    assigned_morning: int = Field(default=0, ge=0)
+    assigned_daytime: int = Field(default=0, ge=0)
+    assigned_evening: int = Field(default=0, ge=0)
 
 
 class UserAvailability(BaseModel):

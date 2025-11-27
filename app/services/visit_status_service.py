@@ -69,6 +69,7 @@ _STATUS_ACTIONS: set[str] = {
     "visit_approved",
     "visit_rejected",
     "visit_cancelled",
+    "visit_status_cleared",
 }
 
 
@@ -146,12 +147,12 @@ def derive_visit_status(
             return VisitStatusCode.EXECUTED
         if action == "visit_not_executed":
             return VisitStatusCode.NOT_EXECUTED
-
-        # Unknown action that slipped through the filter; log and
-        # continue with fallback logic.
-        logger.warning(
-            "Unknown visit status action encountered in ActivityLog: %s", action
-        )
+        if action == "visit_status_cleared":
+            pass
+        else:
+            logger.warning(
+                "Unknown visit status action encountered in ActivityLog: %s", action
+            )
 
     # 2) Fallback planning-based states
     from_date = getattr(visit, "from_date", None)

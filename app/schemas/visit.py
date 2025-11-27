@@ -155,6 +155,22 @@ class VisitAdvertisedRequest(BaseModel):
     advertized: bool
 
 
+class VisitAdminPlanningStatusRequest(BaseModel):
+    """Payload for admin-driven planning status adjustments.
+
+    Args:
+        mode: Desired planning mode for the visit (``"open"`` or ``"planned"``).
+        planned_week: Optional ISO week number when planning the visit.
+        researcher_ids: Optional list of researcher ids to assign when
+            planning the visit.
+    """
+
+    mode: str
+    planned_week: int | None = None
+    researcher_ids: list[int] | None = None
+    comment: str | None = None
+
+
 class VisitAuditPayload(BaseModel):
     """Audit metadata captured when approving or rejecting a visit.
 

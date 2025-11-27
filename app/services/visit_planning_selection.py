@@ -441,22 +441,23 @@ async def _select_visits_for_week_core(
             research_list.clear()
 
     # Filter to visits that are currently OPEN according to the centralized
-    # status service. When a real DB session is available we resolve status
-    # with ActivityLog data; for tests that pass ``db=None`` we fall back to
-    # the pure derive_visit_status heuristic.
+    # status service. Use ``week_monday`` as the reference "today" so that
+    # simulations and tests for historical weeks remain deterministic.
     if db is not None:
         filtered: list[Visit] = []
         for v in visits:
             try:
-                status = await resolve_visit_status(db, v)
+                status = await resolve_visit_status(db, v, today=week_monday)
             except Exception:  # pragma: no cover - defensive only
-                status = derive_visit_status(v, None)
+                status = derive_visit_status(v, None, today=week_monday)
             if status == VisitStatusCode.OPEN:
                 filtered.append(v)
         visits = filtered
     else:
         visits = [
-            v for v in visits if derive_visit_status(v, None) == VisitStatusCode.OPEN
+            v
+            for v in visits
+            if derive_visit_status(v, None, today=week_monday) == VisitStatusCode.OPEN
         ]
 
     visits_sorted = sorted(
