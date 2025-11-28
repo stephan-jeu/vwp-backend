@@ -497,6 +497,264 @@ async def test_morning_duration_and_start_text_use_calculated_start(mocker, fake
 
 
 @pytest.mark.asyncio
+async def test_evening_duration_uses_span_from_earliest_start_to_latest_end(
+    mocker, fake_db
+):
+    # Arrange: two evening protocols starting at different times around sunset
+    # - p1: starts 1.5h before sunset, duration 2h
+    # - p2: starts at sunset, duration 2h
+    # Expected overall span: from -90 minutes to +120 minutes relative to sunset
+    # => 210 minutes (3.5 hours).
+
+    today_year = date.today().year
+    wf = date(today_year, 6, 1)
+    wt = date(today_year, 7, 1)
+
+    p1 = _make_protocol(
+        proto_id=901,
+        fam_name="Vleermuis",
+        species_id=1901,
+        species_name="BatEA",
+        fn_id=1910,
+        fn_name="Nest",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNSET",
+        start_rel_min=-90,
+        visit_duration_h=2.0,
+    )
+    p2 = _make_protocol(
+        proto_id=902,
+        fam_name="Vleermuis",
+        species_id=1902,
+        species_name="BatEB",
+        fn_id=1911,
+        fn_name="Nest",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNSET",
+        start_rel_min=0,
+        visit_duration_h=2.0,
+    )
+
+    # Provide protocols directly to bypass DB resolution
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    cluster = Cluster(id=27, project_id=1, address="c27", cluster_number=27)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[],
+        species_ids=[],
+        protocols=[p1, p2],
+    )
+
+    # Assert: pick the evening visit and verify duration covers the full span
+    v = next((vv for vv in visits if vv.part_of_day == "Avond"), None)
+    assert v is not None
+    assert v.duration == 210
+
+
+@pytest.mark.asyncio
+async def test_pad_family_uses_simple_one_visit_per_window(mocker, fake_db):
+    # Arrange: Pad-family protocols should not be combined or bucketed; instead,
+    # each ProtocolVisitWindow should yield its own visit, even when other
+    # families are present in the same cluster.
+
+    today_year = date.today().year
+    wf1 = date(today_year, 5, 1)
+    wt1 = date(today_year, 5, 15)
+    wf2 = date(today_year, 5, 16)
+    wt2 = date(today_year, 5, 31)
+
+    # Pad family protocol with two windows
+    fam_pad = Family(id=901, name="Pad", priority=1)
+    sp_pad = Species(id=1901, family_id=fam_pad.id, name="Padsoort", abbreviation="PD")
+    sp_pad.family = fam_pad
+    fn_pad = Function(id=1910, name="PadFn")
+
+    p_pad = Protocol(
+        id=901,
+        species_id=sp_pad.id,
+        function_id=fn_pad.id,
+        start_timing_reference="SUNSET",
+    )
+    p_pad.species = sp_pad
+    p_pad.function = fn_pad
+    w1 = ProtocolVisitWindow(
+        id=9011,
+        protocol_id=p_pad.id,
+        visit_index=1,
+        window_from=wf1,
+        window_to=wt1,
+        required=True,
+        label=None,
+    )
+    w2 = ProtocolVisitWindow(
+        id=9012,
+        protocol_id=p_pad.id,
+        visit_index=2,
+        window_from=wf2,
+        window_to=wt2,
+        required=True,
+        label=None,
+    )
+    p_pad.visit_windows = [w1, w2]
+
+    # Another family (e.g. Vleermuis) protocol to ensure mixed clusters are allowed
+    fam_other = Family(id=902, name="Vleermuis", priority=1)
+    sp_other = Species(id=1902, family_id=fam_other.id, name="BatXC", abbreviation="BX")
+    sp_other.family = fam_other
+    fn_other = Function(id=1911, name="Nest")
+
+    p_other = Protocol(
+        id=902,
+        species_id=sp_other.id,
+        function_id=fn_other.id,
+        start_timing_reference="SUNSET",
+    )
+    p_other.species = sp_other
+    p_other.function = fn_other
+    w_other = ProtocolVisitWindow(
+        id=9021,
+        protocol_id=p_other.id,
+        visit_index=1,
+        window_from=wf1,
+        window_to=wt2,
+        required=True,
+        label=None,
+    )
+    p_other.visit_windows = [w_other]
+
+    funcs = {fn_pad.id: fn_pad, fn_other.id: fn_other}
+    species = {sp_pad.id: sp_pad, sp_other.id: sp_other}
+
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql:
+            return _FakeResult([p_pad, p_other])
+        if "FROM functions" in sql:
+            return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql:
+            return _FakeResult(list(species.values()))
+        return _FakeResult([])
+
+    fake_db.execute = exec_stub  # type: ignore[attr-defined]
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
+    cluster = Cluster(id=28, project_id=1, address="c28", cluster_number=28)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[fn_pad.id, fn_other.id],
+        species_ids=[sp_pad.id, sp_other.id],
+    )
+
+    # Assert: Pad family yields exactly one visit per window without combining
+    pad_visits = [v for v in visits if any(f.id == fn_pad.id for f in v.functions)]
+    assert len(pad_visits) == 2
+
+    expected_windows = {(wf1, wt1), (wf2, wt2)}
+    actual_windows = {(v.from_date, v.to_date) for v in pad_visits}
+    assert actual_windows == expected_windows
+
+    # Each Pad visit should only contain the Pad function
+    for v in pad_visits:
+        fn_ids = {f.id for f in v.functions}
+        assert fn_ids == {fn_pad.id}
+
+    # Other family should still produce at least one visit
+    other_visits = [v for v in visits if any(f.id == fn_other.id for f in v.functions)]
+    assert len(other_visits) >= 1
+
+
+@pytest.mark.asyncio
+async def test_pad_family_respects_min_gap_across_all_visits(mocker, fake_db):
+    # Arrange: Pad-family protocol with two windows closer than the configured
+    # min_period_between_visits_value; simple-mode should shift the second
+    # visit start so that the gap is respected.
+
+    today_year = date.today().year
+    wf1 = date(today_year, 5, 1)
+    wt1 = date(today_year, 5, 3)
+    wf2 = date(today_year, 5, 4)
+    wt2 = date(today_year, 5, 10)
+
+    fam_pad = Family(id=911, name="Pad", priority=1)
+    sp_pad = Species(id=1911, family_id=fam_pad.id, name="PadsoortB", abbreviation="PB")
+    sp_pad.family = fam_pad
+    fn_pad = Function(id=1920, name="PadFnB")
+
+    p_pad = Protocol(
+        id=911,
+        species_id=sp_pad.id,
+        function_id=fn_pad.id,
+        start_timing_reference="SUNSET",
+    )
+    p_pad.species = sp_pad
+    p_pad.function = fn_pad
+    # Set family-level min gap 7 days
+    setattr(p_pad, "min_period_between_visits_value", 7)
+    setattr(p_pad, "min_period_between_visits_unit", "dagen")
+
+    w1 = ProtocolVisitWindow(
+        id=9111,
+        protocol_id=p_pad.id,
+        visit_index=1,
+        window_from=wf1,
+        window_to=wt1,
+        required=True,
+        label=None,
+    )
+    w2 = ProtocolVisitWindow(
+        id=9112,
+        protocol_id=p_pad.id,
+        visit_index=2,
+        window_from=wf2,
+        window_to=wt2,
+        required=True,
+        label=None,
+    )
+    p_pad.visit_windows = [w1, w2]
+
+    funcs = {fn_pad.id: fn_pad}
+    species = {sp_pad.id: sp_pad}
+
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql:
+            return _FakeResult([p_pad])
+        if "FROM functions" in sql:
+            return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql:
+            return _FakeResult(list(species.values()))
+        return _FakeResult([])
+
+    fake_db.execute = exec_stub  # type: ignore[attr-defined]
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
+    cluster = Cluster(id=29, project_id=1, address="c29", cluster_number=29)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[fn_pad.id],
+        species_ids=[sp_pad.id],
+    )
+
+    # Assert: two Pad visits with at least 7 days between their from_dates
+    pad_visits = [v for v in visits if any(f.id == fn_pad.id for f in v.functions)]
+    assert len(pad_visits) == 2
+    pad_visits.sort(key=lambda v: v.from_date)
+    gap_days = (pad_visits[1].from_date - pad_visits[0].from_date).days
+    assert gap_days >= 7
+
+
+@pytest.mark.asyncio
 async def test_completion_respects_min_gap_when_attaching(mocker, fake_db):
     # Arrange: one flex protocol with two identical windows and min gap 20d,
     # plus a morning-only and an evening-only to create Ochtend and Avond buckets.
@@ -598,3 +856,100 @@ async def test_completion_respects_min_gap_when_attaching(mocker, fake_db):
     # and must not be attached to both 05-15 visits (morning and evening).
     vx = [v for v in visits if any(f.id == fnx.id for f in v.functions)]
     assert len(vx) >= 2
+
+
+@pytest.mark.asyncio
+async def test_completion_fallback_can_place_before_first_visit(mocker, fake_db):
+    # Arrange: wide-window protocol with two required windows and min gap 20d,
+    # plus a tighter companion protocol that seeds a later combined bucket.
+    # The primary bucketing phase will place the first occurrence of the wide
+    # protocol in the later bucket; the completion pass must then place the
+    # second occurrence on the left side of the window, before that first
+    # planned visit, while still respecting the min-gap.
+
+    today_year = date.today().year
+    wf_wide = date(today_year, 7, 15)
+    wt_wide = date(today_year, 9, 1)
+    wf_tight = date(today_year, 8, 15)
+    wt_tight = date(today_year, 9, 15)
+
+    fam = Family(id=701, name="Vleermuis", priority=1)
+    sp = Species(id=1701, family_id=fam.id, name="BatYA", abbreviation="BY")
+    sp.family = fam
+    fn_wide = Function(id=1710, name="Nest")
+    fn_tight = Function(id=1711, name="Nest")
+
+    # Wide protocol with two identical windows and a symmetric min-gap of 20 days
+    p_wide = Protocol(
+        id=701,
+        species_id=sp.id,
+        function_id=fn_wide.id,
+        start_timing_reference="SUNSET",
+    )
+    p_wide.species = sp
+    p_wide.function = fn_wide
+    w1 = ProtocolVisitWindow(
+        id=7011,
+        protocol_id=p_wide.id,
+        visit_index=1,
+        window_from=wf_wide,
+        window_to=wt_wide,
+        required=True,
+        label=None,
+    )
+    w2 = ProtocolVisitWindow(
+        id=7012,
+        protocol_id=p_wide.id,
+        visit_index=2,
+        window_from=wf_wide,
+        window_to=wt_wide,
+        required=True,
+        label=None,
+    )
+    p_wide.visit_windows = [w1, w2]
+    setattr(p_wide, "min_period_between_visits_value", 20)
+    setattr(p_wide, "min_period_between_visits_unit", "dagen")
+
+    # Tighter companion protocol that starts later and seeds the combined bucket
+    p_tight = Protocol(
+        id=702,
+        species_id=sp.id,
+        function_id=fn_tight.id,
+        start_timing_reference="SUNSET",
+    )
+    p_tight.species = sp
+    p_tight.function = fn_tight
+    w_tight = ProtocolVisitWindow(
+        id=7021,
+        protocol_id=p_tight.id,
+        visit_index=1,
+        window_from=wf_tight,
+        window_to=wt_tight,
+        required=True,
+        label=None,
+    )
+    p_tight.visit_windows = [w_tight]
+
+    # Provide protocols directly to bypass DB resolution
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    cluster = Cluster(id=17, project_id=1, address="c17", cluster_number=17)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[],
+        species_ids=[],
+        protocols=[p_wide, p_tight],
+    )
+
+    # Assert: wide protocol appears in at least two visits within its window,
+    # and their from_dates are at least 20 days apart (symmetric min-gap).
+    v_wide = [v for v in visits if any(f.id == fn_wide.id for f in v.functions)]
+    assert len(v_wide) >= 2
+    v_wide.sort(key=lambda v: v.from_date)
+
+    first, second = v_wide[0], v_wide[1]
+    assert wf_wide <= first.from_date <= wt_wide
+    assert wf_wide <= second.from_date <= wt_wide
+    assert (second.from_date - first.from_date).days >= 20

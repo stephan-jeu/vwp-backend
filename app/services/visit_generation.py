@@ -64,6 +64,15 @@ def _normalize_family_name(name: str | None) -> str:
     return n
 
 
+def _is_exception_family_protocol(p: Protocol) -> bool:
+    try:
+        fam = getattr(getattr(p, "species", None), "family", None)
+        name = _normalize_family_name(getattr(fam, "name", None))
+        return name == "pad"
+    except Exception:
+        return False
+
+
 def _same_family_name(a: Protocol, b: Protocol) -> bool:
     """Return True if two protocols share the same species family name.
 
@@ -453,14 +462,37 @@ def _complete_missing_occurrences(
                         candidate_from, last_planned + timedelta(days=proto_days)
                     )
                 if candidate_from > wt:
-                    if _DEBUG_VISIT_GEN:
-                        _logger.warning(
-                            "completion cannot place proto=%s within window %s->%s (min-gap or bounds)",
-                            getattr(p, "id", None),
-                            wf.isoformat(),
-                            wt.isoformat(),
-                        )
-                    continue
+                    # Fallback: try placing *before* the earliest planned occurrence
+                    # within this window, still respecting min-gap and bounds. This
+                    # handles wide windows where the first planned visit ended up
+                    # late (e.g. in a tight combined bucket), leaving only room on
+                    # the left side of the window for additional occurrences.
+                    earliest_in_window = min(
+                        [d for d in planned if wf <= d <= wt], default=None
+                    )
+                    fallback_from: date | None = None
+                    # Prefer using the full left side of the window when possible.
+                    # We only require that there is at least one planned visit
+                    # inside [wf, wt] to justify this fallback; min-gap to earlier
+                    # visits is still enforced via _respects_min_gap.
+                    if earliest_in_window is not None:
+                        fallback_from = wf
+
+                    if (
+                        fallback_from is None
+                        or fallback_from > wt
+                        or not _respects_min_gap(planned, fallback_from, proto_days)
+                    ):
+                        if _DEBUG_VISIT_GEN:
+                            _logger.warning(
+                                "completion cannot place proto=%s within window %s->%s (min-gap or bounds)",
+                                getattr(p, "id", None),
+                                wf.isoformat(),
+                                wt.isoformat(),
+                            )
+                        continue
+
+                    candidate_from = fallback_from
                 candidate_to = wt
                 nxt_candidates = [d for d in planned if d >= candidate_from]
                 nxt = min(nxt_candidates) if nxt_candidates else None
@@ -838,7 +870,14 @@ async def generate_visits_for_cluster(
         earliest = min(it[1] for it in items)
         return (length, earliest)
 
-    ordered = sorted([p for p in protocols if p.id in proto_windows], key=tightness_key)
+    ordered = sorted(
+        [
+            p
+            for p in protocols
+            if p.id in proto_windows and not _is_exception_family_protocol(p)
+        ],
+        key=tightness_key,
+    )
     if _DEBUG_VISIT_GEN:
         _logger.info(
             "proto options: %s",
@@ -1287,6 +1326,10 @@ async def generate_visits_for_cluster(
 
     for pid, windows in proto_windows.items():
         p = proto_id_to_protocol[pid]
+        # Pad-family protocols are handled in a simple one-visit-per-window mode
+        # after the main completion logic; skip them here.
+        if _is_exception_family_protocol(p):
+            continue
         planned = sorted(proto_to_planned_froms.get(pid, []))
         proto_days = _unit_to_days(
             p.min_period_between_visits_value, p.min_period_between_visits_unit
@@ -1357,15 +1400,38 @@ async def generate_visits_for_cluster(
                     candidate_from, last_planned + timedelta(days=proto_days)
                 )
             if candidate_from > wt:
-                if _DEBUG_VISIT_GEN:
-                    _logger.warning(
-                        "completion cannot place proto=%s vidx=%s within window %s->%s (min-gap or bounds)",
-                        getattr(p, "id", None),
-                        vidx,
-                        wf.isoformat(),
-                        wt.isoformat(),
-                    )
-                continue
+                # Fallback: try placing *before* the earliest planned occurrence
+                # within this window, still respecting min-gap and bounds. This
+                # handles wide windows where the first planned visit ended up
+                # late (e.g. in a tight combined bucket), leaving only room on
+                # the left side of the window for additional occurrences.
+                earliest_in_window = min(
+                    [d for d in planned if wf <= d <= wt], default=None
+                )
+                fallback_from: date | None = None
+                # Prefer using the full left side of the window when possible.
+                # We only require that there is at least one planned visit
+                # inside [wf, wt] to justify this fallback; min-gap to earlier
+                # visits is still enforced via _respects_min_gap.
+                if earliest_in_window is not None:
+                    fallback_from = wf
+
+                if (
+                    fallback_from is None
+                    or fallback_from > wt
+                    or not _respects_min_gap(planned, fallback_from, proto_days)
+                ):
+                    if _DEBUG_VISIT_GEN:
+                        _logger.warning(
+                            "completion cannot place proto=%s vidx=%s within window %s->%s (min-gap or bounds)",
+                            getattr(p, "id", None),
+                            vidx,
+                            wf.isoformat(),
+                            wt.isoformat(),
+                        )
+                    continue
+
+                candidate_from = fallback_from
             candidate_to = wt
             nxt_candidates = [d for d in planned if d >= candidate_from]
             nxt = min(nxt_candidates) if nxt_candidates else None
@@ -1642,6 +1708,60 @@ async def generate_visits_for_cluster(
                     max(counters.values()) + 1 if counters else 1
                 )
 
+    # Simple-mode for Pad-family protocols: one visit per protocol window
+    # without combining or bucketing, but enforcing a family-level
+    # min_period_between_visits across all Pad visits.
+    pad_gap_days = 0
+    for p in protocols:
+        if not _is_exception_family_protocol(p):
+            continue
+        pad_gap_days = max(
+            pad_gap_days,
+            _unit_to_days(
+                p.min_period_between_visits_value, p.min_period_between_visits_unit
+            )
+            or 0,
+        )
+
+    pad_windows: list[tuple[date, date, Protocol, set[str] | None, int]] = []
+    for p in protocols:
+        if not _is_exception_family_protocol(p):
+            continue
+        for _vidx, wf, wt, parts, pvw_id in proto_windows.get(p.id, []):
+            if wf > wt:
+                continue
+            pad_windows.append((wf, wt, p, parts, pvw_id))
+
+    if pad_windows:
+        pad_windows.sort(key=lambda it: it[0])
+        last_pad_from: date | None = None
+        for wf, wt, p, parts, pvw_id in pad_windows:
+            candidate_from = wf
+            if last_pad_from is not None and pad_gap_days:
+                from_with_gap = last_pad_from + timedelta(days=pad_gap_days)
+                if from_with_gap > candidate_from:
+                    candidate_from = from_with_gap
+            if candidate_from > wt:
+                if _DEBUG_VISIT_GEN:
+                    _logger.warning(
+                        "Pad simple-mode cannot place proto=%s within window %s->%s (min-gap or bounds)",
+                        getattr(p, "id", None),
+                        wf.isoformat(),
+                        wt.isoformat(),
+                    )
+                continue
+            visits_to_create.append(
+                {
+                    "from_date": candidate_from,
+                    "to_date": wt,
+                    "protocols": [p],
+                    "chosen_part_of_day": None,
+                    "proto_parts": {p.id: parts},
+                    "proto_pvw_ids": {p.id: pvw_id},
+                }
+            )
+            last_pad_from = candidate_from
+
     # Order by start date to assign visit_nr
     visits_to_create.sort(key=lambda v: v["from_date"])
 
@@ -1670,7 +1790,7 @@ async def generate_visits_for_cluster(
             if precip_options
             else None
         )
-        # duration: take max in hours -> minutes
+        # duration: base on max protocol duration in minutes
         durations = [
             p.visit_duration_hours for p in protos if p.visit_duration_hours is not None
         ]
@@ -1688,8 +1808,8 @@ async def generate_visits_for_cluster(
             _derive_part_of_day(p) for p in protos if _derive_part_of_day(p) is not None
         ]
         part_of_day = chosen_bucket_part or (part_values[0] if part_values else None)
-        # If morning, recompute duration as (latest end) - (calculated start), where
-        # calculated start considers both explicit start refs and (end - proto duration).
+        # For morning/evening, refine duration as span between earliest plausible start
+        # and latest plausible end across all contributing protocols.
         calc_start_for_duration: int | None = None
         end_candidates_for_duration = [
             _derive_end_time_minutes(p)
@@ -1717,6 +1837,9 @@ async def generate_visits_for_cluster(
                 starts_from_end_minus_duration,
                 start_time,
             )
+
+        # Morning: use explicit end constraints plus derived starts-from-end to
+        # compute a span from earliest plausible start to latest end.
         if part_of_day == "Ochtend" and end_candidates_for_duration:
             all_start_candidates = (
                 start_candidates_for_duration + starts_from_end_minus_duration
@@ -1732,6 +1855,38 @@ async def generate_visits_for_cluster(
                         all_start_candidates,
                         calc_start_for_duration,
                         latest_end,
+                        new_duration,
+                        duration_min,
+                    )
+                duration_min = new_duration
+
+        # Evening: use earliest explicit/derived start and latest plausible end,
+        # where ends can come from explicit end refs or (start + duration).
+        if part_of_day == "Avond" and start_candidates_for_duration:
+            ends_from_start: list[int] = []
+            for p in protos:
+                s = _derive_start_time_minutes(p)
+                dur_h = getattr(p, "visit_duration_hours", None)
+                if s is not None and dur_h is not None:
+                    ends_from_start.append(int(s + int(dur_h * 60)))
+
+            all_end_candidates: list[int] = []
+            if end_candidates_for_duration:
+                all_end_candidates.extend(int(e) for e in end_candidates_for_duration)
+            all_end_candidates.extend(ends_from_start)
+
+            if all_end_candidates:
+                earliest_start = int(min(start_candidates_for_duration))
+                latest_end_all = int(max(all_end_candidates))
+                new_duration = int(max(0, latest_end_all - earliest_start))
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "duration calc (Avond): protos=%s start_candidates=%s end_candidates_all=%s earliest_start=%s latest_end=%s -> duration=%s (prev=%s)",
+                        [getattr(p, "id", None) for p in protos],
+                        start_candidates_for_duration,
+                        all_end_candidates,
+                        earliest_start,
+                        latest_end_all,
                         new_duration,
                         duration_min,
                     )
