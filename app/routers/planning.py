@@ -10,9 +10,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.visit import Visit
 from app.models.cluster import Cluster
-from app.models.project import Project
-from app.models.function import Function
-from app.models.species import Species
 from app.models.user import User
 from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
 from app.services.activity_log_service import log_activity

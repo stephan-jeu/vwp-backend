@@ -1,13 +1,9 @@
 import pytest
-import pytest_asyncio
 from datetime import datetime
 
 from app.services.soft_delete import soft_delete_entity
 from app.models.project import Project
-from app.models.cluster import Cluster
-from app.models.visit import Visit
 from app.models.user import User
-from app.models.availability import AvailabilityWeek
 
 
 class _FakeResult:

@@ -12,7 +12,7 @@ from app.models.activity_log import ActivityLog
 from app.models.function import Function
 from app.models.species import Species
 from app.models.user import User
-from app.schemas.activity_log import ActivityLogListResponse, ActivityLogRead
+from app.schemas.activity_log import ActivityLogListResponse
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate

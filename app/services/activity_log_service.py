@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Service helpers for creating generic activity log entries.
 
 These helpers centralize how we persist audit trail information so that
 routers and domain services can call a single function instead of
 constructing ``ActivityLog`` rows directly.
 """
+
+from __future__ import annotations
 
 from typing import Any
 

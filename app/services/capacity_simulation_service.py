@@ -3,11 +3,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import NamedTuple
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.logging import logger
 from app.models.availability import AvailabilityWeek
 from app.models.cluster import Cluster
 from app.models.family import Family
@@ -25,7 +24,6 @@ from app.services.visit_planning_selection import (
     _load_week_capacity,
     _select_visits_for_week_core,
 )
-from app.services.visit_status_service import VisitStatusCode, derive_visit_status
 
 
 DAYPART_LABELS: tuple[str, ...] = ("Ochtend", "Dag", "Avond")
@@ -187,7 +185,6 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
     # OR, we can rely on the user to have cleaned up.
     # Let's try to be correct:
 
-    from app.models.activity_log import ActivityLog
 
     # Bulk fetch latest status logs?
     # This is complex. Let's stick to a simpler heuristic:

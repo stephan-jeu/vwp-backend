@@ -1,6 +1,6 @@
 import pytest
 import pytest_asyncio
-from datetime import date, timedelta
+from datetime import date
 
 from app.models.family import Family
 from app.models.species import Species
@@ -63,7 +63,12 @@ def _make_protocol(
     visit_duration_h: float | None = None,
 ):
     fam = Family(id=proto_id, name=fam_name, priority=1)
-    sp = Species(id=species_id, family_id=fam.id, name=species_name, abbreviation=species_name[:2])
+    sp = Species(
+        id=species_id,
+        family_id=fam.id,
+        name=species_name,
+        abbreviation=species_name[:2],
+    )
     sp.family = fam
     fn = Function(id=fn_id, name=fn_name)
 
@@ -233,11 +238,29 @@ async def test_completion_pass_creates_missing_occurrence_and_indexes(mocker, fa
     sp.family = fam
     fn = Function(id=1310, name="Nest")
 
-    p = Protocol(id=301, species_id=sp.id, function_id=fn.id, start_timing_reference="SUNSET")
+    p = Protocol(
+        id=301, species_id=sp.id, function_id=fn.id, start_timing_reference="SUNSET"
+    )
     p.species = sp
     p.function = fn
-    w1 = ProtocolVisitWindow(id=3011, protocol_id=p.id, visit_index=1, window_from=wf, window_to=wt, required=True, label=None)
-    w2 = ProtocolVisitWindow(id=3012, protocol_id=p.id, visit_index=2, window_from=wf, window_to=wt, required=True, label=None)
+    w1 = ProtocolVisitWindow(
+        id=3011,
+        protocol_id=p.id,
+        visit_index=1,
+        window_from=wf,
+        window_to=wt,
+        required=True,
+        label=None,
+    )
+    w2 = ProtocolVisitWindow(
+        id=3012,
+        protocol_id=p.id,
+        visit_index=2,
+        window_from=wf,
+        window_to=wt,
+        required=True,
+        label=None,
+    )
     p.visit_windows = [w1, w2]
 
     funcs = {fn.id: fn}
@@ -268,11 +291,15 @@ async def test_completion_pass_creates_missing_occurrence_and_indexes(mocker, fa
     # visits, since identical windows may be consolidated into one series entry.
     assert len(visits) >= 1
     combined_rf = "\n".join([v.remarks_field or "" for v in visits])
-    assert "(" in combined_rf and ")" in combined_rf  # contains an occurrence index like (1)
+    assert (
+        "(" in combined_rf and ")" in combined_rf
+    )  # contains an occurrence index like (1)
 
 
 @pytest.mark.asyncio
-async def test_two_phase_creates_ochtend_and_avond_buckets_without_duplicates(mocker, fake_db):
+async def test_two_phase_creates_ochtend_and_avond_buckets_without_duplicates(
+    mocker, fake_db
+):
     # Arrange: required morning protocol allows both; companion allows only evening → split into two parts
     today_year = date.today().year
     wf = date(today_year, 5, 15)
@@ -336,11 +363,13 @@ async def test_two_phase_creates_ochtend_and_avond_buckets_without_duplicates(mo
     # and there is an Avond visit containing the evening-only function. Do not enforce
     # exact visit count to keep the test resilient to later coalescing rules.
     has_morning_req = any(
-        v.part_of_day == "Ochtend" and any(f.id == p_req.function.id for f in v.functions)
+        v.part_of_day == "Ochtend"
+        and any(f.id == p_req.function.id for f in v.functions)
         for v in visits
     )
     has_evening_even = any(
-        v.part_of_day == "Avond" and any(f.id == p_even.function.id for f in v.functions)
+        v.part_of_day == "Avond"
+        and any(f.id == p_even.function.id for f in v.functions)
         for v in visits
     )
     assert has_morning_req
@@ -490,8 +519,24 @@ async def test_completion_respects_min_gap_when_attaching(mocker, fake_db):
     pX.species = spx
     pX.function = fnx
     # two identical windows (vidx 1 and 2)
-    w1 = ProtocolVisitWindow(id=6011, protocol_id=pX.id, visit_index=1, window_from=wf, window_to=wt, required=True, label=None)
-    w2 = ProtocolVisitWindow(id=6012, protocol_id=pX.id, visit_index=2, window_from=wf, window_to=wt, required=True, label=None)
+    w1 = ProtocolVisitWindow(
+        id=6011,
+        protocol_id=pX.id,
+        visit_index=1,
+        window_from=wf,
+        window_to=wt,
+        required=True,
+        label=None,
+    )
+    w2 = ProtocolVisitWindow(
+        id=6012,
+        protocol_id=pX.id,
+        visit_index=2,
+        window_from=wf,
+        window_to=wt,
+        required=True,
+        label=None,
+    )
     pX.visit_windows = [w1, w2]
     # min gap 20 days
     setattr(pX, "min_period_between_visits_value", 20)
@@ -553,4 +598,3 @@ async def test_completion_respects_min_gap_when_attaching(mocker, fake_db):
     # and must not be attached to both 05-15 visits (morning and evening).
     vx = [v for v in visits if any(f.id == fnx.id for f in v.functions)]
     assert len(vx) >= 2
-    vx_dates = sorted(v.from_date for v in vx)

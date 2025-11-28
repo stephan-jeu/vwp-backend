@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Pydantic schemas for generic activity logging entries."""
+
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any

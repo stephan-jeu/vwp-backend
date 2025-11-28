@@ -13,7 +13,6 @@ from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.species import Species
 from app.models.family import Family
-from app.models.function import Function
 from app.models.availability import AvailabilityWeek
 from app.models.user import User
 from app.services import travel_time

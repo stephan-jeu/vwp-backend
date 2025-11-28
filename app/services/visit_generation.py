@@ -7,7 +7,7 @@ from uuid import uuid4
 import os
 import logging
 
-from sqlalchemy import Select, select, and_, or_, insert
+from sqlalchemy import Select, select, and_, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,6 @@ from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.species import Species
 from app.models.visit import (
     Visit,
-    visit_functions,
-    visit_species,
-    visit_researchers,
-    visit_protocol_visit_windows,
 )
 
 
@@ -1754,7 +1750,6 @@ async def generate_visits_for_cluster(
         try:
             # Map: function name -> { species abbr -> set(visit_indices) }
             fn_to_species_indices: dict[str, dict[str, set[int]]] = {}
-            visit_from = v["from_date"]
             # Get pvw_ids for this visit
             current_pvw_ids = v.get("proto_pvw_ids", {})
 
@@ -1854,8 +1849,8 @@ async def generate_visits_for_cluster(
             start_time_text = derive_start_time_text_for_visit(part_of_day, None)
 
         # union of functions/species across combined protos
-        function_ids_set = sorted({p.function_id for p in protos})
-        species_ids_set = sorted({p.species_id for p in protos})
+        _function_ids_set = sorted({p.function_id for p in protos})
+        _species_ids_set = sorted({p.species_id for p in protos})
 
         visit = Visit(
             cluster_id=cluster.id,

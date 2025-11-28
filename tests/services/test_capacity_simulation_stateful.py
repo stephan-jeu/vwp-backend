@@ -1,15 +1,13 @@
 import pytest
-from datetime import date, timedelta
-from sqlalchemy import select, delete
+from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.visit import Visit
 from app.models.species import Species
 from app.models.family import Family
-from app.models.availability import AvailabilityWeek
 from app.services.capacity_simulation_service import simulate_capacity_planning
 from core.settings import get_settings
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from uuid import uuid4
 
 
@@ -35,7 +33,6 @@ async def test_simulate_capacity_planning_stateful(monkeypatch: pytest.MonkeyPat
     # Setup:
     # Visit 1: Deadline Week 2, requires 1 slot.
     # Visit 2: Deadline Week 3, requires 1 slot.
-    from app.models.project import Project
     from app.models.cluster import Cluster
 
     start_monday = date(2025, 1, 6)  # Week 2
@@ -43,8 +40,6 @@ async def test_simulate_capacity_planning_stateful(monkeypatch: pytest.MonkeyPat
     fam = Family(name=f"TestFamily-{uuid4()}", priority=1)
     sp = Species(name=f"TestSpecies-{uuid4()}", family_id=1)
     sp.family = fam
-
-    proj = Project(code=f"TEST-P-{uuid4()}", location="Test Location", quote=True)
     clust = Cluster(project_id=1, cluster_number=1, address="Test Address")
 
     v1 = Visit(

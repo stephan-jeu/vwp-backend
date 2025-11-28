@@ -14,9 +14,6 @@ from app.models.species import Species
 from app.models.user import User
 from app.models.visit import (
     Visit,
-    visit_functions,
-    visit_species,
-    visit_researchers,
 )
 from app.schemas.cluster import (
     ClusterCreate,
@@ -251,7 +248,7 @@ async def create_cluster(
 
     # Generate visits (append-only) from distinct union of protocols resolved from combos
     warnings: list[str] = []
-    visits_created_ids: list[int] = []
+    _visits_created_ids: list[int] = []
     if payload.combos:
         combos_dicts = [
             {"function_ids": c.function_ids, "species_ids": c.species_ids}
@@ -266,7 +263,7 @@ async def create_cluster(
             protocols=protocols,
         )
         # IDs will be assigned on commit; collect after commit below
-        visits_created_ids = [v.id for v in visits_created]
+        _visits_created_ids = [v.id for v in visits_created]
 
     await db.commit()
     await db.refresh(cluster)

@@ -1,6 +1,6 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import date, timedelta
+from unittest.mock import AsyncMock, MagicMock
+from datetime import date
 
 from app.services.visit_execution_updates import update_subsequent_visits
 from app.models.visit import Visit

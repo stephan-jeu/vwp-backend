@@ -265,7 +265,7 @@ async def get_visit_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found"
         )
 
-    status = await resolve_visit_status(db, visit, today=effective_today)
+    visit_status = await resolve_visit_status(db, visit, today=effective_today)
     cluster = visit.cluster
     project: Project | None = getattr(cluster, "project", None)
     project_code = project.code if project else ""
@@ -280,7 +280,7 @@ async def get_visit_detail(
         cluster_id=cluster.id if cluster else 0,
         cluster_number=cluster.cluster_number if cluster else 0,
         cluster_address=cluster.address if cluster else "",
-        status=status,
+        status=visit_status,
         function_ids=[f.id for f in visit.functions],
         species_ids=[s.id for s in visit.species],
         functions=[FunctionCompactRead(id=f.id, name=f.name) for f in visit.functions],
@@ -906,7 +906,7 @@ async def list_visits_for_audit(
 
     status_map: dict[int, VisitStatusCode] = {}
     for v in visits:
-        status_map[v.id] = await resolve_visit_status(db, v)
+        status_map[v.id] = await resolve_visit_status(db, v, today=effective_today)
 
     relevant_statuses: set[VisitStatusCode] = {
         VisitStatusCode.EXECUTED,

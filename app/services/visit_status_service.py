@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Helpers for deriving visit lifecycle status from logs and visit data.
 
 This module centralizes the logic that combines persisted visit fields
@@ -9,6 +7,8 @@ This module centralizes the logic that combines persisted visit fields
 The status codes are intentionally internal English labels; the
 frontend is responsible for mapping them to Dutch UI strings.
 """
+
+from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
