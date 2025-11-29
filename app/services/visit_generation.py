@@ -531,18 +531,14 @@ def _complete_missing_occurrences(
 def _derive_start_time_minutes(protocol: Protocol) -> int | None:
     """Compute start time in minutes relative to the timing reference.
 
-    When start_timing_reference is SUNRISE, subtract visit_duration_hours
-    (converted to minutes) from start_time_relative_minutes.
-    Otherwise, return start_time_relative_minutes as-is.
+    Returns the stored ``start_time_relative_minutes`` value as-is, for all
+    timing references. Semantics of that value (e.g. minutes before/after
+    sunrise or sunset) are handled by the text-formatting layer.
     """
 
-    ref = protocol.start_timing_reference or ""
     rel = protocol.start_time_relative_minutes
     if rel is None:
         return None
-    if ref == "SUNRISE":
-        duration_h = protocol.visit_duration_hours or 0
-        return int(rel - duration_h * 60)
     return rel
 
 
@@ -1988,6 +1984,10 @@ async def generate_visits_for_cluster(
                 elif end_candidates and duration_min is not None:
                     earliest_end = min(end_candidates)
                     local_start_minutes = int(earliest_end - duration_min)
+                # If no end-based info is available, fall back to earliest
+                # derived start across protocols.
+                elif start_candidates:
+                    local_start_minutes = int(min(start_candidates))
             else:  # Avond
                 # Evening: prefer earliest start across protocols; fall back to earliest end
                 if start_candidates:

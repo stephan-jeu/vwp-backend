@@ -497,6 +497,50 @@ async def test_morning_duration_and_start_text_use_calculated_start(mocker, fake
 
 
 @pytest.mark.asyncio
+async def test_morning_start_text_present_when_only_start_relative(mocker, fake_db):
+    # Arrange: one protocol starting relative to sunrise, without end timing.
+    # We expect an Ochtend visit with a non-empty start_time_text based on
+    # the start reference.
+
+    today_year = date.today().year
+    wf = date(today_year, 4, 1)
+    wt = date(today_year, 5, 1)
+
+    p_only = _make_protocol(
+        proto_id=851,
+        fam_name="Zangvogel",
+        species_id=1851,
+        species_name="Huismus",
+        fn_id=18510,
+        fn_name="Nest",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNRISE",
+        start_rel_min=-60,
+        visit_duration_h=2.0,
+    )
+
+    # Provide protocol directly to bypass DB resolution
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    cluster = Cluster(id=30, project_id=1, address="c30", cluster_number=30)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[],
+        species_ids=[],
+        protocols=[p_only],
+    )
+
+    # Assert: one morning visit with a derived start_time_text
+    assert len(visits) == 1
+    v = visits[0]
+    assert v.part_of_day == "Ochtend"
+    assert v.start_time_text is not None
+
+
+@pytest.mark.asyncio
 async def test_evening_duration_uses_span_from_earliest_start_to_latest_end(
     mocker, fake_db
 ):
