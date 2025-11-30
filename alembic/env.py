@@ -17,6 +17,19 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 from app.models import Base  # noqa: E402
+from app.models import (  # noqa: E402,F401
+    activity_log,
+    availability,
+    cluster,
+    family,
+    function,
+    project,
+    protocol,
+    protocol_visit_window,
+    species,
+    user,
+    visit,
+)
 from core.settings import get_settings  # noqa: E402
 
 

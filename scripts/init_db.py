@@ -14,6 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.core.logging import logger  # noqa: E402
 from db.session import engine  # noqa: E402
+from scripts.create_admin_user import _ensure_admin  # noqa: E402
 
 
 SQL_DIR = BACKEND_ROOT / "db" / "sql"
@@ -47,21 +48,19 @@ async def _run_sql_files_in_order(conn: AsyncConnection) -> None:
         if not sql.strip():
             continue
         logger.info("Running SQL script: %s", path.name)
-        await conn.exec_driver_sql(sql)
+        statements = [stmt.strip() for stmt in sql.split(";") if stmt.strip()]
+        for statement in statements:
+            await conn.exec_driver_sql(statement)
 
 
 async def _init_db_async() -> None:
     await _run_sql_seeds()
+    await _ensure_admin("stephan@nextaimove.com")
 
 
 def main() -> NoReturn:
     """Initialize database data and create the default admin user."""
-
     asyncio.run(_init_db_async())
-
-    from scripts import create_admin_user  # noqa: E402
-
-    create_admin_user.main()
     raise SystemExit(0)
 
 

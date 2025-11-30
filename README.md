@@ -46,10 +46,12 @@ alembic -c backend/alembic.ini stamp head
 
 ### Notes
 - Alembic is configured for the async engine via `backend/alembic/env.py`.
-- Initial migration lives in `backend/alembic/versions/20251013_01_initial.py`.
 - Ensure the target database is reachable with the configured credentials before running migrations.
 
-
+### Init database with protocols and users
+alembic revision --autogenerate -m "initial" --rev-id 20251130_initial
+alembic upgrade head
+python scripts/init_db.py
 
 
 
