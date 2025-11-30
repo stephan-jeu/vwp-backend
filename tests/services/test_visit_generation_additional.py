@@ -997,3 +997,66 @@ async def test_completion_fallback_can_place_before_first_visit(mocker, fake_db)
     assert wf_wide <= first.from_date <= wt_wide
     assert wf_wide <= second.from_date <= wt_wide
     assert (second.from_date - first.from_date).days >= 20
+
+
+@pytest.mark.asyncio
+async def test_single_protocol_relaxation_widens_first_visit_within_window(
+    mocker, fake_db
+):
+    """Single-protocol evening visits are relaxed back to the protocol window start.
+
+    This mirrors the production case where a protocol's first visit ended up in a
+    bucket starting later than its ProtocolVisitWindow.window_from due to
+    combination logic. The relaxation pass should move the visit start back to
+    window_from when the visit only contains that protocol and min-gap allows it.
+    """
+
+    today_year = date.today().year
+    wf = date(today_year, 3, 1)
+    wt = date(today_year, 3, 15)
+
+    fam = Family(id=801, name="Zangvogel", priority=1)
+    sp = Species(id=2801, family_id=fam.id, name="Proto129Like", abbreviation="PZ")
+    sp.family = fam
+    fn = Function(id=2810, name="Nest")
+
+    # Evening protocol with one required window and a modest min-gap.
+    p = Protocol(
+        id=801,
+        species_id=sp.id,
+        function_id=fn.id,
+        start_timing_reference="SUNSET",
+    )
+    p.species = sp
+    p.function = fn
+
+    w1 = ProtocolVisitWindow(
+        id=8011,
+        protocol_id=p.id,
+        visit_index=1,
+        window_from=wf,
+        window_to=wt,
+        required=True,
+        label=None,
+    )
+    p.visit_windows = [w1]
+
+    # Provide the protocol directly to bypass DB resolution; no companion
+    # protocols so the single visit would naturally start at wf. This test
+    # asserts that the relaxation helper still allows the visit to use the full
+    # ProtocolVisitWindow range.
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    cluster = Cluster(id=31, project_id=1, address="c31", cluster_number=31)
+
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[],
+        species_ids=[],
+        protocols=[p],
+    )
+
+    assert len(visits) == 1
+    v = visits[0]
+    assert v.from_date == wf
+    assert v.to_date == wt

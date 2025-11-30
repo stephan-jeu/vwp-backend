@@ -38,8 +38,7 @@ class UserBase(BaseModel):
     vrfg: bool = False
     vleermuis: bool = False
     zwaluw: bool = False
-    grote_vos: bool = False
-    iepenpage: bool = False
+    vlinder: bool = False
     teunisbloempijlstaart: bool = False
     zangvogel: bool = False
     biggenkruid: bool = False
@@ -81,8 +80,7 @@ class UserUpdate(BaseModel):
     vrfg: bool | None = None
     vleermuis: bool | None = None
     zwaluw: bool | None = None
-    grote_vos: bool | None = None
-    iepenpage: bool | None = None
+    vlinder: bool | None = None
     teunisbloempijlstaart: bool | None = None
     zangvogel: bool | None = None
     biggenkruid: bool | None = None

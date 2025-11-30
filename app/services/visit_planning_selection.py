@@ -204,8 +204,12 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
         "roofvogel": "roofvogel",
         "schijfhoren": "schijfhoren",
         "vleermuis": "vleermuis",
-        "grote vos": "grote_vos",
-        "iepenpage": "iepenpage",
+        # Butterfly species (Iepenpage, Grote vos) are handled via a shared 'vlinder' flag.
+        # We keep keys for both species names and the generic family label in case future
+        # data uses one or the other.
+        "vlinder": "vlinder",
+        "grote vos": "vlinder",
+        "iepenpage": "vlinder",
         "teunisbloempijlstaart": "teunisbloempijlstaart",
         "zangvogel": "zangvogel",
         "zwaluw": "zwaluw",

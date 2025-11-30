@@ -1,10 +1,10 @@
 -- Seed generated for family Vlinder protocols
 SET statement_timeout = 0;
-INSERT INTO families (name, priority) VALUES ('Iepenpage', 3) ON CONFLICT (name) DO NOTHING;
-INSERT INTO families (name, priority) VALUES ('Grote vos', 3) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Vlinder', 3) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Vlinder', 3) ON CONFLICT (name) DO NOTHING;
 INSERT INTO families (name, priority) VALUES ('Teunisbloempijlstaart', 3) ON CONFLICT (name) DO NOTHING;
-INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Iepenpage'), 'Iepenpage', 'IEPP') ON CONFLICT (name) DO NOTHING;
-INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Grote vos'), 'Grote vos', 'GV') ON CONFLICT (name) DO NOTHING;
+INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vlinder'), 'Iepenpage', 'IEPP') ON CONFLICT (name) DO NOTHING;
+INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Vlinder'), 'Grote vos', 'GV') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Teunisbloempijlstaart'), 'Teunisbloempijlstaart', 'TBP') ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('Voortplantingsplaats') ON CONFLICT (name) DO NOTHING;
 INSERT INTO protocols (species_id, function_id, visits, visit_duration_hours, min_period_between_visits_value, min_period_between_visits_unit, start_timing_reference, start_time_relative_minutes, start_time_absolute_from, start_time_absolute_to, end_timing_reference, end_time_relative_minutes, min_temperature_celsius, max_wind_force_bft, max_precipitation, start_time_condition, end_time_condition, visit_conditions_text, requires_morning_visit, requires_evening_visit, requires_june_visit, requires_maternity_period_visit) VALUES ((SELECT s.id FROM species s JOIN families f ON s.family_id = f.id WHERE f.name = 'Iepenpage' AND s.name = 'Iepenpage'), (SELECT id FROM functions WHERE name = 'Voortplantingsplaats'), 3, 2.0, 7, 'dagen', 'DAYTIME', NULL, NULL, NULL, NULL, NULL, NULL, 4, 'droog', 'Tussen 10:00 en 15:00 starten (evt. om 09:00 starten als het dan al 22 graden is en zonnig)', NULL, 'Min. 15 tot 19 graden (<50% bewolking) of vanaf 20 graden (>50% bewolking)', false, false, false, false);

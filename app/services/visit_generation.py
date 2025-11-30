@@ -345,6 +345,99 @@ def _respects_min_gap(planned: list[date], v_from: date, days: int | None) -> bo
     return not (v_from < last_before + timedelta(days=days))
 
 
+def _relax_single_protocol_visit_starts(
+    visits_to_create: list[dict],
+    proto_windows: dict[int, list[tuple[int, date, date, set[str] | None, int]]],
+    proto_id_to_protocol: dict[int, Protocol],
+) -> None:
+    """Relax start dates for single-protocol visits when buckets are too restrictive.
+
+    For each protocol, walk its realised visits in chronological order and, for
+    entries that contain only that protocol, try to move the visit ``from_date``
+    earlier, bounded by:
+
+    * The protocol visit window ``window_from`` that contains the current
+      ``from_date``.
+    * The protocol's own ``min_period_between_visits`` to the previous realised
+      visit of the same protocol.
+
+    Only leftward moves are allowed and we never cross the visit's current
+    ``to_date``. Multi-protocol visits are left untouched.
+
+    Args:
+        visits_to_create: Mutable list of visit dicts produced by bucketing and
+            completion.
+        proto_windows: Mapping of protocol id to its visit windows in the
+            current year.
+        proto_id_to_protocol: Mapping of protocol id to Protocol instances.
+    """
+
+    if not visits_to_create or not proto_windows:
+        return
+
+    for pid, protocol in proto_id_to_protocol.items():
+        windows = proto_windows.get(pid)
+        if not windows:
+            continue
+
+        # Collect realised visits that contain this protocol.
+        entries = [
+            e for e in visits_to_create if any(pp.id == pid for pp in e["protocols"])
+        ]
+        if not entries:
+            continue
+
+        entries.sort(key=lambda e: e["from_date"])
+
+        # Precompute simple (wf, wt) pairs for membership checks.
+        window_pairs: list[tuple[date, date]] = [
+            (wf, wt) for _vidx, wf, wt, _parts, _pvw_id in windows
+        ]
+
+        gap_days = _unit_to_days(
+            getattr(protocol, "min_period_between_visits_value", None),
+            getattr(protocol, "min_period_between_visits_unit", None),
+        )
+
+        previous_from: date | None = None
+        for entry in entries:
+            v_from: date = entry["from_date"]
+            v_to: date = entry["to_date"]
+
+            # Find protocol windows that actually contain this realised start.
+            containing_wfs = [wf for (wf, wt) in window_pairs if wf <= v_from <= wt]
+            if not containing_wfs:
+                previous_from = v_from
+                continue
+
+            window_from = min(containing_wfs)
+            earliest_allowed = window_from
+            if previous_from is not None and gap_days:
+                from_with_gap = previous_from + timedelta(days=gap_days)
+                if from_with_gap > earliest_allowed:
+                    earliest_allowed = from_with_gap
+
+            # Only relax single-protocol visits and only move earlier, never later.
+            if (
+                len(entry.get("protocols", [])) == 1
+                and earliest_allowed < v_from
+                and earliest_allowed <= v_to
+            ):
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "relax single-proto visit proto=%s %s->%s -> %s->%s",
+                        pid,
+                        v_from.isoformat(),
+                        v_to.isoformat(),
+                        earliest_allowed.isoformat(),
+                        v_to.isoformat(),
+                    )
+                entry["from_date"] = earliest_allowed
+                v_from = earliest_allowed
+
+            previous_from = v_from
+
+
 def _entry_contains_protocol(entry: dict, p: Protocol) -> bool:
     return any(pp.id == p.id for pp in entry["protocols"])
 
@@ -1703,6 +1796,15 @@ async def generate_visits_for_cluster(
                 e.setdefault("per_proto_index", {})[pid] = (
                     max(counters.values()) + 1 if counters else 1
                 )
+
+    # Relax single-protocol visits whose start dates are unnecessarily
+    # constrained by earlier bucketing decisions, while respecting each
+    # protocol's own visit windows and min-gap.
+    _relax_single_protocol_visit_starts(
+        visits_to_create=visits_to_create,
+        proto_windows=proto_windows,
+        proto_id_to_protocol=proto_id_to_protocol,
+    )
 
     # Simple-mode for Pad-family protocols: one visit per protocol window
     # without combining or bucketing, but enforcing a family-level
