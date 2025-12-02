@@ -59,7 +59,7 @@ async def list_visits(
     current_user: UserDep,
     db: DbDep,
     page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 100,
     search: Annotated[str | None, Query()] = None,
     statuses: Annotated[list[VisitStatusCode] | None, Query()] = None,
     simulated_today: Annotated[date | None, Query()] = None,
@@ -581,7 +581,12 @@ async def update_visit(
     follow-up we can tighten this to a dedicated VisitUpdate schema.
     """
 
-    visit = await db.get(Visit, visit_id)
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
@@ -606,13 +611,19 @@ async def update_visit(
     new_advertized = bool(getattr(visit, "advertized", False))
     if advertized_update is not None and new_advertized != old_advertized:
         action = "visit_advertised" if new_advertized else "visit_advertised_cancelled"
+        cluster = visit.cluster
+        project: Project | None = getattr(cluster, "project", None)
         await log_activity(
             db,
             actor_id=admin.id,
             action=action,
             target_type="visit",
             target_id=visit.id,
-            details=None,
+            details={
+                "project_code": project.code if project else None,
+                "cluster_number": cluster.cluster_number if cluster else None,
+                "visit_nr": visit.visit_nr,
+            },
             commit=False,
         )
 
@@ -674,7 +685,10 @@ async def _get_visit_for_status_change(db: AsyncSession, visit_id: int) -> Visit
     stmt = (
         select(Visit)
         .where(Visit.id == visit_id)
-        .options(selectinload(Visit.researchers))
+        .options(
+            selectinload(Visit.researchers),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+        )
     )
     visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
@@ -702,6 +716,9 @@ async def execute_visit(
     if not user.admin and all(r.id != user.id for r in visit.researchers):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+
     await log_activity(
         db,
         actor_id=user.id,
@@ -711,6 +728,9 @@ async def execute_visit(
         details={
             "execution_date": payload.execution_date.isoformat(),
             "comment": payload.comment,
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
     )
 
@@ -737,7 +757,12 @@ async def set_admin_planning_status(
     lifecycle status is recomputed based on the updated planning data.
     """
 
-    visit = await db.get(Visit, visit_id)
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
@@ -782,6 +807,9 @@ async def set_admin_planning_status(
         planned_week = payload.planned_week
         researcher_ids = list(payload.researcher_ids)
 
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+
     await log_activity(
         db,
         actor_id=admin.id,
@@ -796,6 +824,9 @@ async def set_admin_planning_status(
             "planned_week": planned_week,
             "researcher_ids": researcher_ids,
             "comment": payload.comment,
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
         commit=False,
     )
@@ -829,7 +860,7 @@ async def set_visit_advertised(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     old_advertized = bool(getattr(visit, "advertized", False))
-    new_advertized = bool(payload.advertised)
+    new_advertized = bool(payload.advertized)
 
     if new_advertized == old_advertized:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -837,19 +868,22 @@ async def set_visit_advertised(
     visit.advertized = new_advertized
 
     action = "visit_advertised" if new_advertized else "visit_advertised_cancelled"
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+
     await log_activity(
         db,
         actor_id=user.id,
         action=action,
         target_type="visit",
         target_id=visit.id,
-        details=None,
+        details={
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
+        },
         commit=False,
     )
-
-    # Update subsequent visits
-    if payload.execution_date:
-        await update_subsequent_visits(db, visit, payload.execution_date)
 
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1035,6 +1069,9 @@ async def execute_visit_with_deviation(
     if not user.admin and all(r.id != user.id for r in visit.researchers):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+
     await log_activity(
         db,
         actor_id=user.id,
@@ -1045,6 +1082,9 @@ async def execute_visit_with_deviation(
             "execution_date": payload.execution_date.isoformat(),
             "reason": payload.reason,
             "comment": payload.comment,
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
     )
 
@@ -1073,6 +1113,9 @@ async def mark_visit_not_executed(
     if not user.admin and all(r.id != user.id for r in visit.researchers):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+
     await log_activity(
         db,
         actor_id=user.id,
@@ -1082,6 +1125,9 @@ async def mark_visit_not_executed(
         details={
             "date": payload.date.isoformat(),
             "reason": payload.reason,
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
     )
 
@@ -1101,9 +1147,17 @@ async def approve_visit(
 ) -> Response:
     """Approve a visit result."""
 
-    visit = await db.get(Visit, visit_id)
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
 
     await log_activity(
         db,
@@ -1114,6 +1168,9 @@ async def approve_visit(
         details={
             "comment": payload.comment,
             "audit": None if payload.audit is None else payload.audit.model_dump(),
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
     )
 
@@ -1133,9 +1190,17 @@ async def reject_visit(
 ) -> Response:
     """Reject a visit result."""
 
-    visit = await db.get(Visit, visit_id)
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
 
     await log_activity(
         db,
@@ -1146,6 +1211,9 @@ async def reject_visit(
         details={
             "reason": payload.reason,
             "audit": None if payload.audit is None else payload.audit.model_dump(),
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
     )
 
@@ -1165,9 +1233,17 @@ async def cancel_visit(
 ) -> Response:
     """Cancel a visit."""
 
-    visit = await db.get(Visit, visit_id)
+    stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
 
     await log_activity(
         db,
@@ -1177,6 +1253,9 @@ async def cancel_visit(
         target_id=visit_id,
         details={
             "reason": payload.reason,
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
     )
 
@@ -1286,6 +1365,9 @@ async def accept_advertised_visit(
 
     visit.advertized = False
 
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+
     await log_activity(
         db,
         actor_id=user_id,
@@ -1295,6 +1377,9 @@ async def accept_advertised_visit(
         details={
             "previous_researcher_id": advertiser_id,
             "new_researcher_id": user_id,
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
         },
         commit=False,
     )
@@ -1304,7 +1389,11 @@ async def accept_advertised_visit(
         action="visit_advertised_cancelled",
         target_type="visit",
         target_id=visit.id,
-        details=None,
+        details={
+            "project_code": project.code if project else None,
+            "cluster_number": cluster.cluster_number if cluster else None,
+            "visit_nr": visit.visit_nr,
+        },
         commit=False,
     )
 
