@@ -168,6 +168,7 @@ async def clear_planned_researchers(
     visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
     for v in visits:
         v.researchers.clear()
+        v.week = None
 
     await db.commit()
 

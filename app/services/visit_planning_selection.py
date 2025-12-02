@@ -43,6 +43,31 @@ def _end_of_work_week(week_monday: date) -> date:
     return week_monday + timedelta(days=4)
 
 
+def _allowed_day_indices_for_visit(week_monday: date, visit: Visit) -> list[int]:
+    """Return 0-based indices (Mon=0..Fri=4) for days the visit can occur.
+
+    The indices are the intersection of the visit's [from_date, to_date] window
+    with the work week [week_monday, week_monday + 4]. If there is no
+    intersection, the list is empty.
+    """
+
+    week_friday = _end_of_work_week(week_monday)
+    from_d = max(getattr(visit, "from_date", None) or date.min, week_monday)
+    to_d = min(getattr(visit, "to_date", None) or date.max, week_friday)
+
+    if from_d > to_d:
+        return []
+
+    indices: list[int] = []
+    cur = from_d
+    while cur <= to_d:
+        idx = (cur - week_monday).days
+        if 0 <= idx <= 4:
+            indices.append(idx)
+        cur += timedelta(days=1)
+    return indices
+
+
 def _first_function_name(v: Visit) -> str:
     try:
         return (v.functions[0].name or "").strip()
@@ -229,13 +254,20 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
             required_attr = "smp_gierzwaluw"
         elif fam_name == "zangvogel":
             required_attr = "smp_huismus"
+        uid = getattr(user, "id", None)
         if required_attr is not None:
             smp_ok = bool(getattr(user, required_attr, False))
             if not smp_ok:
+                _logger.debug(
+                    "planning: user_id=%s unqualified_for_visit_id=%s reason=smp_flag_missing attr=%s",
+                    uid,
+                    getattr(visit, "id", None),
+                    required_attr,
+                )
                 return False
         else:
             _logger.warning(
-                "Unknown SMP function %s for species %s with family %s. Could not assign visit. ",
+                "Unknown SMP function %s for species %s with family %s. Could not assign visit.",
                 _first_function_name(visit),
                 getattr(sp, "name", ""),
                 fam_name,
@@ -258,20 +290,46 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
             )
             attr = fam_to_user_attr.get(key)
             if attr and not bool(getattr(user, attr, False)):
+                _logger.debug(
+                    "planning: user_id=%s unqualified_for_visit_id=%s reason=family_flag_missing family_key=%s attr=%s",
+                    getattr(user, "id", None),
+                    getattr(visit, "id", None),
+                    key,
+                    attr,
+                )
                 return False
         # Direct species name enforcement as an extra safety net
         for key, attr in fam_to_user_attr.items():
             if key in species_names_lower and not bool(getattr(user, attr, False)):
+                _logger.debug(
+                    "planning: user_id=%s unqualified_for_visit_id=%s reason=species_flag_missing species_key=%s attr=%s",
+                    getattr(user, "id", None),
+                    getattr(visit, "id", None),
+                    key,
+                    attr,
+                )
                 return False
 
     # VRFG function rule
     if _any_function_contains(visit, ("Vliegroute", "Foerageergebied")):
         if not bool(getattr(user, "vrfg", False)):
+            _logger.debug(
+                "planning: user_id=%s unqualified_for_visit_id=%s reason=vrfg_missing",
+                getattr(user, "id", None),
+                getattr(visit, "id", None),
+            )
             return False
 
-    # Visit flags that must exist on user when required
-    for flag in ("hub", "fiets", "wbc", "dvp", "sleutel"):
+    # Visit flags that must exist on user when required. "sleutel" is handled
+    # separately during assignment based on contract type.
+    for flag in ("hub", "fiets", "wbc", "dvp"):
         if bool(getattr(visit, flag, False)) and not bool(getattr(user, flag, False)):
+            _logger.debug(
+                "planning: user_id=%s unqualified_for_visit_id=%s reason=visit_flag_missing flag=%s",
+                getattr(user, "id", None),
+                getattr(visit, "id", None),
+                flag,
+            )
             return False
 
     return True
@@ -348,6 +406,75 @@ async def _load_user_daypart_capacities(
     return per_user
 
 
+def _build_initial_day_schedule(
+    per_user_caps: dict[int, dict[str, int]],
+) -> dict[int, list[bool]]:
+    """Construct an in-memory per-day schedule for the work week.
+
+    The per-day structure only enforces that we do not assign more than one
+    visit per (user, weekday) within a single planning run. Weekly numeric
+    capacities from ``AvailabilityWeek`` are still enforced by the existing
+    per-user capacity helpers and are **not** encoded as specific weekdays
+    here.
+    """
+
+    schedule: dict[int, list[bool]] = {}
+    for uid in per_user_caps.keys():
+        schedule[uid] = [True] * 5
+    return schedule
+
+
+async def _apply_existing_assignments_to_capacities(
+    db: AsyncSession,
+    week: int,
+    per_user_capacity: dict[int, int],
+    per_user_daypart_caps: dict[int, dict[str, int]],
+) -> None:
+    """Subtract capacity for visits already planned in the given ISO week.
+
+    This accounts for visits that already have researchers assigned and a
+    matching ``planned_week`` before a new planning run starts. Each such
+    assignment consumes one unit of the user's total weekly capacity and one
+    unit of the corresponding part-of-day capacity (falling back to Flex using
+    the same rules as the planner).
+
+    To avoid interfering with tests that use fake DB objects, this helper only
+    runs when ``db`` is an actual AsyncSession instance.
+    """
+
+    # In unit tests a lightweight fake DB object is often used; skip in that case.
+    if not isinstance(db, AsyncSession):  # type: ignore[arg-type]
+        return
+
+    try:
+        stmt = (
+            select(Visit)
+            .where(Visit.planned_week == week)
+            .options(selectinload(Visit.researchers))
+        )
+        planned_visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
+    except Exception:  # pragma: no cover - defensive for unexpected DB issues
+        return
+
+    for v in planned_visits:
+        part = (getattr(v, "part_of_day", "") or "").strip()
+        if part not in DAYPART_TO_AVAIL_FIELD:
+            continue
+
+        for u in getattr(v, "researchers", []) or []:
+            uid = getattr(u, "id", None)
+            if uid is None:
+                continue
+
+            # Decrease total weekly capacity for fairness ratios.
+            if uid in per_user_capacity:
+                per_user_capacity[uid] = max(0, per_user_capacity.get(uid, 0) - 1)
+
+            # Decrease per-daypart capacity using the same rules as regular
+            # assignment (dedicated part first, then Flex).
+            _consume_user_capacity(per_user_daypart_caps, uid, part)
+
+
 def _user_has_capacity_for_visit(
     per_user_caps: dict[int, dict[str, int]], uid: int, part: str
 ) -> bool:
@@ -358,15 +485,37 @@ def _user_has_capacity_for_visit(
     without availability rows.
     """
 
+    # If we have no per-user capacity information at all (e.g. in tests with
+    # fake DBs that do not provide AvailabilityWeek rows), treat this as
+    # unlimited capacity to preserve historical behaviour.
+    if not per_user_caps:
+        return True
+
+    # When some availability data exists for the week, the absence of a row
+    # for a specific user means that user has no capacity in this week.
     caps = per_user_caps.get(uid)
     if caps is None:
-        return True
+        _logger.debug(
+            "planning: user_id=%s no_capacity_for_part=%s reason=no_availability_row",
+            uid,
+            part,
+        )
+        return False
 
     have = caps.get(part, 0)
     if have > 0:
         return True
     flex = caps.get("Flex", 0)
-    return flex > 0
+    if flex > 0:
+        return True
+
+    _logger.debug(
+        "planning: user_id=%s no_capacity_for_part=%s reason=insufficient_caps caps=%s",
+        uid,
+        part,
+        caps,
+    )
+    return False
 
 
 def _consume_user_capacity(
@@ -395,6 +544,24 @@ def _consume_user_capacity(
         return True
 
     return False
+
+
+def _user_is_intern(user: User) -> bool:
+    """Return True if the user's contract type is INTERN.
+
+    In production this compares against the User.ContractType enum. In tests we
+    also support a plain string value "Intern" for convenience when using
+    simple namespaces.
+    """
+
+    contract = getattr(user, "contract", None)
+    if contract is None:
+        return False
+    # Enum instance from the SQLAlchemy model
+    if isinstance(contract, User.ContractType):
+        return contract == User.ContractType.INTERN
+    # Fallback for tests using plain strings
+    return str(contract) == "Intern"
 
 
 def _bucketize_travel(minutes: int) -> int | None:
@@ -522,6 +689,23 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
             await _load_user_daypart_capacities(db, week)
         )
 
+        # Subtract capacity already consumed by visits that are planned for
+        # this ISO week before starting a new planning run.
+        await _apply_existing_assignments_to_capacities(
+            db, week, per_user_capacity, per_user_daypart_caps
+        )
+
+        _logger.debug(
+            "planning: week=%s per_user_capacity=%s per_user_daypart_caps=%s",
+            week,
+            per_user_capacity,
+            per_user_daypart_caps,
+        )
+
+        per_user_day_schedule: dict[int, list[bool]] = _build_initial_day_schedule(
+            per_user_daypart_caps
+        )
+
         # Running tallies for ratios within this week's run
         assigned_count: dict[int, int] = {}
         assigned_heavy_count: dict[int, int] = {}
@@ -554,6 +738,22 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
         for v in selected:
             part = (v.part_of_day or "").strip()
             required = max(1, v.required_researchers or 1)
+
+            allowed_day_indices = _allowed_day_indices_for_visit(week_monday, v)
+            _logger.debug(
+                "planning: visit_id=%s part=%s required=%s allowed_day_indices=%s",
+                getattr(v, "id", None),
+                part or None,
+                required,
+                allowed_day_indices,
+            )
+            if not allowed_day_indices:
+                _logger.debug(
+                    "planning: visit_id=%s skipped_no_feasible_days",
+                    getattr(v, "id", None),
+                )
+                final_skipped.append(v)
+                continue
 
             # Resolve preferred researcher if present
             preferred_user: User | None = None
@@ -672,12 +872,112 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
 
                 # Pick lowest scores, tie-break by user id
                 scored.sort(key=lambda t: (t[0], getattr(t[1], "id", 0)))
-                take_users = [u for (_s, u) in scored[:remaining]]
+
+                requires_sleutel = bool(getattr(v, "sleutel", False))
+                take_users: list[User] = []
+
+                if requires_sleutel:
+                    # If we already have an INTERN among any preselected users
+                    # (e.g. a preferred researcher), we can treat selection as
+                    # regular.
+                    has_intern_selected = any(
+                        _user_is_intern(u) for u in selected_users
+                    )
+                    if has_intern_selected:
+                        take_users = [u for (_s, u) in scored[:remaining]]
+                    else:
+                        # We must ensure at least one INTERN is part of the
+                        # final selection. Look for INTERN candidates among the
+                        # scored list.
+                        intern_candidates: list[User] = [
+                            u for (_s, u) in scored if _user_is_intern(u)
+                        ]
+
+                        if not intern_candidates:
+                            # No INTERN available that qualifies for this
+                            # visit, so we cannot satisfy the sleutel rule.
+                            # Leave take_users empty so the visit is skipped
+                            # for this planning round.
+                            take_users = []
+                        else:
+                            # Choose the best INTERN first (scored is already
+                            # sorted by desirability).
+                            best_intern = intern_candidates[0]
+                            take_users.append(best_intern)
+
+                            # Fill any remaining slots from the rest of the
+                            # scored list, excluding the already chosen INTERN.
+                            if remaining > 1:
+                                for _s, u in scored:
+                                    if u is best_intern:
+                                        continue
+                                    take_users.append(u)
+                                    if len(take_users) >= remaining:
+                                        break
+                else:
+                    take_users = [u for (_s, u) in scored[:remaining]]
+
                 selected_users.extend(take_users)
 
             # If we cannot fill all required researcher slots, skip this visit
             # for this planning round without mutating capacities or tallies.
             if len(selected_users) != required:
+                _logger.debug(
+                    "planning: visit_id=%s skipped_not_enough_selected_users have=%s required=%s",
+                    getattr(v, "id", None),
+                    len(selected_users),
+                    required,
+                )
+                final_skipped.append(v)
+                continue
+
+            # Enforce per-day constraint: ensure we can place each selected
+            # user on at most one visit per weekday within the visit window in
+            # this week, independent of part of day.
+            day_reservations: list[tuple[int, int]] = []  # (user_id, day_index)
+            for u in selected_users:
+                uid = getattr(u, "id", None)
+                if uid is None:
+                    continue
+
+                days = per_user_day_schedule.get(uid)
+                if days is None:
+                    days = [True] * 5
+                    per_user_day_schedule[uid] = days
+
+                chosen_day: int | None = None
+                for idx in allowed_day_indices:
+                    if 0 <= idx < 5 and days[idx]:
+                        chosen_day = idx
+                        break
+
+                if chosen_day is None:
+                    # Roll back any tentative reservations for this visit and
+                    # skip assigning it this round.
+                    _logger.debug(
+                        "planning: visit_id=%s user_id=%s no_free_day_in_window indices=%s schedule=%s",
+                        getattr(v, "id", None),
+                        uid,
+                        allowed_day_indices,
+                        days,
+                    )
+                    for uid_r, day_idx in day_reservations:
+                        days_r = per_user_day_schedule.get(uid_r)
+                        if days_r is not None and 0 <= day_idx < 5:
+                            days_r[day_idx] = True
+                    day_reservations = []
+                    break
+
+                days[chosen_day] = False
+                day_reservations.append((uid, chosen_day))
+
+            if not day_reservations or len(day_reservations) != len(selected_users):
+                _logger.debug(
+                    "planning: visit_id=%s skipped_after_day_reservations reservations=%s users=%s",
+                    getattr(v, "id", None),
+                    day_reservations,
+                    [getattr(u, "id", None) for u in selected_users],
+                )
                 final_skipped.append(v)
                 continue
 

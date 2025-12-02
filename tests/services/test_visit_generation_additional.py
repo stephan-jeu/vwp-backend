@@ -1060,3 +1060,79 @@ async def test_single_protocol_relaxation_widens_first_visit_within_window(
     v = visits[0]
     assert v.from_date == wf
     assert v.to_date == wt
+
+
+@pytest.mark.asyncio
+async def test_single_protocol_relaxation_does_not_cross_into_previous_window(
+    mocker, fake_db
+):
+    """Single-protocol visits spanning adjacent windows stay in their own window.
+
+    When a protocol has two adjacent windows that both include the boundary
+    day, the relaxation helper must not move the second visit start into the
+    earlier window. This guards against regressions like proto 116 where the
+    second occurrence was relaxed before its own window_from.
+    """
+
+    # Arrange
+    today_year = date.today().year
+    wf1 = date(today_year, 6, 1)
+    wt1 = date(today_year, 6, 15)
+    wf2 = date(today_year, 6, 15)
+    wt2 = date(today_year, 6, 30)
+
+    fam = Family(id=1001, name="Vleermuis", priority=1)
+    sp = Species(id=2101, family_id=fam.id, name="BatZA", abbreviation="BZ")
+    sp.family = fam
+    fn = Function(id=2110, name="Nest")
+
+    p = Protocol(
+        id=1001,
+        species_id=sp.id,
+        function_id=fn.id,
+        start_timing_reference="SUNSET",
+    )
+    p.species = sp
+    p.function = fn
+
+    w1 = ProtocolVisitWindow(
+        id=10011,
+        protocol_id=p.id,
+        visit_index=1,
+        window_from=wf1,
+        window_to=wt1,
+        required=True,
+        label=None,
+    )
+    w2 = ProtocolVisitWindow(
+        id=10012,
+        protocol_id=p.id,
+        visit_index=2,
+        window_from=wf2,
+        window_to=wt2,
+        required=True,
+        label=None,
+    )
+    p.visit_windows = [w1, w2]
+
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    cluster = Cluster(id=32, project_id=1, address="c32", cluster_number=32)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[],
+        species_ids=[],
+        protocols=[p],
+    )
+
+    # Assert: we expect two visits whose starts respect their respective
+    # window_from values; in particular, the second visit must not start
+    # before wf2.
+    proto_visits = [v for v in visits if any(f.id == fn.id for f in v.functions)]
+    assert len(proto_visits) >= 2
+    proto_visits.sort(key=lambda v: v.from_date)
+    first, second = proto_visits[0], proto_visits[1]
+    assert wf1 <= first.from_date <= wt1
+    assert wf2 <= second.from_date <= wt2

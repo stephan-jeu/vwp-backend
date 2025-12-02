@@ -1,6 +1,6 @@
 -- Seed generated for family Roofvogel protocols
 SET statement_timeout = 0;
-INSERT INTO families (name, priority) VALUES ('Roofvogel', 5) ON CONFLICT (name) DO NOTHING;
+INSERT INTO families (name, priority) VALUES ('Roofvogel', 3) ON CONFLICT (name) DO NOTHING;
 INSERT INTO functions (name) VALUES ('Nest') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Roofvogel'), 'Buizerd', 'BUI') ON CONFLICT (name) DO NOTHING;
 INSERT INTO species (family_id, name, abbreviation) VALUES ((SELECT id FROM families WHERE name = 'Roofvogel'), 'Sperwer', 'SPER') ON CONFLICT (name) DO NOTHING;

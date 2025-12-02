@@ -587,38 +587,24 @@ async def update_visit(
 
     old_advertized = bool(getattr(visit, "advertized", False))
 
-    # Map simple scalar fields if provided
-    for field in (
-        "required_researchers",
-        "visit_nr",
-        "from_date",
-        "to_date",
-        "duration",
-        "min_temperature_celsius",
-        "max_wind_force_bft",
-        "max_precipitation",
-        "planned_week",
-        "part_of_day",
-        "start_time_text",
-        "expertise_level",
-        "wbc",
-        "fiets",
-        "hub",
-        "dvp",
-        "sleutel",
-        "remarks_planning",
-        "remarks_field",
-        "priority",
-        "preferred_researcher_id",
-        "advertized",
-        "quote",
-    ):
-        value = getattr(payload, field)
-        if value is not None:
-            setattr(visit, field, value)
+    # Map simple scalar fields based on explicitly provided payload keys.
+    # This allows the client to clear nullable columns by sending null,
+    # while leaving omitted fields untouched.
+    data = payload.dict(
+        exclude_unset=True,
+        exclude={"function_ids", "species_ids", "researcher_ids"},
+    )
+
+    advertized_update = data.pop("advertized", None)
+
+    for field, value in data.items():
+        setattr(visit, field, value)
+
+    if advertized_update is not None:
+        visit.advertized = advertized_update
 
     new_advertized = bool(getattr(visit, "advertized", False))
-    if payload.advertized is not None and new_advertized != old_advertized:
+    if advertized_update is not None and new_advertized != old_advertized:
         action = "visit_advertised" if new_advertized else "visit_advertised_cancelled"
         await log_activity(
             db,

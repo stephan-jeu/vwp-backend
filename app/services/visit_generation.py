@@ -405,12 +405,16 @@ def _relax_single_protocol_visit_starts(
             v_to: date = entry["to_date"]
 
             # Find protocol windows that actually contain this realised start.
+            # When multiple windows contain the same date (e.g. adjacent windows
+            # that both include the boundary day), we use the latest window_from
+            # so that relaxation never moves an occurrence into an earlier
+            # window.
             containing_wfs = [wf for (wf, wt) in window_pairs if wf <= v_from <= wt]
             if not containing_wfs:
                 previous_from = v_from
                 continue
 
-            window_from = min(containing_wfs)
+            window_from = max(containing_wfs)
             earliest_allowed = window_from
             if previous_from is not None and gap_days:
                 from_with_gap = previous_from + timedelta(days=gap_days)
@@ -426,6 +430,169 @@ def _relax_single_protocol_visit_starts(
                 if _DEBUG_VISIT_GEN:
                     _logger.info(
                         "relax single-proto visit proto=%s %s->%s -> %s->%s",
+                        pid,
+                        v_from.isoformat(),
+                        v_to.isoformat(),
+                        earliest_allowed.isoformat(),
+                        v_to.isoformat(),
+                    )
+                entry["from_date"] = earliest_allowed
+                v_from = earliest_allowed
+
+            previous_from = v_from
+
+    # Phase 2: relax multi-protocol visits within the intersection of their
+    # protocols' windows, while respecting per-protocol min-gap constraints.
+
+    # Default candidate_from to current from_date for all entries.
+    for entry in visits_to_create:
+        entry["_candidate_from"] = entry["from_date"]
+
+    # Propose earlier candidates for entries that contain multiple protocols,
+    # bounded purely by the intersection of their protocol windows.
+    for entry in visits_to_create:
+        protocols = entry.get("protocols", [])
+        if len(protocols) <= 1:
+            continue
+        v_from: date = entry["from_date"]
+        v_to: date = entry["to_date"]
+
+        lowers: list[date] = []
+        uppers: list[date] = []
+        for p in protocols:
+            pid = getattr(p, "id", None)
+            if pid is None:
+                continue
+            windows = proto_windows.get(pid)
+            if not windows:
+                continue
+            containing: list[tuple[date, date]] = []
+            for _vidx, wf, wt, _parts, _pvw_id in windows:
+                if wf <= v_from <= wt:
+                    containing.append((wf, wt))
+            if not containing:
+                continue
+            # Use the latest window_from among windows that contain this date,
+            # and its corresponding window_to, so we never move into an earlier
+            # occurrence window for that protocol.
+            wf_sel, wt_sel = max(containing, key=lambda pair: pair[0])
+            lowers.append(wf_sel)
+            uppers.append(wt_sel)
+
+        if not lowers:
+            continue
+
+        lower_all = max(lowers)
+        upper_all = min(uppers + [v_to])
+        if lower_all < v_from and lower_all <= upper_all:
+            entry["_candidate_from"] = lower_all
+
+    # Enforce per-protocol min-gap on the proposed candidates. If moving an
+    # occurrence earlier for a protocol would violate its min-gap to the
+    # previous occurrence (considering candidates), revert that candidate to
+    # the original realised start for that entry.
+    for pid, protocol in proto_id_to_protocol.items():
+        windows = proto_windows.get(pid)
+        if not windows:
+            continue
+
+        gap_days = _unit_to_days(
+            getattr(protocol, "min_period_between_visits_value", None),
+            getattr(protocol, "min_period_between_visits_unit", None),
+        )
+
+        entries_with_pid = [
+            e
+            for e in visits_to_create
+            if any(pp.id == pid for pp in e.get("protocols", []))
+        ]
+        if not entries_with_pid:
+            continue
+
+        entries_with_pid.sort(key=lambda e: e.get("_candidate_from", e["from_date"]))
+
+        prev_from: date | None = None
+        for e in entries_with_pid:
+            cand: date = e.get("_candidate_from", e["from_date"])
+            if prev_from is not None and gap_days:
+                if cand < prev_from + timedelta(days=gap_days):
+                    # Revert to the original realised start for this entry for
+                    # this protocol; this also makes the candidate safer for
+                    # other protocols that share the entry.
+                    cand = e["from_date"]
+                    e["_candidate_from"] = cand
+            prev_from = cand
+
+    # Apply the final candidates and drop the temporary helper key.
+    for entry in visits_to_create:
+        cand: date = entry.get("_candidate_from", entry["from_date"])
+        if cand < entry["from_date"]:
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "relax multi-proto visit %s->%s -> %s->%s protos=%s",
+                    entry["from_date"].isoformat(),
+                    entry["to_date"].isoformat(),
+                    cand.isoformat(),
+                    entry["to_date"].isoformat(),
+                    [getattr(p, "id", None) for p in entry.get("protocols", [])],
+                )
+            entry["from_date"] = cand
+        if "_candidate_from" in entry:
+            del entry["_candidate_from"]
+
+    # Phase 3: a final single-protocol relaxation pass using the updated
+    # from_date values as references. This allows later single-protocol
+    # occurrences to be relaxed left based on the already-relaxed earlier
+    # occurrences for the same protocol, while still staying within the
+    # protocol's own windows and respecting min-gap.
+
+    for pid, protocol in proto_id_to_protocol.items():
+        windows = proto_windows.get(pid)
+        if not windows:
+            continue
+
+        window_pairs: list[tuple[date, date]] = [
+            (wf, wt) for _vidx, wf, wt, _parts, _pvw_id in windows
+        ]
+
+        gap_days = _unit_to_days(
+            getattr(protocol, "min_period_between_visits_value", None),
+            getattr(protocol, "min_period_between_visits_unit", None),
+        )
+
+        entries = [
+            e for e in visits_to_create if any(pp.id == pid for pp in e["protocols"])
+        ]
+        if not entries:
+            continue
+
+        entries.sort(key=lambda e: e["from_date"])
+
+        previous_from: date | None = None
+        for entry in entries:
+            v_from: date = entry["from_date"]
+            v_to: date = entry["to_date"]
+
+            containing_wfs = [wf for (wf, wt) in window_pairs if wf <= v_from <= wt]
+            if not containing_wfs:
+                previous_from = v_from
+                continue
+
+            window_from = max(containing_wfs)
+            earliest_allowed = window_from
+            if previous_from is not None and gap_days:
+                from_with_gap = previous_from + timedelta(days=gap_days)
+                if from_with_gap > earliest_allowed:
+                    earliest_allowed = from_with_gap
+
+            if (
+                len(entry.get("protocols", [])) == 1
+                and earliest_allowed < v_from
+                and earliest_allowed <= v_to
+            ):
+                if _DEBUG_VISIT_GEN:
+                    _logger.info(
+                        "relax single-proto visit (post-multi) proto=%s %s->%s -> %s->%s",
                         pid,
                         v_from.isoformat(),
                         v_to.isoformat(),

@@ -972,7 +972,7 @@ async def test_assign_requires_visit_flags(
         fiets=True,
         wbc=True,
         dvp=True,
-        sleutel=True,
+        sleutel=False,
     )
 
     async def fake_eligible(_db: Any, _week_monday: date):
@@ -992,6 +992,76 @@ async def test_assign_requires_visit_flags(
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
     assert [u.full_name for u in getattr(v, "researchers", [])] == ["B"]
+
+
+@pytest.mark.asyncio
+async def test_sleutel_requires_at_least_one_intern(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
+    """Sleutel visits require at least one INTERN among assigned researchers.
+
+    We create a sleutel visit requiring two researchers. Only one of the
+    eligible users has contract type Intern; the other has a different
+    contract. The planner must select both, but ensure the INTERN is always
+    included.
+    """
+
+    async def fake_load_caps(_db: Any, _week: int) -> dict:
+        return {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
+
+    v = make_visit(
+        vid=1041,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=7),
+        required_researchers=2,
+        function_names=["X"],
+        species_defs=[("A", 5)],
+        hub=True,
+        fiets=True,
+        wbc=True,
+        dvp=True,
+        sleutel=True,
+    )
+
+    async def fake_eligible(_db: Any, _week_monday: date):
+        return [v]
+
+    # One non-intern and one INTERN; both satisfy visit flags, but at least one
+    # INTERN must be present in the final assignment.
+    u1 = make_user(
+        1,
+        "NonIntern",
+        hub=True,
+        fiets=True,
+        wbc=True,
+        dvp=True,
+        contract="ZZP",
+    )
+    u2 = make_user(
+        2,
+        "Intern",
+        hub=True,
+        fiets=True,
+        wbc=True,
+        dvp=True,
+        contract="Intern",
+    )
+    fake_db = await _fake_db_with_users([u1, u2])
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+
+    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+
+    assigned_names = [u.full_name for u in getattr(v, "researchers", [])]
+    # Both researchers should be assigned and at least one INTERN must be
+    # present.
+    assert sorted(assigned_names) == ["Intern", "NonIntern"]
 
 
 @pytest.mark.asyncio
@@ -1041,6 +1111,210 @@ async def test_single_user_can_be_assigned_to_multiple_visits_when_capacity_allo
 
     counts = [len(getattr(v, "researchers", [])) for v in (v1, v2)]
     assert counts == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_single_user_not_assigned_more_visits_than_feasible_days(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
+    """A user with high weekly capacity but limited feasible days can't get too many visits.
+
+    We construct three visits that are only executable on Thursday/Friday of the work
+    week (Mon–Fri). The user has morning capacity for five days in the AvailabilityWeek
+    row, but in reality there are only two feasible work days for these visits. The
+    planner must therefore assign this user to at most two of the three visits.
+    """
+
+    # Global week-level capacity: pretend there are 5 morning slots available so
+    # capacity alone would allow three visits.
+    async def fake_load_caps(_db: Any, _week: int) -> dict:
+        return {"Ochtend": 5, "Dag": 0, "Avond": 0, "Flex": 0}
+
+    # All visits only become executable from Thursday onwards within the week.
+    thursday = week_monday + timedelta(days=3)
+    friday = week_monday + timedelta(days=4)
+
+    v1 = make_visit(
+        vid=2010,
+        part_of_day="Ochtend",
+        from_date=thursday,
+        to_date=friday,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+    v2 = make_visit(
+        vid=2011,
+        part_of_day="Ochtend",
+        from_date=thursday,
+        to_date=friday,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+    v3 = make_visit(
+        vid=2012,
+        part_of_day="Ochtend",
+        from_date=thursday,
+        to_date=friday,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+
+    async def fake_eligible(_db: Any, _week_monday: date):
+        # Order should not matter; planner must respect per-day feasibility.
+        return [v1, v2, v3]
+
+    # One eligible user for Vleermuis visits.
+    u1 = make_user(1, "A", vleermuis=True)
+    fake_db = await _fake_db_with_users([u1])
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+
+    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+
+    assigned_counts = [len(getattr(v, "researchers", [])) for v in (v1, v2, v3)]
+    assert sum(assigned_counts) <= 2
+
+
+@pytest.mark.asyncio
+async def test_single_user_not_assigned_two_visits_same_day_across_dayparts(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
+    """A user cannot receive two visits on the same day across different parts.
+
+    We construct two visits that are only executable on the same weekday within
+    the work week (Mon–Fri), one in the morning and one in the evening. Global
+    capacity would allow both visits, but the per-day safeguard must ensure at
+    most one of them is assigned to the single eligible user.
+    """
+
+    async def fake_load_caps(_db: Any, _week: int) -> dict:
+        # Capacity alone would allow both visits to be selected.
+        return {"Ochtend": 1, "Dag": 0, "Avond": 1, "Flex": 0}
+
+    # Both visits are restricted to Thursday of the work week.
+    thursday = week_monday + timedelta(days=3)
+
+    v_morning = make_visit(
+        vid=3010,
+        part_of_day="Ochtend",
+        from_date=thursday,
+        to_date=thursday,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+    v_evening = make_visit(
+        vid=3011,
+        part_of_day="Avond",
+        from_date=thursday,
+        to_date=thursday,
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+
+    async def fake_eligible(_db: Any, _week_monday: date):
+        return [v_morning, v_evening]
+
+    # One eligible user for Vleermuis visits.
+    u1 = make_user(1, "A", vleermuis=True)
+    fake_db = await _fake_db_with_users([u1])
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+
+    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+
+    assigned_counts = [
+        len(getattr(v, "researchers", [])) for v in (v_morning, v_evening)
+    ]
+    assert sum(assigned_counts) <= 1
+
+
+@pytest.mark.asyncio
+async def test_users_without_daypart_capacity_rows_not_assigned(
+    monkeypatch: pytest.MonkeyPatch, week_monday: date
+):
+    """Only users with availability rows for the week are considered for assignment.
+
+    We create two eligible users but only provide daypart capacity for one of
+    them. Even though both would otherwise qualify, the planner must ignore
+    the user without a capacity row and assign visits only to the user that
+    has explicit availability.
+    """
+
+    async def fake_load_caps(_db: Any, _week: int) -> dict:
+        # Global capacity allows both visits to be selected on the daypart.
+        return {"Ochtend": 0, "Dag": 2, "Avond": 0, "Flex": 0}
+
+    # Two day visits that can be planned any day in the work week.
+    v1 = make_visit(
+        vid=4010,
+        part_of_day="Dag",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=4),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+    v2 = make_visit(
+        vid=4011,
+        part_of_day="Dag",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=4),
+        required_researchers=1,
+        function_names=["X"],
+        species_defs=[("Vleermuis", 5)],
+    )
+
+    async def fake_eligible(_db: Any, _week_monday: date):
+        return [v1, v2]
+
+    # Two eligible users; only user 1 has an availability row for this week.
+    u1 = make_user(1, "WithAvailability", vleermuis=True)
+    u2 = make_user(2, "WithoutAvailability", vleermuis=True)
+    fake_db = await _fake_db_with_users([u1, u2])
+
+    async def fake_user_caps(_db: Any, _week: int) -> dict[int, int]:
+        # Both users appear in total capacity for fairness calculations.
+        return {1: 2, 2: 2}
+
+    async def fake_user_daypart_caps(_db: Any, _week: int) -> dict[int, dict[str, int]]:
+        # Only user 1 has explicit daypart capacity; user 2 has no row.
+        return {1: {"Ochtend": 0, "Dag": 2, "Avond": 0, "Flex": 0}}
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps,
+    )
+
+    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+
+    # Both visits should be assigned to the user that has availability; the
+    # user without a capacity row must not receive any assignments.
+    assert [u.full_name for u in getattr(v1, "researchers", [])] == ["WithAvailability"]
+    assert [u.full_name for u in getattr(v2, "researchers", [])] == ["WithAvailability"]
 
 
 @pytest.mark.asyncio
