@@ -734,6 +734,10 @@ async def execute_visit(
         },
     )
 
+    # Update subsequent visits
+    if payload.execution_date:
+        await update_subsequent_visits(db, visit, payload.execution_date)
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

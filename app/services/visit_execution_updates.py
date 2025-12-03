@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.logging import logger
 from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.visit import Visit
 
@@ -25,10 +26,17 @@ async def update_subsequent_visits(
     executed_visit: Visit,
     execution_date: date,
 ) -> None:
+    """Update the from_date of subsequent visits.
+
+    The update is based on the executed visit's date and the protocol's
+    minimum period between visits.
     """
-    Update the from_date of subsequent visits based on the executed visit's date
-    and the protocol's minimum period between visits.
-    """
+    logger.debug(
+        "update_subsequent_visits: start for visit_id=%s execution_date=%s",
+        executed_visit.id,
+        execution_date.isoformat(),
+    )
+
     # Reload visit with PVWs and their protocols
     stmt = (
         select(Visit)
@@ -40,12 +48,30 @@ async def update_subsequent_visits(
         )
     )
     visit = (await db.execute(stmt)).scalars().first()
-    if not visit or not visit.protocol_visit_windows:
+    if not visit:
+        logger.debug(
+            "update_subsequent_visits: no visit reloaded for id=%s",
+            executed_visit.id,
+        )
         return
+
+    if not visit.protocol_visit_windows:
+        logger.debug(
+            "update_subsequent_visits: visit_id=%s has no protocol_visit_windows",
+            visit.id,
+        )
+        return
+
+    updated_visit_ids: set[int] = set()
 
     for pvw in visit.protocol_visit_windows:
         protocol = pvw.protocol
         if not protocol:
+            logger.debug(
+                "update_subsequent_visits: skipping PVW id=%s for visit_id=%s because protocol is None",
+                pvw.id,
+                visit.id,
+            )
             continue
 
         min_gap_days = _unit_to_days(
@@ -53,6 +79,11 @@ async def update_subsequent_visits(
             protocol.min_period_between_visits_unit,
         )
         if min_gap_days <= 0:
+            logger.debug(
+                "update_subsequent_visits: protocol_id=%s has non-positive min_gap_days=%s; skipping",
+                protocol.id,
+                min_gap_days,
+            )
             continue
 
         current_idx = pvw.visit_index
@@ -69,6 +100,11 @@ async def update_subsequent_visits(
         subsequent_pvws = (await db.execute(subsequent_pvws_stmt)).scalars().all()
 
         if not subsequent_pvws:
+            logger.debug(
+                "update_subsequent_visits: no subsequent PVWs for protocol_id=%s current_idx=%s",
+                protocol.id,
+                current_idx,
+            )
             continue
 
         subsequent_pvw_ids = [w.id for w in subsequent_pvws]
@@ -90,18 +126,45 @@ async def update_subsequent_visits(
         )
         linked_visits = (await db.execute(linked_visits_stmt)).scalars().unique().all()
 
+        if not linked_visits:
+            logger.debug(
+                "update_subsequent_visits: no linked subsequent visits for protocol_id=%s cluster_id=%s pvw_ids=%s",
+                protocol.id,
+                visit.cluster_id,
+                subsequent_pvw_ids,
+            )
+
         # Calculate new minimum start date
         min_start_date = execution_date + timedelta(days=min_gap_days)
 
         # First apply minimum-gap adjustment for all subsequent visits in this chain
         for v in linked_visits:
             if not v.from_date:
+                logger.debug(
+                    "update_subsequent_visits: visit_id=%s has no from_date; skipping",
+                    v.id,
+                )
                 continue
 
             # We only update if the new date is later than current from_date
             if v.from_date < min_start_date:
+                logger.debug(
+                    "update_subsequent_visits: updating visit_id=%s from_date from %s to %s (min_gap_days=%s)",
+                    v.id,
+                    v.from_date,
+                    min_start_date,
+                    min_gap_days,
+                )
                 v.from_date = min_start_date
                 db.add(v)
+                updated_visit_ids.add(v.id)
+            else:
+                logger.debug(
+                    "update_subsequent_visits: visit_id=%s from_date=%s already >= min_start_date=%s; no change",
+                    v.id,
+                    v.from_date,
+                    min_start_date,
+                )
 
         # Additional rule: for 2-visit protocols that require a June visit, when the
         # executed visit is not in June, ensure the second visit window lies fully
@@ -110,6 +173,13 @@ async def update_subsequent_visits(
         is_two_visit_protocol = getattr(protocol, "visits", None) == 2
 
         if not (requires_june and is_two_visit_protocol and execution_date.month != 6):
+            logger.debug(
+                "update_subsequent_visits: June rule not applied for protocol_id=%s (requires_june=%s, visits=%s, execution_month=%s)",
+                protocol.id,
+                requires_june,
+                getattr(protocol, "visits", None),
+                execution_date.month,
+            )
             continue
 
         # Identify the second visit for this protocol among the linked visits.
@@ -127,6 +197,11 @@ async def update_subsequent_visits(
                 second_visits.append(v)
 
         if not second_visits:
+            logger.debug(
+                "update_subsequent_visits: no second visits found for protocol_id=%s in cluster_id=%s",
+                protocol.id,
+                visit.cluster_id,
+            )
             continue
 
         # If multiple physical visits are linked as the "second" for this protocol,
@@ -141,6 +216,38 @@ async def update_subsequent_visits(
 
         # Only adjust when there is a non-empty intersection with June.
         if new_from <= new_to:
+            logger.debug(
+                "update_subsequent_visits: June clamp for visit_id=%s from [%s, %s] to [%s, %s]",
+                target_visit.id,
+                target_visit.from_date,
+                target_visit.to_date,
+                new_from,
+                new_to,
+            )
             target_visit.from_date = new_from
             target_visit.to_date = new_to
             db.add(target_visit)
+            updated_visit_ids.add(target_visit.id)
+        else:
+            logger.debug(
+                "update_subsequent_visits: June clamp skipped for visit_id=%s because intersection is empty (new_from=%s, new_to=%s)",
+                target_visit.id,
+                new_from,
+                new_to,
+            )
+
+    if updated_visit_ids:
+        logger.debug(
+            "update_subsequent_visits: committing updated visits %s",
+            sorted(updated_visit_ids),
+        )
+        try:
+            await db.commit()
+        except Exception:
+            logger.warning(
+                "update_subsequent_visits: failed to commit updates for visit_ids=%s",
+                sorted(updated_visit_ids),
+                exc_info=True,
+            )
+            await db.rollback()
+            raise
