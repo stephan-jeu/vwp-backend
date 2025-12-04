@@ -36,9 +36,6 @@ async def get_current_user(
     try:
         claims = decode_token(creds.credentials)
     except Exception:
-        logging.getLogger("uvicorn.error").debug(
-            "Auth: token decode failed", exc_info=True
-        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     subject = claims.get("sub")
