@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Path, Query, Response, status
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,7 @@ from app.schemas.activity_log import ActivityLogListResponse
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
+from app.schemas.trash import TrashItem, TrashKind
 from app.schemas.capacity import CapacitySimulationResponse
 from app.services.activity_log_service import log_activity
 from app.services.capacity_simulation_service import simulate_capacity_planning
@@ -25,6 +26,11 @@ from app.services.user_service import (
     create_user as svc_create_user,
     update_user as svc_update_user,
     delete_user as svc_delete_user,
+)
+from app.services.trash_service import (
+    list_trash_items as svc_list_trash_items,
+    restore_trash_item as svc_restore_trash_item,
+    hard_delete_trash_item as svc_hard_delete_trash_item,
 )
 from db.session import get_db
 
@@ -187,6 +193,95 @@ async def delete_user(admin: AdminDep, db: DbDep, user_id: int) -> Response:
         target_type="user",
         target_id=user_id,
         details={},
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/trash", response_model=list[TrashItem])
+async def list_trash(_: AdminDep, db: DbDep) -> list[TrashItem]:
+    """List all soft-deleted entities for the admin trash view.
+
+    Args:
+        _: Ensures the caller is an admin user.
+        db: Async SQLAlchemy session.
+
+    Returns:
+        List of :class:`TrashItem` rows representing soft-deleted entities.
+    """
+
+    return await svc_list_trash_items(db)
+
+
+@router.post(
+    "/trash/{kind}/{entity_id}/restore",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def restore_trash_item(
+    admin: AdminDep,
+    db: DbDep,
+    kind: TrashKind,
+    entity_id: Annotated[int, Path(ge=1)],
+) -> Response:
+    """Restore a soft-deleted entity and its children.
+
+    Args:
+        admin: Authenticated admin user performing the restore.
+        db: Async SQLAlchemy session.
+        kind: Logical type of entity to restore.
+        entity_id: Primary key of the entity to restore.
+
+    Returns:
+        Empty 204 response on success.
+    """
+
+    await svc_restore_trash_item(db, kind=kind, entity_id=entity_id)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="trash_restored",
+        target_type=str(kind.value),
+        target_id=entity_id,
+        details=None,
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/trash/{kind}/{entity_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def hard_delete_trash_item(
+    admin: AdminDep,
+    db: DbDep,
+    kind: TrashKind,
+    entity_id: Annotated[int, Path(ge=1)],
+) -> Response:
+    """Permanently delete a soft-deleted entity and its children.
+
+    Args:
+        admin: Authenticated admin user performing the hard delete.
+        db: Async SQLAlchemy session.
+        kind: Logical type of entity to hard delete.
+        entity_id: Primary key of the entity to delete.
+
+    Returns:
+        Empty 204 response on success.
+    """
+
+    await svc_hard_delete_trash_item(db, kind=kind, entity_id=entity_id)
+
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="trash_hard_deleted",
+        target_type=str(kind.value),
+        target_id=entity_id,
+        details=None,
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
