@@ -80,7 +80,7 @@ class Visit(TimestampMixin, SoftDeleteMixin, Base):
         String(64), nullable=True, index=True
     )
 
-    required_researchers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    required_researchers: Mapped[int | None] = mapped_column(Integer, default=1, nullable=True)
     visit_nr: Mapped[int | None] = mapped_column(Integer, nullable=True)
     from_date: Mapped[date | None] = mapped_column("from", nullable=True)
     to_date: Mapped[date | None] = mapped_column("to", nullable=True)

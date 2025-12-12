@@ -1289,6 +1289,7 @@ async def accept_advertised_visit(
     user: UserDep,
     db: DbDep,
     visit_id: int,
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> Response:
     """Accept an advertised visit and reassign researchers.
 
@@ -1298,6 +1299,11 @@ async def accept_advertised_visit(
     advertised flag is cleared. Corresponding activity log entries are added
     for auditing.
     """
+
+    settings = get_settings()
+    effective_today: date | None = None
+    if settings.test_mode_enabled and getattr(user, "admin", False):
+        effective_today = simulated_today
 
     stmt = (
         select(Visit)
@@ -1321,7 +1327,7 @@ async def accept_advertised_visit(
             detail="Visit is not advertised for takeover",
         )
 
-    status_code_value = await resolve_visit_status(db, visit)
+    status_code_value = await resolve_visit_status(db, visit, today=effective_today)
     if status_code_value not in {
         VisitStatusCode.PLANNED,
         VisitStatusCode.NOT_EXECUTED,

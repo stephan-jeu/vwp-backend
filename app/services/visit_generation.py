@@ -28,6 +28,14 @@ _logger = logging.getLogger("uvicorn.error")
 # Minimum acceptable effective window length (days) for a combined bucket
 MIN_EFFECTIVE_WINDOW_DAYS = int(os.getenv("MIN_EFFECTIVE_WINDOW_DAYS", "14"))
 
+_PRECIPITATION_ORDER = [
+    "motregen",
+    "geen regen",
+    "droog",
+    "geen neerslag, geen mist boven watergangen",
+]
+_PRECIPITATION_PRIORITY = {name: idx for idx, name in enumerate(_PRECIPITATION_ORDER)}
+
 # ---- Exception rules scaffolding -------------------------------------------------
 
 
@@ -174,7 +182,10 @@ def _derive_part_of_day(protocol: Protocol) -> str | None:
 
     ref = protocol.start_timing_reference or ""
     if ref == "SUNRISE":
-        return "Ochtend"
+        if protocol.start_time_relative_minutes is not None and protocol.start_time_relative_minutes >= 0:
+            return "Dag"
+        else:
+            return "Ochtend"
     if ref in {"SUNSET", "ABSOLUTE_TIME"}:
         return "Avond"
     if ref == "DAYTIME":
@@ -343,6 +354,23 @@ def _respects_min_gap(planned: list[date], v_from: date, days: int | None) -> bo
     if last_before is None:
         return True
     return not (v_from < last_before + timedelta(days=days))
+
+
+def _select_most_restrictive_precipitation(options: list[str]) -> str | None:
+    if not options:
+        return None
+
+    scored: list[tuple[str, int | None]] = []
+    for value in options:
+        norm = value.strip().lower()
+        rank = _PRECIPITATION_PRIORITY.get(norm)
+        scored.append((value, rank))
+
+    known = [item for item in scored if item[1] is not None]
+    if known:
+        return max(known, key=lambda item: item[1])[0]
+
+    return sorted(options, key=lambda s: (len(s), s))[0]
 
 
 def _relax_single_protocol_visit_starts(
@@ -2048,13 +2076,9 @@ async def generate_visits_for_cluster(
             (p.max_wind_force_bft for p in protos if p.max_wind_force_bft is not None),
             default=None,
         )
-        # precipitation: pick the most restrictive qualitative by shortest string (fallback to first)
+        # precipitation: pick the most restrictive qualitative based on configured order
         precip_options = [p.max_precipitation for p in protos if p.max_precipitation]
-        precip = (
-            sorted(precip_options, key=lambda s: (len(s), s))[0]
-            if precip_options
-            else None
-        )
+        precip = _select_most_restrictive_precipitation(precip_options)
         # duration: base on max protocol duration in minutes
         durations = [
             p.visit_duration_hours for p in protos if p.visit_duration_hours is not None
