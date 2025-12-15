@@ -51,7 +51,10 @@ alembic -c backend/alembic.ini stamp head
 ### Init database with protocols and users
 alembic revision --autogenerate -m "initial" --rev-id 20251130_initial
 alembic upgrade head
-python scripts/init_db.py
+TODO: use dump from production for families, species, functions, protocols and protocol_visit_windows. 
+See scripts/dump_seeds.sh.
+Do not use the db/sql seed files for this!
+Modify python scripts/init_db.py.
 
 
 

@@ -19,6 +19,7 @@ from app.models.species import Species
 from app.models.visit import (
     Visit,
 )
+from .visit_generation_graph import generate_visits_graph_based
 
 
 _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -1025,6 +1026,54 @@ async def generate_visits_for_cluster(
     protocols: list[Protocol] | None = None,
 ) -> tuple[list[Visit], list[str]]:
     """Generate visits for a cluster based on selected functions and species.
+
+    DEPRECATED LOGIC: Now delegates to Graph-Based Constraint Satisfaction solver.
+    """
+    if _DEBUG_VISIT_GEN:
+        _logger.info(
+            "visit_gen start (GRAPH) cluster=%s functions=%s species=%s",
+            getattr(cluster, "id", None),
+            function_ids,
+            species_ids,
+        )
+
+    # Resolve protocols if not provided
+    if protocols is None:
+        if not function_ids or not species_ids:
+             return [], []
+             
+        stmt: Select[tuple[Protocol]] = (
+            select(Protocol)
+            .where(
+                Protocol.function_id.in_(function_ids),
+                Protocol.species_id.in_(species_ids),
+            )
+            .options(
+                selectinload(Protocol.visit_windows),
+                selectinload(Protocol.species).selectinload(Species.family),
+                selectinload(Protocol.function),
+            )
+        )
+        protocols = (await db.execute(stmt)).scalars().unique().all()
+    
+    # Delegate to new engine
+    return await generate_visits_graph_based(db, cluster, protocols)
+
+
+async def _legacy_generate_visits_for_cluster_implementation(
+    db: AsyncSession,
+    cluster: Cluster,
+    function_ids: list[int],
+    species_ids: list[int],
+    *,
+    protocols: list[Protocol] | None = None,
+) -> tuple[list[Visit], list[str]]:
+    """
+    Original implementation preserved below this line for safety during migration.
+    The actual function above now returns early.
+    
+    Original Docstring:
+    Generate visits for a cluster based on selected functions and species.
 
     This is an append-only operation: existing visits are left intact.
     The algorithm consists of two phases:

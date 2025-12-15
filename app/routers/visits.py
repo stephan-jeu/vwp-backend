@@ -10,9 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
 from app.models.project import Project
+from app.models.protocol import Protocol
+from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.species import Species
 from app.models.user import User
-from app.models.visit import Visit, visit_functions, visit_species, visit_researchers
+from app.models.visit import (
+    Visit,
+    visit_functions,
+    visit_protocol_visit_windows,
+    visit_researchers,
+    visit_species,
+)
 from app.models.activity_log import ActivityLog
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
@@ -665,6 +673,65 @@ async def update_visit(
                     for rid in payload.researcher_ids
                 ],
             )
+
+    # Auto-update Protocol Visit Windows if species/functions/visit_nr changed
+    # Logic: Find PVWs matching (species, function) pairs of the visit and matching visit_index.
+    # We do NOT validate dates; this is user responsibility as requested.
+    is_visit_nr_changed = "visit_nr" in data
+    if (
+        payload.function_ids is not None
+        or payload.species_ids is not None
+        or is_visit_nr_changed
+    ):
+        # 1. Determine current state (Final IDs and Nr)
+        current_species_ids = (
+            payload.species_ids
+            if payload.species_ids is not None
+            else [s.id for s in visit.species]
+        )
+        current_function_ids = (
+            payload.function_ids
+            if payload.function_ids is not None
+            else [f.id for f in visit.functions]
+        )
+        current_visit_nr = visit.visit_nr  # Already updated via setattr
+
+        # 2. Clear existing PVWs irrespective of whether we find new ones or not
+        # If visit_nr is None, we just clear and stop.
+        await db.execute(
+            delete(visit_protocol_visit_windows).where(
+                visit_protocol_visit_windows.c.visit_id == visit.id
+            )
+        )
+
+        if (
+            current_visit_nr is not None
+            and current_species_ids
+            and current_function_ids
+        ):
+            # 3. Find matching ProtocolVisitWindows
+            # We look for Protocols that match any (Species, Function) combination
+            # present on the visit.
+            # AND the ProtocolVisitWindow must match the visit's number index.
+            stmt_pvw = (
+                select(ProtocolVisitWindow.id)
+                .join(Protocol, ProtocolVisitWindow.protocol_id == Protocol.id)
+                .where(
+                    Protocol.species_id.in_(current_species_ids),
+                    Protocol.function_id.in_(current_function_ids),
+                    ProtocolVisitWindow.visit_index == current_visit_nr,
+                )
+            )
+            pvw_ids = (await db.execute(stmt_pvw)).scalars().all()
+
+            if pvw_ids:
+                await db.execute(
+                    insert(visit_protocol_visit_windows),
+                    [
+                        {"visit_id": visit.id, "protocol_visit_window_id": pid}
+                        for pid in pvw_ids
+                    ],
+                )
 
     await db.commit()
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
