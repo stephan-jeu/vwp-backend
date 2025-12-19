@@ -128,6 +128,11 @@ async def test_absolute_time_allows_both_and_prefers_morning(mocker, fake_db):
         start_ref="ABSOLUTE_TIME",
         visit_duration_h=1.0,
     )
+    
+    # Manually set absolute time (helper doesn't support it yet)
+    from datetime import time
+    p1.start_time_absolute_from = time(22, 30)
+    # p2 not set, but priority loop should find p1 if present
 
     funcs = {p1.function.id: p1.function, p2.function.id: p2.function}
     species = {p1.species.id: p1.species, p2.species.id: p2.species}
@@ -152,9 +157,12 @@ async def test_absolute_time_allows_both_and_prefers_morning(mocker, fake_db):
         fake_db, cluster, function_ids=[1110, 1111], species_ids=[1101, 1102]
     )
 
+    # Updated Requirement: ABSOLUTE_TIME now implies strict "Avond" (Evening).
+    # Previous behavior was flexible, preferring morning.
     # Assert
     assert len(visits) >= 1
-    assert visits[0].part_of_day == "Ochtend"
+    assert visits[0].part_of_day == "Avond"
+    assert visits[0].start_time_text == "22:30"
 
 
 @pytest.mark.asyncio

@@ -142,6 +142,19 @@ async def generate_visits_graph_based(
 
 # --- Phase 1: Request Generation ---
 
+def _to_current_year(d: date) -> date:
+    today = date.today()
+    current_year = today.year
+    try:
+        return d.replace(year=current_year)
+    except ValueError:
+        # Feb 29 -> Feb 28
+        if d.month == 2 and d.day == 29:
+            return date(current_year, 2, 28)
+        raise
+
+
+
 def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
     """Explode protocols into individual required visit occurrences (Nodes)."""
     requests: list[VisitRequest] = []
@@ -150,14 +163,11 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
     today = date.today()
     current_year = today.year
 
-    def _to_current_year(d: date) -> date:
-        try:
-            return d.replace(year=current_year)
-        except ValueError:
-            # Feb 29 -> Feb 28
-            if d.month == 2 and d.day == 29:
-                return date(current_year, 2, 28)
-            raise
+    # Pre-calculate to current year helper
+    today = date.today()
+    current_year = today.year
+
+
 
     # 1. First Pass: Create Requests
     req_map: dict[str, VisitRequest] = {}
@@ -194,17 +204,24 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
                 continue
 
             # Determine allowed parts for THIS specific visit occurrence
-            # Copy base options
-            parts = set(base_parts) if base_parts else set()
+            # Copy base options (None means Any)
+            parts = set(base_parts) if base_parts is not None else None
             
-            # Apply "At least one" constraints to the SECOND visit (Index 2)
-            # This is a heuristic to force the requirement later, giving V1 flexibility to merge with Avond.
-            # If we don't force it eventually, we might end up with all Avond.
-            if w.visit_index == 2:
+            # Apply "At least one" constraints (Refined for Heuristic)
+            # We enforce strictly on Visit Index 1.
+            # This ensures at least one visit satisfies the condition (early validation).
+            # Subsequent visits (Index > 1) remain flexible, allowing merges with other times.
+            if w.visit_index == 1:
                 if req_morning:
-                    parts.intersection_update({"Ochtend"})
+                    if parts is None:
+                        parts = {"Ochtend"}
+                    else:
+                        parts.intersection_update({"Ochtend"})
                 if req_evening:
-                    parts.intersection_update({"Avond"})
+                    if parts is None:
+                        parts = {"Avond"}
+                    else:
+                        parts.intersection_update({"Avond"})
             
             # If parts became empty due to intersection (conflict), revert or warn?
             # e.g. Base={Avond} but ReqMorning=True.
@@ -229,6 +246,13 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
                 part_of_day_options=parts,
                 predecessor=predecessor
             )
+            
+            if _DEBUG_VISIT_GEN:
+                _logger.info(
+                    "  Req debug: %s v%d Base=%s Flags(M=%s,E=%s) -> Parts=%s",
+                    req.id, w.visit_index, base_parts, req_morning, req_evening, parts
+                )
+
             requests.append(req)
             req_map[req.id] = req
             prev_request = req
@@ -285,7 +309,8 @@ def _derive_part_options_base(protocol: Protocol) -> set[str] | None:
     if ref_start == "DAYTIME":
         return {"Dag"}
     if ref_start == "ABSOLUTE_TIME":
-        return {"Avond"}
+        # Do not over-constrain: allow both, actual part is decided later
+        return {"Avond", "Ochtend"}
 
     if ref_start == "SUNSET" and ref_end == "SUNRISE":
         return {"Avond", "Ochtend"}
@@ -569,10 +594,10 @@ def _partition_into_cliques(requests: list[VisitRequest]) -> list[VisitGroup]:
                         break
 
             # Refinement: Only enforce strict delay cap if the resulting window is "non-huge".
-            # Relaxed threshold to < 40 days intersection (was 50).
-            # This makes the split condition stricter (intersection must be < 40 to split),
-            # enabling merges for intersections like 45 days.
-            if not has_urgent_member and start_spread > 7 and intersection_days < (25 if pred else 40):
+            # Relaxed threshold to < 50 days intersection (was 40, originally 50).
+            # This makes the split condition stricter (intersection must be < 50 to split),
+            # protecting V1s (long windows) from being dragged late by V2s unless overlap is massive.
+            if not has_urgent_member and start_spread > 7 and intersection_days < (25 if pred else 50):
                 continue
             
             # CRITICAL CHECK: Forward Feasibility (Lookahead)

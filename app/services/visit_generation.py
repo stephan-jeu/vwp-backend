@@ -817,7 +817,7 @@ def _complete_missing_occurrences(
                     )
 
 
-def _derive_start_time_minutes(protocol: Protocol) -> int | None:
+def derive_start_time_minutes(protocol: Protocol) -> int | None:
     """Compute start time in minutes relative to the timing reference.
 
     Returns the stored ``start_time_relative_minutes`` value as-is, for all
@@ -831,7 +831,7 @@ def _derive_start_time_minutes(protocol: Protocol) -> int | None:
     return rel
 
 
-def _derive_end_time_minutes(protocol: Protocol) -> int | None:
+def derive_end_time_minutes(protocol: Protocol) -> int | None:
     """Return end time in minutes relative to the end timing reference, if set."""
     rel = getattr(protocol, "end_time_relative_minutes", None)
     if rel is None:
@@ -969,7 +969,7 @@ def _unit_to_days(value: int | None, unit: str | None) -> int:
     return value
 
 
-def _extract_whitelisted_remarks(texts: list[str]) -> list[str]:
+def extract_whitelisted_remarks(texts: list[str]) -> list[str]:
     """Extract a unique, ordered list of whitelisted planning remarks.
 
     Only retain phrases from a curated allowlist to avoid duplicating
@@ -1017,6 +1017,112 @@ def _extract_whitelisted_remarks(texts: list[str]) -> list[str]:
     return found
 
 
+def calculate_visit_props(
+    protocols: list[Protocol], part_of_day: str | None
+) -> tuple[int | None, str | None]:
+    """Calculate duration (minutes) and start time text based on protocols and part of day.
+
+    Logic ported from legacy implementation.
+    """
+    # duration: base on max protocol duration in minutes
+    durations = [
+        p.visit_duration_hours for p in protocols if p.visit_duration_hours is not None
+    ]
+    duration_min = int(max(durations) * 60) if durations else None
+
+    # Morning/Evening refinements
+    calc_start_for_duration: int | None = None
+    end_candidates = [
+        derive_end_time_minutes(p)
+        for p in protocols
+        if derive_end_time_minutes(p) is not None
+    ]
+    start_candidates = [
+        derive_start_time_minutes(p)
+        for p in protocols
+        if derive_start_time_minutes(p) is not None
+    ]
+    
+    # Also derive starts from end constraints minus per-protocol duration
+    starts_from_end_minus_duration: list[int] = []
+    for p in protocols:
+        end_m = derive_end_time_minutes(p)
+        dur_h = getattr(p, "visit_duration_hours", None)
+        if end_m is not None and dur_h is not None:
+            starts_from_end_minus_duration.append(int(end_m - int(dur_h * 60)))
+
+    if part_of_day == "Ochtend" and end_candidates:
+        all_start_candidates = start_candidates + starts_from_end_minus_duration
+        if all_start_candidates:
+            calc_start_for_duration = int(min(all_start_candidates))
+            latest_end = int(max(end_candidates))
+            new_duration = int(max(0, latest_end - calc_start_for_duration))
+            duration_min = new_duration
+
+    if part_of_day == "Avond" and start_candidates:
+        ends_from_start: list[int] = []
+        for p in protocols:
+            s = derive_start_time_minutes(p)
+            dur_h = getattr(p, "visit_duration_hours", None)
+            if s is not None and dur_h is not None:
+                ends_from_start.append(int(s + int(dur_h * 60)))
+
+        all_end_candidates: list[int] = []
+        if end_candidates:
+            all_end_candidates.extend(int(e) for e in end_candidates)
+        all_end_candidates.extend(ends_from_start)
+
+        if all_end_candidates:
+            earliest_start = int(min(start_candidates))
+            latest_end_all = int(max(all_end_candidates))
+            new_duration = int(max(0, latest_end_all - earliest_start))
+            duration_min = new_duration
+
+    # start time text calculation
+    start_time_text = None
+
+    # 1. Overrides (ABSOLUTE_TIME, HM) - Ported from Graph Logic
+    for p in protocols:
+        if p.start_timing_reference == "ABSOLUTE_TIME" and p.start_time_absolute_from:
+            start_time_text = p.start_time_absolute_from.strftime("%H:%M")
+            break
+            
+    if start_time_text is None:
+        # HM Exception
+        try:
+             if any(p.species.abbreviation == 'HM' for p in protocols):
+                 start_time_text = "1-2 uur na zonsopkomst"
+        except AttributeError:
+             pass
+
+    local_start_minutes: int | None = None
+    if start_time_text is None:
+        if part_of_day == "Ochtend":
+            if calc_start_for_duration is not None:
+                local_start_minutes = int(calc_start_for_duration)
+            elif end_candidates and duration_min is not None:
+                earliest_end = min(end_candidates)
+                local_start_minutes = int(earliest_end - duration_min)
+            elif start_candidates:
+                local_start_minutes = int(min(start_candidates))
+        elif part_of_day == "Avond":
+            if start_candidates:
+                local_start_minutes = int(min(start_candidates))
+            elif end_candidates:
+                local_start_minutes = int(min(end_candidates))
+            
+        if local_start_minutes is not None:
+            start_time_text = derive_start_time_text_for_visit(
+                part_of_day, local_start_minutes
+            )
+    
+    # Fallback text
+    if start_time_text is None:
+        start_time_text = derive_start_time_text_for_visit(part_of_day, None)
+
+    return duration_min, start_time_text
+
+
 async def generate_visits_for_cluster(
     db: AsyncSession,
     cluster: Cluster,
@@ -1057,7 +1163,13 @@ async def generate_visits_for_cluster(
         protocols = (await db.execute(stmt)).scalars().unique().all()
     
     # Delegate to new engine
-    return await generate_visits_graph_based(db, cluster, protocols)
+    # Delegate to CP-SAT solver implementation.
+    # We use this engine for global optimization of complex constraints.
+    from .visit_generation_ortools import generate_visits_cp_sat
+
+    result_visits, warnings = await generate_visits_cp_sat(db, cluster, protocols)
+
+    return result_visits, warnings
 
 
 async def _legacy_generate_visits_for_cluster_implementation(
