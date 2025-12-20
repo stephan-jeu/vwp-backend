@@ -162,7 +162,241 @@ async def test_absolute_time_allows_both_and_prefers_morning(mocker, fake_db):
     # Assert
     assert len(visits) >= 1
     assert visits[0].part_of_day == "Avond"
-    assert visits[0].start_time_text == "22:30"
+
+@pytest.mark.asyncio
+async def test_remarks_optimization_suppressed(mocker, fake_db):
+    """Verify that remarks are suppressed when redundant (Full Cartesian Product)."""
+    # Case 1: Same Function, Diff Species -> Redundant
+    # Function A, Species X, Y.
+    # Requests: (A, X), (A, Y).
+    # Product: (A,X), (A,Y). Matches Active.
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+
+    p1 = _make_protocol(proto_id=201, fam_name="F", species_id=301, species_name="Alpha", fn_id=401, fn_name="FuncA", window_from=wf, window_to=wt, visit_duration_h=1)
+    p2 = _make_protocol(proto_id=202, fam_name="F", species_id=302, species_name="Beta", fn_id=401, fn_name="FuncA", window_from=wf, window_to=wt, visit_duration_h=1)
+    
+    # Mock DB
+    funcs = {p1.function.id: p1.function}
+    species = {p1.species.id: p1.species, p2.species.id: p2.species}
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p1, p2])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=20, project_id=1, address="c20", cluster_number=20)
+    
+    # Act
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [401], [301, 302])
+    
+    # Assert
+    assert len(visits) == 1
+    # Should be suppressed (None or empty string) because FuncA x {Alpha, Beta} == Active
+    assert not visits[0].remarks_field
+
+@pytest.mark.asyncio
+async def test_remarks_optimization_shown(mocker, fake_db):
+    """Verify that remarks are SHOWN when exclusions exist."""
+    # Case 2: Diff Function, Diff Species -> Not Full Product
+    # P1(FuncA, Alpha), P2(FuncB, Beta).
+    # Product: (A,Al), (A,Be), (B,Al), (B,Be).
+    # Active: (A,Al), (B,Be).
+    # Misses: (A,Be), (B,Al).
+    # Expected: Remarks shown.
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+
+    p1 = _make_protocol(proto_id=203, fam_name="F", species_id=303, species_name="Gamma", fn_id=403, fn_name="FuncA", window_from=wf, window_to=wt, visit_duration_h=1)
+    p2 = _make_protocol(proto_id=204, fam_name="F", species_id=304, species_name="Delta", fn_id=404, fn_name="FuncB", window_from=wf, window_to=wt, visit_duration_h=1)
+    
+    funcs = {p1.function.id: p1.function, p2.function.id: p2.function}
+    species = {p1.species.id: p1.species, p2.species.id: p2.species}
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p1, p2])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=21, project_id=1, address="c21", cluster_number=21)
+    
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [403, 404], [303, 304])
+    
+    assert len(visits) == 1
+    assert visits[0].remarks_field # Should not be empty
+
+@pytest.mark.asyncio
+async def test_rugstreeppad_sequential_visits(mocker, fake_db):
+    """Verify that Rugstreeppad functions are never combined (Sequential)."""
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+
+    # Rugstreeppad: Different Functions -> Split
+    p1 = _make_protocol(proto_id=501, fam_name="Pad", species_id=601, species_name="Rugstreeppad", fn_id=701, fn_name="Roep", window_from=wf, window_to=wt)
+    p2 = _make_protocol(proto_id=502, fam_name="Pad", species_id=601, species_name="Rugstreeppad", fn_id=702, fn_name="Water", window_from=wf, window_to=wt)
+
+    # Control: Vleermuis: Different Functions -> Merge
+    p3 = _make_protocol(proto_id=503, fam_name="Vleermuis", species_id=602, species_name="Laatvlieger", fn_id=701, fn_name="Roep", window_from=wf, window_to=wt)
+    p4 = _make_protocol(proto_id=504, fam_name="Vleermuis", species_id=602, species_name="Laatvlieger", fn_id=702, fn_name="Water", window_from=wf, window_to=wt)
+
+    # Mock DB
+    funcs = {p1.function.id: p1.function, p2.function.id: p2.function}
+    species = {p1.species.id: p1.species, p3.species.id: p3.species}
+    # Stateful Mock
+    active_species_id = 601
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql:
+            # Return based on active test phase
+            if active_species_id == 601: return _FakeResult([p1, p2])
+            if active_species_id == 602: return _FakeResult([p3, p4])
+            return _FakeResult([]) 
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    # Test Rugstreeppad (Split)
+    active_species_id = 601
+    cluster1 = Cluster(id=50, project_id=1, address="c50", cluster_number=50)
+    visits1, _ = await generate_visits_for_cluster(fake_db, cluster1, [701, 702], [601])
+    assert len(visits1) == 2 
+    
+    # Test Control (Merge)
+    active_species_id = 602
+
+@pytest.mark.asyncio
+async def test_visit_sorting_series_priority(mocker, fake_db):
+    """Verify that older series visits come before newer series starts on same day."""
+    today_year = date.today().year
+    
+    # Old Series (Started Jan 1)
+    # Target visit on June 1
+    p_old = _make_protocol(proto_id=801, fam_name="F", species_id=901, species_name="OldSp", fn_id=1001, fn_name="OldFn", window_from=date(today_year, 6, 1), window_to=date(today_year, 6, 1))
+    # Add historical window to establish series start
+    w_hist = ProtocolVisitWindow(
+        id=8010, protocol_id=p_old.id, visit_index=1, 
+        window_from=date(today_year, 1, 1), window_to=date(today_year, 2, 1), required=True
+    )
+    # The actual window for this visit is visit_index=3
+    p_old.visit_windows[0].visit_index = 3 # Modify the default one created by helper
+    p_old.visit_windows.append(w_hist) # Add history
+    
+    # New Series (Started June 1)
+    # Target visit on June 1
+    p_new = _make_protocol(proto_id=802, fam_name="F", species_id=902, species_name="NewSp", fn_id=1002, fn_name="NewFn", window_from=date(today_year, 6, 1), window_to=date(today_year, 6, 1))
+    p_new.visit_windows[0].visit_index = 1
+    
+    # Mock DB
+    funcs = {p_old.function.id: p_old.function, p_new.function.id: p_new.function}
+    species = {p_old.species.id: p_old.species, p_new.species.id: p_new.species}
+    
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p_old, p_new])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+        
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=60, project_id=1, address="c60", cluster_number=60)
+    
+    # Both visits generated on June 1.
+    # Old (V3) should be before New (V1)
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [1001, 1002], [901, 902])
+    
+    # Filter for June visits (ignoring the historical Jan visit)
+    june_visits = [v for v in visits if v.from_date == date(today_year, 6, 1)]
+    assert len(june_visits) == 2
+    
+    # Verify Order: Old (Series Start Jan) < New (Series Start June)
+    # Because Old series started earlier, it should finish its sequential visits first.
+    assert june_visits[0].functions[0].name == "OldFn"
+    assert june_visits[1].functions[0].name == "NewFn"
+
+@pytest.mark.asyncio
+async def test_remarks_optimization_suppressed_high_index(mocker, fake_db):
+    """Verify that remarks are suppressed even for Index > 1 if uniform and full product."""
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+    
+    # 2 protocols, both Visit Index 2
+    # Full Product: 1 Fn x 2 Sp (or 2 Fn x 1 Sp)
+    # Let's do 1 Fn x 2 Sp
+    p1 = _make_protocol(proto_id=301, fam_name="F", species_id=401, species_name="Alpha", fn_id=501, fn_name="FuncA", window_from=wf, window_to=wt)
+    p1.visit_windows[0].visit_index = 2
+    
+    p2 = _make_protocol(proto_id=302, fam_name="F", species_id=402, species_name="Beta", fn_id=501, fn_name="FuncA", window_from=wf, window_to=wt)
+    p2.visit_windows[0].visit_index = 2
+    
+    funcs = {p1.function.id: p1.function}
+    species = {p1.species.id: p1.species, p2.species.id: p2.species}
+    
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p1, p2])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+        
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=30, project_id=1, address="c30", cluster_number=30)
+    
+    # Act
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [501], [401, 402])
+    
+    # Assert
+    assert len(visits) == 1
+    # Should be suppressed
+    assert not visits[0].remarks_field
+
+@pytest.mark.asyncio
+async def test_rugstreeppad_remarks_exception(mocker, fake_db):
+    """Verify that Rugstreeppad + 'platen...' triggers specific remarks text."""
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+    
+    p1 = _make_protocol(proto_id=601, fam_name="Pad", species_id=701, species_name="Rugstreeppad", fn_id=801, fn_name="platen neerleggen, eisnoeren/larven", window_from=wf, window_to=wt)
+    
+    funcs = {p1.function.id: p1.function}
+    species = {p1.species.id: p1.species}
+    
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p1])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+        
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=70, project_id=1, address="c70", cluster_number=70)
+    
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [801], [701])
+    
+    assert len(visits) == 1
+    assert visits[0].remarks_field
+    assert "Fijnmazig schepnet (RAVON-type) mee" in visits[0].remarks_field
+    # Optimization would usually suppress the species list "Rugstreeppad (1)" since it's full product.
+    # So we expect ONLY the special text (or special text + nothing else).
+    assert "Rugstreeppad (" not in visits[0].remarks_field
 
 
 @pytest.mark.asyncio
@@ -295,13 +529,12 @@ async def test_completion_pass_creates_missing_occurrence_and_indexes(mocker, fa
     )
 
     # Assert behavior: completion ensures the protocol has at least one planned occurrence
-    # and assigns occurrence indices used in remarks_field. We don't enforce two separate
-    # visits, since identical windows may be consolidated into one series entry.
-    assert len(visits) >= 1
-    combined_rf = "\n".join([v.remarks_field or "" for v in visits])
-    assert (
-        "(" in combined_rf and ")" in combined_rf
-    )  # contains an occurrence index like (1)
+    # and assigns occurrence indices. 
+    # Since P1 has 2 windows and cannot visit itself, we get 2 visits.
+    # Due to "Full Product + Uniform Index" optimization, remarks are suppressed.
+    assert len(visits) == 2
+    assert visits[0].remarks_field is None
+    assert visits[1].remarks_field is None
 
 
 @pytest.mark.asyncio

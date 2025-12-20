@@ -392,6 +392,16 @@ def _check_bio_compatibility(p1: Protocol, p2: Protocol) -> bool:
         # Both SMP: Must be same family (no cross-family)
         return _same_family(p1, p2)
 
+    # Exception: Rugstreeppad (Natterjack Toad)
+    # Functions for this species must be visited sequentially, never combined.
+    # Therefore, if Functions differ, they are incompatible.
+    sp_name = getattr(getattr(p1, "species", None), "name", "")
+    if sp_name == "Rugstreeppad":
+        fn1 = getattr(p1, "function", None)
+        fn2 = getattr(p2, "function", None)
+        if fn1 and fn2 and fn1.id != fn2.id:
+            return False
+
     # Standard Family Logic
     if _same_family(p1, p2):
         return True

@@ -399,30 +399,82 @@ async def generate_visits_cp_sat(
          # Build remarks field (Legacy logic replication)
         remarks_lines = []
         fn_map = defaultdict(lambda: defaultdict(set))
+        
+        # New Optimization: Suppress remarks if redundancy check passes & all indices match
+        # Logic: If (Functions x Species) == ActiveProtocols, and indices are uniform?
+        # User said: "Besides the visit index info...".
+        # But if we suppress text, we lose index info.
+        # User implies index info is less valuable than clarity or is standard.
+        # Let's check strict Cartesian Product of (Function Name, Species Abbr).
+        
+        active_pairs = set()
+        visit_indices = set()
+        
         for r in assigned_reqs:
              p = r.protocol
              fn_name = getattr(getattr(p, "function", None), "name", None)
              sp_abbr = getattr(getattr(p, "species", None), "abbreviation", None) or getattr(getattr(p, "species", None), "name", None)
              if fn_name and sp_abbr:
+                 active_pairs.add((fn_name, sp_abbr))
                  fn_map[fn_name][sp_abbr].add(r.visit_index)
+                 visit_indices.add(r.visit_index)
+
+        all_fns = {f for f, s in active_pairs}
+        all_sps = {s for f, s in active_pairs}
+        cartesian_product = {(f, s) for f in all_fns for s in all_sps}
         
-        for fn in sorted(fn_map.keys()):
-             entries = []
-             for sp, idxs in sorted(fn_map[fn].items()):
-                 idx_str = "/".join(str(i) for i in sorted(idxs))
-                 entries.append(f"{sp} ({idx_str})")
-             if entries:
-                 remarks_lines.append(f"{fn}: {', '.join(entries)}")
         
+        # Check 1: Is the active set equal to the full Cartesian product?
+        is_full_product = (active_pairs == cartesian_product)
+        
+        # Check 2: Are all visit indices uniform? (e.g. all (1) or all (2))
+        is_uniform_indices = (len(visit_indices) == 1)
+        
+        if not (is_full_product and is_uniform_indices):
+            for fn in sorted(fn_map.keys()):
+                 entries = []
+                 for sp, idxs in sorted(fn_map[fn].items()):
+                     idx_str = "/".join(str(i) for i in sorted(idxs))
+                     entries.append(f"{sp} ({idx_str})")
+                 if entries:
+                     remarks_lines.append(f"{fn}: {', '.join(entries)}")
+
+        # Exception: Rugstreeppad + Specific Function -> Specific Remark
+        # "platen neerleggen, eisnoeren/larven"
+        has_rugstreeppad_platen = False
+        for r in assigned_reqs:
+            p = r.protocol
+            s_name = getattr(getattr(p, "species", None), "name", "")
+            f_name = getattr(getattr(p, "function", None), "name", "")
+            if s_name == "Rugstreeppad" and f_name == "platen neerleggen, eisnoeren/larven":
+                has_rugstreeppad_platen = True
+                break
+        
+        if has_rugstreeppad_platen:
+            remarks_lines.append("Fijnmazig schepnet (RAVON-type) mee. Ook letten op koren en aanwezige individuen. Platen neerleggen in plangebied. Vuistregel circa 10 platen per 100m geschikt leefgebied.")
+            
         if remarks_lines:
              new_visit.remarks_field = "\n".join(remarks_lines)
+        
+        # Calculate Series Start Date for sorting (tie-breaker for same-day visits)
+        # We want to visit "Function A (Visit 3)" before "Function B (Visit 1)" if they are on same day.
+        # Implies prioritizing the "Older" series.
+        series_starts = []
+        for p in unique_protos:
+            if p.visit_windows:
+                # Assuming windows are sorted or first one is start
+                # Use min() to be safe
+                series_starts.append(min(w.window_from for w in p.visit_windows))
+        
+        new_visit._sort_series_start = min(series_starts) if series_starts else date.max
 
         visits.append(new_visit)
         
     # Sort visits chronologically and assign consecutive numbers
-    # Primary: Date. Secondary: Morning < Evening.
+    # Primary: Date. Secondary: Series Start Date (Oldest series first). Tertiary: Morning < Evening.
     visits.sort(key=lambda x: (
         x.from_date or date.max,
+        getattr(x, "_sort_series_start", date.max),
         0 if x.part_of_day == "Ochtend" else 1 if x.part_of_day == "Dag" else 2
     ))
     
