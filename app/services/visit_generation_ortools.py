@@ -51,6 +51,16 @@ async def generate_visits_cp_sat(
     db: AsyncSession,
     cluster: Cluster,
     protocols: list[Protocol],
+    *,
+    default_required_researchers: int | None = None,
+    default_preferred_researcher_id: int | None = None,
+    default_expertise_level: str | None = None,
+    default_wbc: bool = False,
+    default_fiets: bool = False,
+    default_hub: bool = False,
+    default_dvp: bool = False,
+    default_sleutel: bool = False,
+    default_remarks_field: str | None = None,
 ) -> tuple[list[Visit], list[str]]:
     """Generate visits for a cluster using Google OR-Tools CP-SAT Solver.
 
@@ -83,6 +93,17 @@ async def generate_visits_cp_sat(
         # "ABSOLUTE_TIME takes precedence over SUNSET"
         if p.start_timing_reference == "ABSOLUTE_TIME":
             r.part_of_day_options = {"Avond"}
+            continue
+
+        # EXCEPTION: RD Paarverblijf Visit 1 -> Force Avond (for Midnight start)
+        # We override any existing options to ensure it falls in the night/evening bucket.
+        if (
+            r.visit_index == 1
+            and getattr(p.function, "name", "") == "Paarverblijf"
+            and getattr(p.species, "abbreviation", "") == "RD"
+        ):
+            r.part_of_day_options = {"Avond"}
+            # Continue to skip standard logic? Yes, we want to force this.
             continue
 
         req_morning = getattr(p, "requires_morning_visit", False)
@@ -364,6 +385,16 @@ async def generate_visits_cp_sat(
             part_of_day=part_str,
             cluster_id=cluster.id,
         )
+
+        # Apply defaults
+        new_visit.required_researchers = default_required_researchers
+        new_visit.preferred_researcher_id = default_preferred_researcher_id
+        new_visit.expertise_level = default_expertise_level
+        new_visit.wbc = default_wbc
+        new_visit.fiets = default_fiets
+        new_visit.hub = default_hub
+        new_visit.dvp = default_dvp
+        new_visit.sleutel = default_sleutel
         
         # Attach transient relations
         unique_protos = list({r.protocol.id: r.protocol for r in assigned_reqs}.values())
@@ -374,7 +405,13 @@ async def generate_visits_cp_sat(
         # Calculate duration/text
         from .visit_generation import calculate_visit_props
         try:
-             dur, txt = calculate_visit_props(unique_protos, part_str)
+             # Use minimum window start as reference date for month-based logic
+             ref_date = min(r.window_from for r in assigned_reqs) if assigned_reqs else visit_date
+             
+             # Build visit_indices map for exceptions (e.g. RD V1)
+             v_indices = {r.protocol.id: r.visit_index for r in assigned_reqs}
+             
+             dur, txt = calculate_visit_props(unique_protos, part_str, reference_date=ref_date, visit_indices=v_indices)
              new_visit.duration = dur
              new_visit.start_time_text = txt
         except ImportError:
@@ -453,8 +490,38 @@ async def generate_visits_cp_sat(
         if has_rugstreeppad_platen:
             remarks_lines.append("Fijnmazig schepnet (RAVON-type) mee. Ook letten op koren en aanwezige individuen. Platen neerleggen in plangebied. Vuistregel circa 10 platen per 100m geschikt leefgebied.")
             
+        # Exception: Family 'Vlinder' (Any Function) -> Specific Remark
+        has_vlinder = False
+        for r in assigned_reqs:
+             p = r.protocol
+             fam_name = getattr(getattr(getattr(p, "species", None), "family", None), "name", "")
+             if fam_name == "Vlinder":
+                 has_vlinder = True
+                 break
+        
+        if has_vlinder:
+            remarks_lines.append("Min. 15 tot 19 graden (<50% bewolking) of vanaf 20 graden (met meer >50% bewolking)")
+            
+        # Exception: Family 'Langoren' (Any Function) -> Specific Remark
+        has_langoren = False
+        for r in assigned_reqs:
+             p = r.protocol
+             fam_name = getattr(getattr(getattr(p, "species", None), "family", None), "name", "")
+             if fam_name == "Langoren":
+                 has_langoren = True
+                 break
+        
+        if has_langoren:
+            remarks_lines.append("Geen mist, sneeuwval. Bodemtemperatuur < 15 graden")
+            
         if remarks_lines:
              new_visit.remarks_field = "\n".join(remarks_lines)
+        
+        if default_remarks_field:
+            if new_visit.remarks_field:
+                new_visit.remarks_field += "\n" + default_remarks_field
+            else:
+                new_visit.remarks_field = default_remarks_field
         
         # Calculate Series Start Date for sorting (tie-breaker for same-day visits)
         # We want to visit "Function A (Visit 3)" before "Function B (Visit 1)" if they are on same day.

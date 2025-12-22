@@ -37,6 +37,15 @@ class ClusterCreate(BaseModel):
     address: str = Field(min_length=1, max_length=255)
     cluster_number: int
     combos: list[SpeciesFunctionCombo] = Field(default_factory=list)
+    default_required_researchers: int | None = None
+    default_preferred_researcher_id: int | None = None
+    default_expertise_level: str | None = None
+    default_wbc: bool = False
+    default_fiets: bool = False
+    default_hub: bool = False
+    default_dvp: bool = False
+    default_sleutel: bool = False
+    default_remarks_field: str | None = None
 
 
 class ClusterDuplicate(BaseModel):

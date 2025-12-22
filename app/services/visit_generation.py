@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, timedelta, time
 from uuid import uuid4
 import os
 import logging
+
 
 from sqlalchemy import Select, select, and_, or_
 from sqlalchemy.orm import selectinload
@@ -36,6 +37,86 @@ _PRECIPITATION_ORDER = [
     "geen neerslag, geen mist boven watergangen",
 ]
 _PRECIPITATION_PRIORITY = {name: idx for idx, name in enumerate(_PRECIPITATION_ORDER)}
+
+
+# ---- Effective Timing Structures ------------------------------------------------
+
+@dataclass
+class EffectiveTiming:
+    """Consolidated timing properties for a protocol after exception resolution."""
+    protocol_id: int
+    start_timing_reference: str | None
+    start_time_absolute_from: time | None # Use time from standard lib or imported as needed
+    start_time_relative_minutes: int | None
+    visit_duration_hours: float | None
+
+def _get_effective_timing(p: Protocol, visit_index: int | None = None, part_of_day: str | None = None) -> EffectiveTiming:
+    """Resolve effective timing for a protocol, applying exceptions (RD v1, MV)."""
+    
+    # 1. Base values
+    eff = EffectiveTiming(
+        protocol_id=p.id,
+        start_timing_reference=getattr(p, "start_timing_reference", None),
+        start_time_absolute_from=getattr(p, "start_time_absolute_from", None),
+        start_time_relative_minutes=getattr(p, "start_time_relative_minutes", None),
+        visit_duration_hours=getattr(p, "visit_duration_hours", None)
+    )
+
+    fn = getattr(p, "function", None)
+    sp = getattr(p, "species", None)
+    fn_name = fn.name if fn else ""
+    sp_abbr = sp.abbreviation if sp else ""
+    sp_name = sp.name if sp else ""
+
+    # Exception check flags
+    is_paarverblijf = (fn_name == "Paarverblijf")
+    is_rd = (sp_abbr == "RD")
+    is_mv = (sp_abbr == "MV" or sp_name == "MV")
+
+    # EXCEPTION: MV Paarverblijf -> Override to Sunset/Sunrise based logic (but via text usually)
+    # The request was to prioritize MV check over RD. 
+    # MV Logic impacts text mostly ("Zonsondergang"/"Zonsopgang").
+    # Does it change underlying timing reference?
+    # User said: "In that case the evening visit should start at Sunset".
+    # So we force SUNSET reference if it wasn't already.
+    if is_paarverblijf and is_mv and part_of_day == "Avond":
+         eff.start_timing_reference = "SUNSET"
+         eff.start_time_relative_minutes = 0 # Implied "At Sunset"
+         # Ochtend case logic for MV ("3 uur voor...") implies SUNRISE relative?
+         # "3 uur voor zonsopgang" -> SURNISE - 180 min?
+         # Logic existing was text based. Let's stick to text override for MV unless calc requires it.
+         # But duration calc needs it? User didn't specify duration calc for MV, just precedence.
+         # Let's keep MV as-is for now, just know it exists to block RD.
+
+    # EXCEPTION: RD Paarverblijf Visit 1 -> Force Absolute 00:00
+    # Only if NOT MV (which is ruled out by species check anyway, can't be RD and MV same proto)
+    # Wait, the conflict was combining RD and MV in SAME visit?
+    # No, conflict checks in previous step were iterating ALL protocols in visit.
+    # Here we are processing ONE protocol.
+    # Ah, "If visit contains MV, do not apply RD exception".
+    # But `_get_effective_timing` sees only one protocol.
+    # We need context of other protocols? Or just apply per-protocol and let mixer decide?
+    # The issue: "Visit Duration calculation".
+    # If RD Protocol is present, its timing IS 00:00.
+    # If MV Protocol is present, its timing IS Sunset.
+    # The Conflict likely meant: If I have RD and MV in same visit...
+    # Actually, can a single protocol be RD and MV? No.
+    # So we have Protos [P1(RD), P2(MV)].
+    # P1 should be 00:00. P2 should be Sunset.
+    # Duration calc should mix them.
+    # User's previous "conflict" request: "matches specific combination... override text".
+    # The previous code text generation block looped all protos.
+    # If ANY proto matched MV, it returned MV text.
+    # If ANY proto matched RD v1 (and no MV), it returned 00:00.
+    
+    # So for `EffectiveTiming`, we just report the TRUTH for this protocol.
+    # RD V1 IS Absolute 00:00.
+    if is_paarverblijf and is_rd and visit_index == 1:
+        eff.start_timing_reference = "ABSOLUTE_TIME"
+        # 00:00
+        eff.start_time_absolute_from = time(0, 0)
+        
+    return eff
 
 # ---- Exception rules scaffolding -------------------------------------------------
 
@@ -1018,17 +1099,92 @@ def extract_whitelisted_remarks(texts: list[str]) -> list[str]:
 
 
 def calculate_visit_props(
-    protocols: list[Protocol], part_of_day: str | None
+    protocols: list[Protocol], 
+    part_of_day: str | None, 
+    reference_date: date | None = None,
+    # Map protocol ID -> visit index (if known/relevant for exceptions)
+    visit_indices: dict[int, int] | None = None
 ) -> tuple[int | None, str | None]:
     """Calculate duration (minutes) and start time text based on protocols and part of day.
 
-    Logic ported from legacy implementation.
+    Logic ported from legacy implementation, refactored to use EffectiveTiming.
     """
+
+    # 1. Resolve Effective Timings
+    effective_timings: list[EffectiveTiming] = []
+    for p in protocols:
+        v_idx = visit_indices.get(p.id) if visit_indices else None
+        eff = _get_effective_timing(p, visit_index=v_idx, part_of_day=part_of_day)
+        effective_timings.append(eff)
+
     # duration: base on max protocol duration in minutes
     durations = [
-        p.visit_duration_hours for p in protocols if p.visit_duration_hours is not None
+        t.visit_duration_hours for t in effective_timings if t.visit_duration_hours is not None
     ]
     duration_min = int(max(durations) * 60) if durations else None
+
+    # --- Improved Duration Logic for Evening/Absolute scenarios ---
+    # Applicable if ALL are ABSOLUTE_TIME or (Mixed ABSOLUTE + SUNSET in Evening with reference date)
+    
+    use_improved_logic = False
+    all_absolute = all(t.start_timing_reference == "ABSOLUTE_TIME" for t in effective_timings)
+    mixed_absolute_sunset = False
+    
+    if not all_absolute and part_of_day == "Avond" and reference_date:
+        # Check if protocols are subset of {ABSOLUTE, SUNSET}
+        refs = {t.start_timing_reference for t in effective_timings}
+        if refs <= {"ABSOLUTE_TIME", "SUNSET"} and "ABSOLUTE_TIME" in refs:
+             mixed_absolute_sunset = True
+             
+    if all_absolute or mixed_absolute_sunset:
+        use_improved_logic = True
+        # Calculate start/end in "minutes from midnight" (handling >24h implied wrapping)
+        
+        starts = []
+        ends = []
+        
+        for t in effective_timings:
+            p_start_min = None
+            if t.start_timing_reference == "ABSOLUTE_TIME" and t.start_time_absolute_from:
+                 tm = t.start_time_absolute_from
+                 hours = tm.hour if hasattr(tm, 'hour') else 0
+                 minutes = tm.minute if hasattr(tm, 'minute') else 0
+                 minutes_total = hours * 60 + minutes
+                 
+                 if minutes_total < 600: # Before 10:00 -> Add 24h
+                     minutes_total += 1440
+                 p_start_min = minutes_total
+
+            elif mixed_absolute_sunset and t.start_timing_reference == "SUNSET" and reference_date:
+                 # Estimate Sunset
+                 m = reference_date.month
+                 sunset_min = 20 * 60 # Default 20:00
+                 if m == 7: sunset_min = 22 * 60
+                 elif m == 8: sunset_min = 21 * 60
+                 elif m == 9: sunset_min = 20 * 60
+                 
+                 rel = t.start_time_relative_minutes or 0
+                 # Sunset + relative
+                 p_start_min = sunset_min + rel
+                 
+                 if p_start_min < 600: 
+                     p_start_min += 1440
+            
+            if p_start_min is not None:
+                starts.append(p_start_min)
+                dur = (t.visit_duration_hours or 0) * 60
+                ends.append(p_start_min + dur)
+                
+        if starts and ends:
+            min_start = min(starts)
+            max_end = max(ends)
+            span = int(max_end - min_start)
+            if duration_min is not None:
+                duration_min = max(duration_min, span)
+            else:
+                duration_min = span
+
+
 
     # Morning/Evening refinements
     calc_start_for_duration: int | None = None
@@ -1059,7 +1215,7 @@ def calculate_visit_props(
             new_duration = int(max(0, latest_end - calc_start_for_duration))
             duration_min = new_duration
 
-    if part_of_day == "Avond" and start_candidates:
+    if part_of_day == "Avond" and start_candidates and not use_improved_logic:
         ends_from_start: list[int] = []
         for p in protocols:
             s = derive_start_time_minutes(p)
@@ -1081,30 +1237,88 @@ def calculate_visit_props(
     # start time text calculation
     start_time_text = None
 
-    # 1. Overrides (ABSOLUTE_TIME, HM) - Ported from Graph Logic
+    # 1. Overrides (MV, ABSOLUTE_TIME via EffectiveTiming)
+    
+    # Priority A: MV Exception (Per user direction: Priority over RD)
+    # Check original protocols for flags but rely on EffectiveTiming usually?
+    # Actually MV Logic is mainly Text override.
     for p in protocols:
-        if p.start_timing_reference == "ABSOLUTE_TIME" and p.start_time_absolute_from:
-            start_time_text = p.start_time_absolute_from.strftime("%H:%M")
-            break
+         fn = getattr(p, "function", None)
+         sp = getattr(p, "species", None)
+         if fn and fn.name == "Paarverblijf" and sp and (sp.abbreviation == "MV" or sp.name == "MV"):
+             if part_of_day == "Avond":
+                start_time_text = "Zonsondergang"
+                break
+             elif part_of_day == "Ochtend":
+                start_time_text = "3 uur voor zonsopgang"
+                break
+
+    # Priority B: Effective Absolute Time
+    if start_time_text is None:
+        # Check Effective Timing for Absolute matches (This picks up RD Exception 00:00)
+        candidates = []
+        for t in effective_timings:
+            if t.start_timing_reference == "ABSOLUTE_TIME" and t.start_time_absolute_from:
+                candidates.append(t.start_time_absolute_from)
+        
+        if candidates:
+            # Sort by "minutes from noon" logic to handle 00:00 being "late"
+            # Helper to Convert time -> minutes (cutoff 10:00)
+            def _sort_key(t: time):
+                m = t.hour * 60 + t.minute
+                if m < 600: m += 1440
+                return m
+            
+            candidates.sort(key=_sort_key)
+            start_time_text = candidates[0].strftime("%H:%M")
+
             
     if start_time_text is None:
         # HM Exception
         try:
-             if any(p.species.abbreviation == 'HM' for p in protocols):
-                 start_time_text = "1-2 uur na zonsopkomst"
+             if any(p.species.abbreviation == 'HM' or p.species.abbreviation == 'SPR' for p in protocols):
+                 if p.function.name == 'SMP Nest en FL':
+                     start_time_text = "1 uur na zonsopkomst"
+                 else:
+                     start_time_text = "1-2 uur na zonsopkomst"
+        except AttributeError:
+             pass
+
+    if start_time_text is None:
+        # Vlinder Family Exception
+        try:
+             # Check if any protocol belongs to family "Vlinder"
+             if any(
+                 getattr(getattr(p, "species", None), "family", None) and p.species.family.name == "Vlinder" 
+                 for p in protocols
+             ):
+                 start_time_text = "Tussen 10:00 en 15:00 starten (evt. om 09:00 starten als het dan al 22 graden is en zonnig)"
         except AttributeError:
              pass
 
     local_start_minutes: int | None = None
-    if start_time_text is None:
+    if start_time_text is None and not use_improved_logic:
+        # Fallback to legacy logic using derived helpers on ORIGINAL protocols
+        # Need to re-calculate legacy start/end candidates unfortunately because locals were skipped above
+        
+        start_candidates = []
+        end_candidates = []
+        
+        for p in protocols:
+             s = derive_start_time_minutes(p)
+             if s is not None:
+                start_candidates.append(s)
+                
+             e = derive_end_time_minutes(p)
+             if e is not None:
+                end_candidates.append(e)
+        
         if part_of_day == "Ochtend":
-            if calc_start_for_duration is not None:
-                local_start_minutes = int(calc_start_for_duration)
-            elif end_candidates and duration_min is not None:
-                earliest_end = min(end_candidates)
-                local_start_minutes = int(earliest_end - duration_min)
-            elif start_candidates:
+            if start_candidates:
                 local_start_minutes = int(min(start_candidates))
+            elif end_candidates and duration_min is not None:
+                 earliest_end = min(end_candidates)
+                 local_start_minutes = int(earliest_end - (duration_min or 0))
         elif part_of_day == "Avond":
             if start_candidates:
                 local_start_minutes = int(min(start_candidates))
@@ -1130,6 +1344,15 @@ async def generate_visits_for_cluster(
     species_ids: list[int],
     *,
     protocols: list[Protocol] | None = None,
+    default_required_researchers: int | None = None,
+    default_preferred_researcher_id: int | None = None,
+    default_expertise_level: str | None = None,
+    default_wbc: bool = False,
+    default_fiets: bool = False,
+    default_hub: bool = False,
+    default_dvp: bool = False,
+    default_sleutel: bool = False,
+    default_remarks_field: str | None = None,
 ) -> tuple[list[Visit], list[str]]:
     """Generate visits for a cluster based on selected functions and species.
 
@@ -1167,7 +1390,20 @@ async def generate_visits_for_cluster(
     # We use this engine for global optimization of complex constraints.
     from .visit_generation_ortools import generate_visits_cp_sat
 
-    result_visits, warnings = await generate_visits_cp_sat(db, cluster, protocols)
+    result_visits, warnings = await generate_visits_cp_sat(
+        db,
+        cluster,
+        protocols,
+        default_required_researchers=default_required_researchers,
+        default_preferred_researcher_id=default_preferred_researcher_id,
+        default_expertise_level=default_expertise_level,
+        default_wbc=default_wbc,
+        default_fiets=default_fiets,
+        default_hub=default_hub,
+        default_dvp=default_dvp,
+        default_sleutel=default_sleutel,
+        default_remarks_field=default_remarks_field,
+    )
 
     return result_visits, warnings
 
@@ -2456,6 +2692,8 @@ async def _legacy_generate_visits_for_cluster_implementation(
         # Calculate a consistent textual description based on chosen part and minutes
         if start_time_text is None:
             start_time_text = derive_start_time_text_for_visit(part_of_day, None)
+
+
 
         # union of functions/species across combined protos
         _function_ids_set = sorted({p.function_id for p in protos})

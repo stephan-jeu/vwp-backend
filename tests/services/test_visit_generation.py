@@ -385,3 +385,65 @@ async def test_smp_grouping_rules(mocker, fake_db):
             assert all(name.startswith("SMP") for name in fn_names)
             # Family constraint is enforced by grouping logic; DB fetch stubs may include extra species,
             # so we don't assert on families here.
+
+@pytest.mark.asyncio
+async def test_visit_generation_defaults_are_applied(mocker, fake_db):
+    # Arrange
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 8, 1)
+
+    p1 = _make_protocol(
+        proto_id=1,
+        fam_name="Vleermuis",
+        species_id=101,
+        species_name="BatA",
+        fn_id=10,
+        fn_name="Nest",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNSET",
+        visit_duration_h=2.0,
+    )
+    
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql:
+            return _FakeResult([p1])
+        # Just return p1's function/species for any query to avoid empty lists
+        return _FakeResult([p1.function, p1.species])
+
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
+    cluster = Cluster(id=1, project_id=1, address="c1", cluster_number=1)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[10],
+        species_ids=[101],
+        default_required_researchers=5,
+        default_preferred_researcher_id=99,
+        default_expertise_level="Senior",
+        default_wbc=True,
+        default_fiets=True,
+        default_hub=True,
+        default_dvp=True,
+        default_sleutel=True,
+        default_remarks_field="Custom Remark"
+    )
+
+    # Assert
+    assert len(visits) > 0
+    v = visits[0]
+    assert v.required_researchers == 5
+    assert v.preferred_researcher_id == 99
+    assert v.expertise_level == "Senior"
+    assert v.wbc is True
+    assert v.fiets is True
+    assert v.hub is True
+    assert v.dvp is True
+    assert v.sleutel is True
+    assert "Custom Remark" in (v.remarks_field or "")

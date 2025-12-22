@@ -1,6 +1,10 @@
 import pytest
-from datetime import date
+from datetime import date, timedelta
+from typing import Any
+from unittest.mock import MagicMock
+from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.models.visit import Visit
 from app.models.species import Species
@@ -76,6 +80,40 @@ async def test_simulate_capacity_planning_stateful(monkeypatch: pytest.MonkeyPat
         "app.services.capacity_simulation_service._load_week_capacity",
         fake_load_week_capacity,
     )
+    
+    # Mock user loading required by OR-Tools solver
+    async def fake_load_all_users(_db):
+        return [] # No users needed if global capacity is sufficient? 
+        # Actually OR-Tools needs users to assign.
+        # But wait, simulate_capacity_planning checks _consume_capacity (Legacy) or solver?
+        # I changed it to use SOLVER.
+        # If solver has no users, it cannot assign based on "Required Researchers".
+        # Solver constraint: sum(assigned) == req.
+        # If no users -> no assignment -> fail.
+        # Does stateful simulation assume capacity exists without users?
+        # Legacy test setup implies simplistic capacity check.
+        # I should provide a dummy user with infinite capacity to satisfy solver.
+        pass
+
+    dummy_user = SimpleNamespace(id=1, full_name="Dummy")
+    for field in ["smp_huismus", "smp_vleermuis", "smp_gierzwaluw", "vrfg", "hub", "fiets", "wbc", "dvp", "sleutel", "pad", "langoor", "roofvogel", "vleermuis", "zwaluw", "vlinder", "teunisbloempijlstaart", "zangvogel", "biggenkruid", "schijfhoren"]:
+        setattr(dummy_user, field, True) # Qualified for everything
+
+    async def fake_load_all_users(_db):
+        return [dummy_user]
+        
+    async def fake_load_user_capacities(_db, _week):
+        return {1: 100}
+        
+    async def fake_load_user_daypart_caps(_db, week: int):
+        # Week 2 has capacity (1), others (Week 3) have 0 to force failure
+        cap = 1 if week == 2 else 0
+        print(f"DEBUG WEEK: {week}, CAP: {cap}")
+        return {1: {"Ochtend": cap, "Dag": cap, "Avond": cap, "Flex": 0}}
+
+    monkeypatch.setattr("app.services.visit_planning_selection._load_all_users", fake_load_all_users)
+    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_load_user_capacities)
+    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_load_user_daypart_caps)
 
     # Run simulation
     result = await simulate_capacity_planning(None, start_monday)

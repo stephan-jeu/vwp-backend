@@ -261,6 +261,15 @@ async def create_cluster(
             function_ids=[],
             species_ids=[],
             protocols=protocols,
+            default_required_researchers=payload.default_required_researchers,
+            default_preferred_researcher_id=payload.default_preferred_researcher_id,
+            default_expertise_level=payload.default_expertise_level,
+            default_wbc=payload.default_wbc,
+            default_fiets=payload.default_fiets,
+            default_hub=payload.default_hub,
+            default_dvp=payload.default_dvp,
+            default_sleutel=payload.default_sleutel,
+            default_remarks_field=payload.default_remarks_field,
         )
         # IDs will be assigned on commit; collect after commit below
         _visits_created_ids = [v.id for v in visits_created]

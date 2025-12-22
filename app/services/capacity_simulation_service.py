@@ -24,6 +24,7 @@ from app.services.visit_planning_selection import (
     _load_week_capacity,
     _select_visits_for_week_core,
 )
+from app.services.visit_selection_ortools import select_visits_cp_sat
 
 
 DAYPART_LABELS: tuple[str, ...] = ("Ochtend", "Dag", "Avond")
@@ -271,7 +272,7 @@ async def simulate_capacity_planning(
         week_iso = current_monday.isocalendar().week
 
         # Load capacity for this week
-        caps = await _load_week_capacity(db, week_iso)
+        # caps = await _load_week_capacity(db, week_iso) # Not needed for CP-SAT solver directly
 
         # Filter pool for visits that CAN be done this week
         # i.e. from_date <= week_friday AND to_date >= current_monday
@@ -282,32 +283,35 @@ async def simulate_capacity_planning(
             if f <= week_friday and t >= current_monday:
                 eligible_indices.append(i)
 
-        # Sort eligible visits by priority
-        # We create a list of (index, visit) to sort
-        eligible_visits = [(i, visit_pool[i]) for i in eligible_indices]
-        eligible_visits.sort(key=lambda x: _priority_key(current_monday, x[1]))
-
-        # Try to plan
-        planned_indices = set()
-
-        for idx, v in eligible_visits:
-            part = (v.part_of_day or "").strip()
-            if part not in DAYPART_TO_AVAIL_FIELD:
-                # Cannot plan, skip (will remain in pool)
-                continue
-
-            required = v.required_researchers or 1
-            if _consume_capacity(caps, part, required):
-                # Success!
-                add_result(v, is_planned=True)
-                planned_indices.add(idx)
-
-        # Remove planned from pool (in reverse order to keep indices valid if we were popping,
-        # but here we rebuild the list is safer/easier)
+        # Try to plan using OR-Tools Solver
+        # We pass only the eligible visits to the solver.
+        # Since we are simulating, we don't commit to DB.
+        
+        eligible_subset_visits = [visit_pool[i] for i in eligible_indices]
+        
+        selection_result = await select_visits_cp_sat(db, current_monday, visits=eligible_subset_visits)
+        
+        for v in selection_result.selected:
+            add_result(v, is_planned=True)
+            
+        # Rebuild pool:
+        # Keep visits that were NOT eligible this week
+        # PLUS visits that were eligible but SKIPPED by the solver.
+        
         new_pool = []
+        # Add non-eligible visits (indices not in eligible_indices)
+        eligible_indices_set = set(eligible_indices)
         for i, v in enumerate(visit_pool):
-            if i not in planned_indices:
+            if i not in eligible_indices_set:
                 new_pool.append(v)
+        
+        # Add skipped visits (solver rejected them)
+        # Note: skipped visits in selection_result.skipped might include visits filtered by solver (e.g. no daypart)
+        # But we only passed eligible visits in, so they should return.
+        
+        for v in selection_result.skipped:
+             new_pool.append(v)
+
         visit_pool = new_pool
 
         current_monday += timedelta(days=7)
@@ -354,68 +358,50 @@ async def simulate_week_capacity(
 ) -> dict[str, dict[str, FamilyDaypartCapacity]]:
     """Simulate family/daypart capacity usage for a single week.
 
-    This helper reuses the core visit-selection logic to determine which
-    visits are eligible for the week, then allocates researcher capacity per
-    user and per daypart using :class:`AvailabilityWeek` rows. The result is a
-    nested mapping ``family -> part_of_day -> FamilyDaypartCapacity`` that
-    aggregates required, assigned and shortfall slots.
+    This helper uses the OR-Tools solver to determine optimal assignments
+    that respect strict day coordination and capacity rules, then aggregates
+    the results into family/daypart stats.
     """
 
-    selected, _skipped, _caps = await _select_visits_for_week_core(db, week_monday)
-    if not selected:
+    # Use solver to determine optimal selection/assignment
+    selection_result = await select_visits_cp_sat(db, week_monday)
+    
+    if not selection_result.selected and not selection_result.skipped:
         return {}
-
-    iso_week = week_monday.isocalendar().week
-    per_user_caps = await _load_user_daypart_capacities(db, iso_week)
-    users: list[User] = await _load_all_users(db)
-
+        
     result: dict[str, dict[str, FamilyDaypartCapacity]] = {}
 
-    for v in selected:
-        fam = _get_family_name(v)
-        part = (getattr(v, "part_of_day", None) or "").strip()
-        if not part:
-            # Visits without a valid part-of-day are ignored for the
-            # family/daypart capacity view.
-            continue
+    def add_stats(visits: list[Visit], is_assigned: bool):
+        for v in visits:
+            fam = _get_family_name(v)
+            part = (getattr(v, "part_of_day", None) or "").strip()
+            if not part:
+                continue
+            
+            req = int(getattr(v, "required_researchers", None) or 1)
+            
+            # If assigned, count full requirement. If skipped, count shortfall.
+            assigned_count = req if is_assigned else 0
+            shortfall_count = 0 if is_assigned else req
+            
+            fam_map = result.setdefault(fam, {})
+            cell = fam_map.get(part)
+            if cell is None:
+                cell = FamilyDaypartCapacity(required=0, assigned=0, shortfall=0, spare=0)
+                
+            new_required = cell.required + req
+            new_assigned = cell.assigned + assigned_count
+            new_shortfall = cell.shortfall + shortfall_count
+            
+            fam_map[part] = FamilyDaypartCapacity(
+                required=new_required,
+                assigned=new_assigned,
+                shortfall=new_shortfall,
+                spare=cell.spare,
+            )
 
-        required = int(getattr(v, "required_researchers", None) or 1)
-        assigned = 0
-
-        # Greedy allocation: iterate researcher slots, then users.
-        for _slot in range(required):
-            allocated = False
-            for u in users:
-                uid = getattr(u, "id", None)
-                if uid is None:
-                    continue
-                if not _qualifies_user_for_visit(u, v):
-                    continue
-                if not _user_has_capacity_for_part(per_user_caps, uid, part):
-                    continue
-                if not _consume_user_capacity_for_part(per_user_caps, uid, part):
-                    continue
-                assigned += 1
-                allocated = True
-                break
-            if not allocated:
-                break
-
-        fam_map = result.setdefault(fam, {})
-        cell = fam_map.get(part)
-        if cell is None:
-            cell = FamilyDaypartCapacity(required=0, assigned=0, shortfall=0, spare=0)
-
-        new_required = cell.required + required
-        new_assigned = cell.assigned + assigned
-        new_shortfall = cell.shortfall + (required - assigned)
-
-        fam_map[part] = FamilyDaypartCapacity(
-            required=new_required,
-            assigned=new_assigned,
-            shortfall=new_shortfall,
-            spare=cell.spare,
-        )
+    add_stats(selection_result.selected, is_assigned=True)
+    add_stats(selection_result.skipped, is_assigned=False)
 
     return result
 

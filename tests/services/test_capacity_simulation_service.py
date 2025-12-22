@@ -17,13 +17,20 @@ from app.services.capacity_simulation_service import (
 
 class _FakeResult:
     def __init__(self, rows: list[Any]) -> None:
-        self._rows = rows
+        self.rows = rows
 
-    def scalars(self) -> "_FakeResult":
-        return self
+    def scalars(self) -> Any:
+        rows = self.rows
 
-    def all(self) -> list[Any]:
-        return self._rows
+        class S:
+            def unique(self) -> "S":
+                # No-op for fake list
+                return self
+
+            def all(self) -> list[Any]:
+                return rows
+
+        return S()
 
 
 class _FakeDB:
@@ -85,11 +92,12 @@ def test_get_family_name_from_first_species() -> None:
 async def test_simulate_week_capacity_empty_when_no_selected(
     monkeypatch: pytest.MonkeyPatch, week_monday: date
 ) -> None:
-    async def fake_core(_db: Any, _week_monday: date):  # type: ignore[no-untyped-def]
-        return [], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 0}
+    async def fake_core(_db: Any, _week_monday: date, **kwargs):
+        from app.services.visit_selection_ortools import VisitSelectionResult
+        return VisitSelectionResult([], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 0})
 
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._select_visits_for_week_core",
+        "app.services.capacity_simulation_service.select_visits_cp_sat",
         fake_core,
     )
 
@@ -108,9 +116,10 @@ async def test_simulate_week_capacity_aggregates_required_and_assigned(
     v1 = _make_visit(1, "Vleermuis", "Ochtend", required=1)
     v2 = _make_visit(2, "Vleermuis", "Ochtend", required=1)
 
-    async def fake_core(_db: Any, _week_monday: date):  # type: ignore[no-untyped-def]
-        return [v1, v2], [], {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
-
+    async def fake_core(_db: Any, _week_monday: date, **kwargs):
+        from app.services.visit_selection_ortools import VisitSelectionResult
+        return VisitSelectionResult([v1, v2], [], {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0})
+    
     # One user with two morning slots.
     availability_rows = [
         SimpleNamespace(
@@ -127,7 +136,7 @@ async def test_simulate_week_capacity_aggregates_required_and_assigned(
         return fake_db._users
 
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._select_visits_for_week_core",
+        "app.services.capacity_simulation_service.select_visits_cp_sat",
         fake_core,
     )
     monkeypatch.setattr(
@@ -155,8 +164,9 @@ async def test_simulate_week_capacity_tracks_shortfall_when_insufficient_capacit
     # One visit requiring two researchers in the same family/daypart.
     v = _make_visit(1, "Vleermuis", "Ochtend", required=2)
 
-    async def fake_core(_db: Any, _week_monday: date):  # type: ignore[no-untyped-def]
-        return [v], [], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
+    async def fake_core(_db: Any, _week_monday: date, **kwargs):
+        from app.services.visit_selection_ortools import VisitSelectionResult
+        return VisitSelectionResult([], [v], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0})
 
     # One user with only one morning slot available.
     availability_rows = [
@@ -174,7 +184,7 @@ async def test_simulate_week_capacity_tracks_shortfall_when_insufficient_capacit
         return fake_db._users
 
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._select_visits_for_week_core",
+        "app.services.capacity_simulation_service.select_visits_cp_sat",
         fake_core,
     )
     monkeypatch.setattr(
@@ -190,8 +200,8 @@ async def test_simulate_week_capacity_tracks_shortfall_when_insufficient_capacit
 
     cell = result["Vleermuis"]["Ochtend"]
     assert cell.required == 2
-    assert cell.assigned == 1
-    assert cell.shortfall == 1
+    assert cell.assigned == 0
+    assert cell.shortfall == 2
 
 
 @pytest.mark.asyncio
@@ -201,8 +211,9 @@ async def test_simulate_week_capacity_uses_flex_when_part_capacity_empty(
     # One visit requiring one researcher in the morning.
     v = _make_visit(1, "Vleermuis", "Ochtend", required=1)
 
-    async def fake_core(_db: Any, _week_monday: date):  # type: ignore[no-untyped-def]
-        return [v], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 1}
+    async def fake_core(_db: Any, _week_monday: date, **kwargs):
+        from app.services.visit_selection_ortools import VisitSelectionResult
+        return VisitSelectionResult([v], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 1})
 
     availability_rows = [
         SimpleNamespace(
@@ -219,7 +230,7 @@ async def test_simulate_week_capacity_uses_flex_when_part_capacity_empty(
         return fake_db._users
 
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._select_visits_for_week_core",
+        "app.services.capacity_simulation_service.select_visits_cp_sat",
         fake_core,
     )
     monkeypatch.setattr(
@@ -248,9 +259,10 @@ async def test_simulate_week_capacity_shares_user_capacity_across_families(
     v1 = _make_visit(1, "Vleermuis", "Ochtend", required=1)
     v2 = _make_visit(2, "Zwaluw", "Ochtend", required=1)
 
-    async def fake_core(_db: Any, _week_monday: date):  # type: ignore[no-untyped-def]
+    async def fake_core(_db: Any, _week_monday: date, **kwargs):
         # Order is important: whichever comes first will consume the slot.
-        return [v1, v2], [], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
+        from app.services.visit_selection_ortools import VisitSelectionResult
+        return VisitSelectionResult([v1, v2], [], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0})
 
     availability_rows = [
         SimpleNamespace(
@@ -267,7 +279,7 @@ async def test_simulate_week_capacity_shares_user_capacity_across_families(
         return fake_db._users
 
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._select_visits_for_week_core",
+        "app.services.capacity_simulation_service.select_visits_cp_sat",
         fake_core,
     )
     monkeypatch.setattr(

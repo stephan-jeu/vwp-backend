@@ -398,6 +398,71 @@ async def test_rugstreeppad_remarks_exception(mocker, fake_db):
     # So we expect ONLY the special text (or special text + nothing else).
     assert "Rugstreeppad (" not in visits[0].remarks_field
 
+@pytest.mark.asyncio
+async def test_vlinder_exceptions(mocker, fake_db):
+    """Verify Start Time Text and Remarks for Vlinder family."""
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+    
+    # Create Protocol with Family "Vlinder"
+    p1 = _make_protocol(proto_id=605, fam_name="Vlinder", species_id=705, species_name="Dagpauwoog", fn_id=805, fn_name="Transect", window_from=wf, window_to=wt)
+    # Ensure family name is set correctly (helper sets fam_name on Family object)
+    
+    funcs = {p1.function.id: p1.function}
+    species = {p1.species.id: p1.species}
+    
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p1])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+        
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=75, project_id=1, address="c75", cluster_number=75)
+    
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [805], [705])
+    
+    assert len(visits) == 1
+    # Verify Start Time Text
+    assert visits[0].start_time_text == "Tussen 10:00 en 15:00 starten (evt. om 09:00 starten als het dan al 22 graden is en zonnig)"
+    # Verify Remarks
+    assert "Min. 15 tot 19 graden" in (visits[0].remarks_field or "")
+
+@pytest.mark.asyncio
+async def test_langoren_remarks_exception(mocker, fake_db):
+    """Verify Remarks for Langoren family."""
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 6, 1)
+    
+    # Create Protocol with Family "Langoren"
+    p1 = _make_protocol(proto_id=606, fam_name="Langoren", species_id=706, species_name="Groene Langoor", fn_id=806, fn_name="Transect", window_from=wf, window_to=wt)
+    
+    funcs = {p1.function.id: p1.function}
+    species = {p1.species.id: p1.species}
+    
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql: return _FakeResult([p1])
+        if "FROM functions" in sql: return _FakeResult(list(funcs.values()))
+        if "FROM species" in sql: return _FakeResult(list(species.values()))
+        return _FakeResult([])
+        
+    fake_db.execute = exec_stub
+    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+    
+    cluster = Cluster(id=76, project_id=1, address="c76", cluster_number=76)
+    
+    visits, _ = await generate_visits_for_cluster(fake_db, cluster, [806], [706])
+    
+    assert len(visits) == 1
+    # Verify Remarks
+    assert "Geen mist, sneeuwval. Bodemtemperatuur < 15 graden" in (visits[0].remarks_field or "")
+
 
 @pytest.mark.asyncio
 async def test_min_effective_window_days_prevents_merge(mocker, fake_db):

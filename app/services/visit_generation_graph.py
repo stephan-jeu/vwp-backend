@@ -932,6 +932,16 @@ async def _construct_visits(
         # 6. Start Time Text
         start_time_text = _derive_start_time_text_combined(protocols, g.assigned_part_of_day, duration_min)
 
+        # EXCEPTION: RD Paarverblijf Visit 1 -> 00:00 (implies start_timing_reference=ABSOLUTE_TIME 00:00)
+        for r in g.requests:
+            if (
+                r.visit_index == 1
+                and r.protocol.function.name == "Paarverblijf"
+                and r.protocol.species.abbreviation == "RD"
+            ):
+                start_time_text = "00:00"
+                break
+
         # 7. Build Visit
         v = Visit(
             cluster_id=cluster.id,
@@ -1130,6 +1140,18 @@ def _derive_start_time_text_combined(
     if any(p.species.abbreviation == 'HM' for p in protocols):
         return "1-2 uur na zonsopkomst"
 
+    # Exception: Paarverblijf + MV
+    # "Avond" -> "Zonsopgang", "Ochtend" -> "3 uur voor zonsopgang"
+    for p in protocols:
+        if (
+            p.function.name == "Paarverblijf"
+            and (p.species.abbreviation == "MV" or p.species.name == "MV")
+        ):
+            if part_of_day == "Avond":
+                return "Zonsondergang"
+            if part_of_day == "Ochtend":
+                return "3 uur voor zonsopgang"
+
     if part_of_day not in {"Ochtend", "Avond", "Dag"}:
         return _derive_start_time_text_for_visit(part_of_day, None)
 
@@ -1184,7 +1206,6 @@ def _derive_end_time_minutes(protocol: Protocol) -> int | None:
     rel = getattr(protocol, "end_time_relative_minutes", None)
     if rel is None:
         return None
-    # Legacy logic said "positive means before for SUNRISE" and "positive means after for SUNSET"
     ref = getattr(protocol, "end_timing_reference", None)
     if ref == "SUNRISE":
         return -int(rel)
