@@ -1,7 +1,7 @@
 
 from datetime import date, time
 from app.models.protocol import Protocol
-from app.services.visit_generation import calculate_visit_props
+from app.services.visit_generation_common import calculate_visit_props
 
 def test_calculate_duration_pure_absolute_time_crossing_midnight():
     # Case: p1 starts 22:00 (1h), p2 starts 00:00 (2h).

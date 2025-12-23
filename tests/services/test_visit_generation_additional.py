@@ -148,7 +148,7 @@ async def test_absolute_time_allows_both_and_prefers_morning(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=11, project_id=1, address="c11", cluster_number=11)
 
@@ -187,7 +187,7 @@ async def test_remarks_optimization_suppressed(mocker, fake_db):
         if "FROM species" in sql: return _FakeResult(list(species.values()))
         return _FakeResult([])
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=20, project_id=1, address="c20", cluster_number=20)
     
@@ -224,7 +224,7 @@ async def test_remarks_optimization_shown(mocker, fake_db):
         if "FROM species" in sql: return _FakeResult(list(species.values()))
         return _FakeResult([])
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=21, project_id=1, address="c21", cluster_number=21)
     
@@ -264,7 +264,7 @@ async def test_rugstreeppad_sequential_visits(mocker, fake_db):
         if "FROM species" in sql: return _FakeResult(list(species.values()))
         return _FakeResult([])
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     # Test Rugstreeppad (Split)
     active_species_id = 601
@@ -309,7 +309,7 @@ async def test_visit_sorting_series_priority(mocker, fake_db):
         return _FakeResult([])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=60, project_id=1, address="c60", cluster_number=60)
     
@@ -353,7 +353,7 @@ async def test_remarks_optimization_suppressed_high_index(mocker, fake_db):
         return _FakeResult([])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=30, project_id=1, address="c30", cluster_number=30)
     
@@ -385,7 +385,7 @@ async def test_rugstreeppad_remarks_exception(mocker, fake_db):
         return _FakeResult([])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=70, project_id=1, address="c70", cluster_number=70)
     
@@ -420,7 +420,7 @@ async def test_vlinder_exceptions(mocker, fake_db):
         return _FakeResult([])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=75, project_id=1, address="c75", cluster_number=75)
     
@@ -453,7 +453,7 @@ async def test_langoren_remarks_exception(mocker, fake_db):
         return _FakeResult([])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=76, project_id=1, address="c76", cluster_number=76)
     
@@ -512,22 +512,16 @@ async def test_min_effective_window_days_prevents_merge(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
-    # Monkeypatch threshold
-    import app.services.visit_generation as vg
 
-    old_min = vg.MIN_EFFECTIVE_WINDOW_DAYS
-    vg.MIN_EFFECTIVE_WINDOW_DAYS = 10
+    # Monkeypatch threshold
+    mocker.patch("app.services.visit_generation_ortools.MIN_EFFECTIVE_WINDOW_DAYS", 10)
 
     cluster = Cluster(id=12, project_id=1, address="c12", cluster_number=12)
 
     # Act
-    try:
-        visits, _ = await generate_visits_for_cluster(
-            fake_db, cluster, function_ids=[1210, 1211], species_ids=[1201, 1202]
-        )
-    finally:
-        vg.MIN_EFFECTIVE_WINDOW_DAYS = old_min
+    visits, _ = await generate_visits_for_cluster(
+        fake_db, cluster, function_ids=[1210, 1211], species_ids=[1201, 1202]
+    )
 
     # Assert: separate visits due to insufficient overlap length
     assert len(visits) == 2
@@ -584,7 +578,7 @@ async def test_completion_pass_creates_missing_occurrence_and_indexes(mocker, fa
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=13, project_id=1, address="c13", cluster_number=13)
 
@@ -652,7 +646,7 @@ async def test_two_phase_creates_ochtend_and_avond_buckets_without_duplicates(
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=22, project_id=1, address="c22", cluster_number=22)
 
@@ -726,7 +720,7 @@ async def test_cross_family_allowlist_non_smp_can_merge(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=15, project_id=1, address="c15", cluster_number=15)
 
@@ -781,7 +775,7 @@ async def test_morning_duration_and_start_text_use_calculated_start(mocker, fake
     )
 
     # Provide protocols directly to bypass DB resolution
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     cluster = Cluster(id=26, project_id=1, address="c26", cluster_number=26)
 
     # Act
@@ -827,7 +821,7 @@ async def test_morning_start_text_present_when_only_start_relative(mocker, fake_
     )
 
     # Provide protocol directly to bypass DB resolution
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     cluster = Cluster(id=30, project_id=1, address="c30", cluster_number=30)
 
     # Act
@@ -888,7 +882,7 @@ async def test_evening_duration_uses_span_from_earliest_start_to_latest_end(
     )
 
     # Provide protocols directly to bypass DB resolution
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     cluster = Cluster(id=27, project_id=1, address="c27", cluster_number=27)
 
     # Act
@@ -991,7 +985,7 @@ async def test_pad_family_uses_simple_one_visit_per_window(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=28, project_id=1, address="c28", cluster_number=28)
 
@@ -1084,7 +1078,7 @@ async def test_pad_family_respects_min_gap_across_all_visits(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=29, project_id=1, address="c29", cluster_number=29)
 
@@ -1190,7 +1184,7 @@ async def test_completion_respects_min_gap_when_attaching(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=16, project_id=1, address="c16", cluster_number=16)
 
@@ -1281,7 +1275,7 @@ async def test_completion_fallback_can_place_before_first_visit(mocker, fake_db)
     p_tight.visit_windows = [w_tight]
 
     # Provide protocols directly to bypass DB resolution
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     cluster = Cluster(id=17, project_id=1, address="c17", cluster_number=17)
 
     # Act
@@ -1351,7 +1345,7 @@ async def test_single_protocol_relaxation_widens_first_visit_within_window(
     # protocols so the single visit would naturally start at wf. This test
     # asserts that the relaxation helper still allows the visit to use the full
     # ProtocolVisitWindow range.
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     cluster = Cluster(id=31, project_id=1, address="c31", cluster_number=31)
 
     visits, _ = await generate_visits_for_cluster(
@@ -1421,7 +1415,7 @@ async def test_single_protocol_relaxation_does_not_cross_into_previous_window(
     )
     p.visit_windows = [w1, w2]
 
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     cluster = Cluster(id=32, project_id=1, address="c32", cluster_number=32)
 
     # Act

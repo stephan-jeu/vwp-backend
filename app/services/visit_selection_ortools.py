@@ -313,7 +313,8 @@ async def select_visits_cp_sat(
 
     # Load Balancing Penalty (Quadratic)
     # For each user, sum of assignments^2
-    for j in u_map:
+
+    for j, u in u_map.items():
         # User assignments across all visits
         u_vars = [x[i, j] for i in v_map if (i, j) in x]
         if not u_vars:
@@ -325,7 +326,130 @@ async def select_visits_cp_sat(
         load_sq = model.NewIntVar(0, len(visits)**2, f"load_sq_{j}")
         model.AddMultiplicationEquality(load_sq, [load_var, load_var])
         
-        obj_terms.append(load_sq * -LOAD_BALANCE_WEIGHT)
+        # Load Balancing Weighted by Percentage Utilization
+        # Previous: load_sq * -LOAD_BALANCE_WEIGHT
+        # New: load_sq * - (LOAD_BALANCE_WEIGHT * 5 / Capacity)
+        
+        cap_max = user_caps.get(getattr(u, "id", None) or 0, 5) # Default to 5 if unknown
+        if cap_max < 1: cap_max = 1
+        
+        weighted_penalty = int(LOAD_BALANCE_WEIGHT * 5 / cap_max)
+        
+        obj_terms.append(load_sq * -weighted_penalty)
+        
+        # 4. Large Team Visit Constraint
+        # "Avoid that researchers have multiple visits with 3 or more researchers in one week"
+        # Soft constraint: Penalty for each large visit beyond the first one.
+        LARGE_TEAM_THRESHOLD = 3
+        LARGE_TEAM_PENALTY = 60 #~60 mins travel equivalent
+        
+        large_visits_vars = [
+            x[i, j] for i in v_map 
+            if (i, j) in x and (getattr(v_map[i], "required_researchers", 1) or 1) >= LARGE_TEAM_THRESHOLD
+        ]
+        
+        if large_visits_vars:
+            large_count = model.NewIntVar(0, len(large_visits_vars), f"large_count_{j}")
+            model.Add(large_count == sum(large_visits_vars))
+            
+            # Penalize max(0, count - 1)
+            excess_large = model.NewIntVar(0, len(large_visits_vars), f"excess_large_{j}")
+            model.Add(excess_large >= large_count - 1)
+            # Implicitly excess_large >= 0 from domain
+            
+            # Since we maximize negative penalty, the solver will drive excess_large 
+            # to be the smallest possible value satisfying constraints, which is max(0, count-1).
+            obj_terms.append(excess_large * -LARGE_TEAM_PENALTY)
+            
+    # 5. Coupling Preference (Supervision)
+    # Rule: If visit has (Experience=Nieuw OR Contract=Flex) -> Must have (Experience=Senior OR (Contract=Intern AND Experience!=Nieuw))
+    # Penalty if not satisfied. Only applies to multi-person visits.
+    COUPLING_PENALTY = 30 
+    
+    for i, v in v_map.items():
+        if (getattr(v, "required_researchers", 1) or 1) <= 1:
+            continue
+            
+        # Identify assignments for visit i
+        # Variables: x[i, j]
+        assigned_user_indices = [j for j in u_map if (i, j) in x]
+        if not assigned_user_indices:
+            continue
+            
+        # Is Supervised (Nieuw or Flex)?
+        supervised_vars = []
+        supervisor_vars = []
+        
+        for j in assigned_user_indices:
+            u = u_map[j]
+            contract = str(getattr(u, "contract", "") or "")
+            exp = str(getattr(u, "experience_bat", "") or "")
+            
+            is_supervised = (exp == "Nieuw" or contract == "Flex")
+            # Supervisor: Senior OR (Intern AND Not Nieuw)
+            is_supervisor = (exp == "Senior" or (contract == "Intern" and exp != "Nieuw"))
+            
+            if is_supervised:
+                supervised_vars.append(x[i, j])
+            if is_supervisor:
+                supervisor_vars.append(x[i, j])
+                
+        if supervised_vars:
+            # Logic: exists_supervised AND NOT exists_supervisor -> Penalty
+            
+            has_supervised = model.NewBoolVar(f"has_supervised_{i}")
+            model.Add(sum(supervised_vars) > 0).OnlyEnforceIf(has_supervised)
+            model.Add(sum(supervised_vars) == 0).OnlyEnforceIf(has_supervised.Not())
+            
+            has_supervisor = model.NewBoolVar(f"has_supervisor_{i}")
+            if supervisor_vars:
+                model.Add(sum(supervisor_vars) > 0).OnlyEnforceIf(has_supervisor)
+                model.Add(sum(supervisor_vars) == 0).OnlyEnforceIf(has_supervisor.Not())
+            else:
+                model.Add(has_supervisor == 0)
+                
+            # Violation = has_supervised AND NOT has_supervisor
+            violation = model.NewBoolVar(f"coupling_violation_{i}")
+            model.AddBoolAnd([has_supervised, has_supervisor.Not()]).OnlyEnforceIf(violation)
+            model.AddBoolOr([has_supervised.Not(), has_supervisor]).OnlyEnforceIf(violation.Not())
+            
+            
+            obj_terms.append(violation * -COUPLING_PENALTY)
+            
+    # 6. Project Diversity
+    # Preference: Avoid multiple visits to the same project for the same user in a week.
+    # Penalty: 10 points per excess visit (count - 1).
+    PROJECT_DIVERSITY_PENALTY = 10
+    
+    for j in u_map:
+        # Group visit vars by project_id
+        project_visits = {} # pid -> list[var]
+        
+        for i, v in v_map.items():
+            if (i, j) not in x:
+                continue
+                
+            cluster = getattr(v, "cluster", None)
+            pid = getattr(cluster, "project_id", None)
+            
+            if pid is not None:
+                if pid not in project_visits:
+                    project_visits[pid] = []
+                project_visits[pid].append(x[i, j])
+                
+        for pid, p_vars in project_visits.items():
+            if len(p_vars) <= 1:
+                continue
+                
+            # If we potentially can assign multiple
+            p_count = model.NewIntVar(0, len(p_vars), f"proj_count_{j}_{pid}")
+            model.Add(p_count == sum(p_vars))
+            
+            p_excess = model.NewIntVar(0, len(p_vars), f"proj_excess_{j}_{pid}")
+            model.Add(p_excess >= p_count - 1)
+            # Implicit p_excess >= 0
+            
+            obj_terms.append(p_excess * -PROJECT_DIVERSITY_PENALTY)
 
     model.Maximize(sum(obj_terms))
     

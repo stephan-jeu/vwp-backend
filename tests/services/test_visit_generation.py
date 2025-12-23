@@ -30,7 +30,7 @@ class _FakeResult:
         return _FakeScalars(self._items)
 
     def first(self):
-        # For _next_visit_nr when not patched (defensive)
+
         return None
 
 
@@ -144,7 +144,7 @@ async def test_default_part_prefers_morning_when_both_allowed(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=1, project_id=1, address="c1", cluster_number=1)
 
@@ -210,7 +210,7 @@ async def test_evening_uses_earliest_start_across_protocols(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=2, project_id=1, address="c2", cluster_number=2)
 
@@ -261,7 +261,7 @@ async def test_evening_start_text_present_when_only_start_relative(mocker, fake_
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=3, project_id=1, address="c3", cluster_number=3)
 
@@ -361,7 +361,7 @@ async def test_smp_grouping_rules(mocker, fake_db):
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=4, project_id=1, address="c4", cluster_number=4)
 
@@ -414,7 +414,7 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
         return _FakeResult([p1.function, p1.species])
 
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
 
     cluster = Cluster(id=1, project_id=1, address="c1", cluster_number=1)
 

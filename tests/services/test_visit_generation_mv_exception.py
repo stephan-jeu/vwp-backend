@@ -67,7 +67,7 @@ async def test_paarverblijf_mv_ochtend_exception(mocker):
         return _FakeResult([p.function, p.species])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=1, project_id=1, address="addr", cluster_number=1)
     
@@ -95,7 +95,7 @@ async def test_paarverblijf_mv_avond_exception(mocker):
         return _FakeResult([p.function, p.species])
         
     fake_db.execute = exec_stub
-    mocker.patch("app.services.visit_generation._next_visit_nr", return_value=1)
+
     
     cluster = Cluster(id=2, project_id=1, address="addr", cluster_number=1)
     
