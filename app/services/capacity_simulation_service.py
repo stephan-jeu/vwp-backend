@@ -318,6 +318,11 @@ async def simulate_capacity_planning(
 
     # 3. Remaining visits are unplannable (within the horizon)
     for v in visit_pool:
+        # If the visit execution window extends beyond the simulation horizon,
+        # simply ignore it rather than marking it as unplannable/shortfall.
+        # This prevents next year's visits from appearing in this year's view.
+        if v.to_date and v.to_date > horizon_end:
+            continue
         add_result(v, is_planned=False)
 
     # Convert NamedTuple to dict for JSON serialization if needed,

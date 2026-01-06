@@ -292,7 +292,7 @@ async def restore_trash_item(db: AsyncSession, kind: TrashKind, entity_id: int) 
         if (await db.execute(exists_stmt)).scalar_one() > 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Er bestaat al een gebruiker met deze naam of dit e-mailadres.",
+                detail="Er bestaat al een iemand met deze naam of dit e-mailadres.",
             )
 
         await _restore_entity_with_children(db, user)

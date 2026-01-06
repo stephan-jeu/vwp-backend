@@ -421,11 +421,32 @@ async def duplicate_cluster(
     await db.commit()
     await db.refresh(new_cluster)
 
-    # All visits on the new cluster are considered created here
-    visits_stmt: Select[tuple[Visit]] = select(Visit).where(
-        Visit.cluster_id == new_cluster.id
+    # Eager load visits with relations to populate log details
+    visits_stmt: Select[tuple[Visit]] = (
+        select(Visit)
+        .where(Visit.cluster_id == new_cluster.id)
+        .options(selectinload(Visit.functions), selectinload(Visit.species))
     )
     new_visits = (await db.execute(visits_stmt)).scalars().all()
+
+    # Resolve project code
+    project_code: str | None = None
+    if new_cluster.project_id is not None:
+        project = await db.get(Project, new_cluster.project_id)
+        if project:
+            project_code = getattr(project, "code", None)
+
+    # Collect distinct function names and species abbreviations
+    unique_func_names = set()
+    unique_species_abbrs = set()
+    for v in new_visits:
+        for f in v.functions:
+            if f.name:
+                unique_func_names.add(f.name)
+        for s in v.species:
+            label = s.abbreviation or s.name
+            if label:
+                unique_species_abbrs.add(label)
 
     await log_activity(
         db,
@@ -436,10 +457,13 @@ async def duplicate_cluster(
         details={
             "source_cluster_id": source.id,
             "project_id": new_cluster.project_id,
+            "project_code": project_code,
             "cluster_number": new_cluster.cluster_number,
             "address": new_cluster.address,
             "visits_created": [v.id for v in new_visits],
             "visit_count": len(new_visits),
+            "function_names": sorted(unique_func_names),
+            "species_abbreviations": sorted(unique_species_abbrs),
         },
     )
 
@@ -464,6 +488,12 @@ async def update_cluster(
     await db.commit()
     await db.refresh(cluster)
 
+    project_code: str | None = None
+    if cluster.project_id is not None:
+        project = await db.get(Project, cluster.project_id)
+        if project:
+            project_code = getattr(project, "code", None)
+
     await log_activity(
         db,
         actor_id=admin.id,
@@ -472,6 +502,7 @@ async def update_cluster(
         target_id=cluster.id,
         details={
             "project_id": cluster.project_id,
+            "project_code": project_code,
             "cluster_number": cluster.cluster_number,
             "address": cluster.address,
         },
