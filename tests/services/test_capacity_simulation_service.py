@@ -8,7 +8,7 @@ import pytest
 
 from app.schemas.capacity import CapacitySimulationResponse, FamilyDaypartCapacity
 from app.services.capacity_simulation_service import (
-    _get_family_name,
+    _get_required_user_flag,
     _week_id,
     simulate_capacity_horizon,
     simulate_week_capacity,
@@ -52,10 +52,13 @@ def week_monday() -> date:
 
 def _make_visit(vid: int, fam_name: str, part: str, required: int = 1) -> Any:
     family = SimpleNamespace(name=fam_name)
-    species = [SimpleNamespace(family=family)]
+    species = [SimpleNamespace(family=family, name=fam_name)]
+    # Mock function name to be standard to avoid SMP trigger unless specified
+    func = SimpleNamespace(name="Inventarisatie")
     return SimpleNamespace(
         id=vid,
         species=species,
+        functions=[func],
         part_of_day=part,
         required_researchers=required,
     )
@@ -77,12 +80,14 @@ def test_week_id_formats_iso_week_correctly(week_monday: date) -> None:
     assert _week_id(week_monday) == "2025-W23"
 
 
-def test_get_family_name_from_first_species() -> None:
+def test_get_required_user_flag_standard() -> None:
+    # Updated to test the new grouping logic helper
     fam = SimpleNamespace(name="Vleermuis")
-    sp = SimpleNamespace(family=fam)
-    visit = SimpleNamespace(species=[sp])
+    sp = SimpleNamespace(family=fam, name="Vleermuis")
+    func = SimpleNamespace(name="Inventarisatie")
+    visit = SimpleNamespace(species=[sp], functions=[func])
 
-    assert _get_family_name(visit) == "Vleermuis"
+    assert _get_required_user_flag(visit) == "Vleermuis"
 
 
 # Week-level simulation -------------------------------------------------------
@@ -150,6 +155,7 @@ async def test_simulate_week_capacity_aggregates_required_and_assigned(
 
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
+    # Expected key is now "Vleermuis" (Capitalized by new logic)
     cell = result["Vleermuis"]["Ochtend"]
     assert isinstance(cell, FamilyDaypartCapacity)
     assert cell.required == 2

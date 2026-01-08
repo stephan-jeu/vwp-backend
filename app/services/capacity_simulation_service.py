@@ -433,7 +433,7 @@ async def simulate_week_capacity(
             assigned_count = req if is_assigned else 0
             shortfall_count = 0 if is_assigned else req
             
-            fam_map = result.setdefault(fam, {})
+            fam_map = result.setdefault(group_key, {})
             cell = fam_map.get(part)
             if cell is None:
                 cell = FamilyDaypartCapacity(required=0, assigned=0, shortfall=0, spare=0)

@@ -459,11 +459,12 @@ async def select_visits_cp_sat(
     
     # 3. Solve
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 1.0 # Fast interactive response
+    solver.parameters.max_time_in_seconds = 5.0 # Increased from 1.0s to reduce timeouts
     status = solver.Solve(model)
     
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        _logger.warning("CP-SAT Visit Selection failed to find solution")
+        msg = f"CP-SAT Visit Selection failed. Status={solver.StatusName(status)}"
+        _logger.warning(msg)
         return VisitSelectionResult(selected=[], skipped=visits + skipped_visits, remaining_caps={})
 
     # 4. Extract Result

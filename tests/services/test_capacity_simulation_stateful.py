@@ -122,7 +122,9 @@ async def test_simulate_capacity_planning_stateful(monkeypatch: pytest.MonkeyPat
     grid = result.grid
     # Structure: grid[family][part][deadline]
 
-    fam_grid = grid.get(fam.name, {})
+    # The service capitalizes the family name for the user flag label
+    expected_key = fam.name.strip().lower().capitalize()
+    fam_grid = grid.get(expected_key, {})
     part_grid = fam_grid.get("Ochtend", {})
 
     # v1 deadline is "2025-01-12"

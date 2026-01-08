@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 from typing import Iterable
 import logging
@@ -24,6 +25,7 @@ from app.services.visit_status_service import (
 
 
 _logger = logging.getLogger("uvicorn.error")
+_DEBUG_PLANNING = os.getenv("PLANNING_DEBUG", "").lower() in ("true", "1", "yes")
 
 
 DAYPART_TO_AVAIL_FIELD = {
@@ -258,12 +260,13 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
         if required_attr is not None:
             smp_ok = bool(getattr(user, required_attr, False))
             if not smp_ok:
-                _logger.debug(
-                    "planning: user_id=%s unqualified_for_visit_id=%s reason=smp_flag_missing attr=%s",
-                    uid,
-                    getattr(visit, "id", None),
-                    required_attr,
-                )
+                if _DEBUG_PLANNING:
+                    _logger.debug(
+                        "planning: user_id=%s unqualified_for_visit_id=%s reason=smp_flag_missing attr=%s",
+                        uid,
+                        getattr(visit, "id", None),
+                        required_attr,
+                    )
                 return False
         else:
             _logger.warning(
@@ -290,46 +293,50 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
             )
             attr = fam_to_user_attr.get(key)
             if attr and not bool(getattr(user, attr, False)):
-                _logger.debug(
-                    "planning: user_id=%s unqualified_for_visit_id=%s reason=family_flag_missing family_key=%s attr=%s",
-                    getattr(user, "id", None),
-                    getattr(visit, "id", None),
-                    key,
-                    attr,
-                )
+                if _DEBUG_PLANNING:
+                    _logger.debug(
+                        "planning: user_id=%s unqualified_for_visit_id=%s reason=family_flag_missing family_key=%s attr=%s",
+                        getattr(user, "id", None),
+                        getattr(visit, "id", None),
+                        key,
+                        attr,
+                    )
                 return False
         # Direct species name enforcement as an extra safety net
         for key, attr in fam_to_user_attr.items():
             if key in species_names_lower and not bool(getattr(user, attr, False)):
-                _logger.debug(
-                    "planning: user_id=%s unqualified_for_visit_id=%s reason=species_flag_missing species_key=%s attr=%s",
-                    getattr(user, "id", None),
-                    getattr(visit, "id", None),
-                    key,
-                    attr,
-                )
+                if _DEBUG_PLANNING:
+                    _logger.debug(
+                        "planning: user_id=%s unqualified_for_visit_id=%s reason=species_flag_missing species_key=%s attr=%s",
+                        getattr(user, "id", None),
+                        getattr(visit, "id", None),
+                        key,
+                        attr,
+                    )
                 return False
 
     # VRFG function rule
     if _any_function_contains(visit, ("Vliegroute", "Foerageergebied")):
         if not bool(getattr(user, "vrfg", False)):
-            _logger.debug(
-                "planning: user_id=%s unqualified_for_visit_id=%s reason=vrfg_missing",
-                getattr(user, "id", None),
-                getattr(visit, "id", None),
-            )
+            if _DEBUG_PLANNING:
+                _logger.debug(
+                    "planning: user_id=%s unqualified_for_visit_id=%s reason=vrfg_missing",
+                    getattr(user, "id", None),
+                    getattr(visit, "id", None),
+                )
             return False
 
     # Visit flags that must exist on user when required. "sleutel" is handled
     # separately during assignment based on contract type.
     for flag in ("hub", "fiets", "wbc", "dvp"):
         if bool(getattr(visit, flag, False)) and not bool(getattr(user, flag, False)):
-            _logger.debug(
-                "planning: user_id=%s unqualified_for_visit_id=%s reason=visit_flag_missing flag=%s",
-                getattr(user, "id", None),
-                getattr(visit, "id", None),
-                flag,
-            )
+            if _DEBUG_PLANNING:
+                _logger.debug(
+                    "planning: user_id=%s unqualified_for_visit_id=%s reason=visit_flag_missing flag=%s",
+                    getattr(user, "id", None),
+                    getattr(visit, "id", None),
+                    flag,
+                )
             return False
 
     return True
