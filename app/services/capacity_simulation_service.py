@@ -17,6 +17,8 @@ from app.models.visit import Visit
 from app.schemas.capacity import CapacitySimulationResponse, FamilyDaypartCapacity
 from app.services.visit_planning_selection import (
     DAYPART_TO_AVAIL_FIELD,
+    _any_function_contains,
+    _first_function_name,
     _qualifies_user_for_visit,
     _load_all_users,
     _priority_key,
@@ -41,19 +43,60 @@ def _week_id(week_monday: date) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
-def _get_family_name(v: Visit) -> str:
-    """Return the primary family name for a visit or ``"?"``.
+def _get_required_user_flag(v: Visit) -> str:
+    """Return the primary user flag required for the visit (formatted label).
 
-    The first species' family name is used when available; otherwise a
-    best-effort placeholder is returned.
+    Logic mirrors ``_qualifies_user_for_visit`` but returns human-readable labels:
+    1. SMP visits -> "SMP <Family>" (e.g. "SMP Vleermuis", "SMP Huismus")
+    2. VRFG function -> "VR/FG"
+    3. Standard -> Capitalized family name (e.g. "Vleermuis", "Zwaluw")
     """
+    # 1. SMP Check
+    fn_name = _first_function_name(v)
+    if fn_name.lstrip().upper().startswith("SMP"):
+        sp = (v.species or [None])[0]
+        fam = getattr(sp, "family", None)
+        fam_name = str(getattr(fam, "name", "")).strip().lower()
+
+        if fam_name == "vleermuis":
+            return "SMP Vleermuis"
+        elif fam_name == "zwaluw":
+            return "SMP Gierzwaluw"
+        elif fam_name == "zangvogel":
+            return "SMP Huismus"
+        else:
+            # Fallback if unknown SMP family mapping
+            return f"SMP {fam_name.capitalize()}"
+
+    # 2. VRFG Check
+    if _any_function_contains(v, ("Vliegroute", "Foerageergebied")):
+        return "VR/FG"
+
+    # 3. Standard Family Fallback
+    # Map visible family names to user flags if they differ (e.g. plurals)
+    # The user model flags are typically singular or specific keys.
+    # We try to align with valid User model attributes where possible.
     try:
         sp = (v.species or [None])[0]
-        fam: Family | None = getattr(sp, "family", None)
+        fam = getattr(sp, "family", None)
         name = getattr(fam, "name", None)
         if isinstance(name, str) and name.strip():
-            return name.strip()
-    except Exception:  # pragma: no cover - defensive only
+            raw = name.strip().lower()
+            # Map common variations to user flags
+            mapping = {
+                "langoren": "Langoor",
+                "schijfhoren": "Schijfhoren",
+                "zwaluw": "Zwaluw",
+                "vlinder": "Vlinder",
+                "grote vos": "Vlinder",
+                "iepenpage": "Vlinder",
+            }
+            if raw in mapping:
+                return mapping[raw]
+            
+            # Default capitalization
+            return raw.capitalize()
+    except Exception:
         pass
     return "?"
 
@@ -165,6 +208,7 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
             selectinload(Visit.researchers),
             selectinload(Visit.cluster).selectinload(Cluster.project),
         )
+        .order_by(Visit.id)
     )
 
     candidates = (await db.execute(stmt)).scalars().unique().all()
@@ -245,14 +289,14 @@ async def simulate_capacity_planning(
 
     # Helper to add result
     def add_result(v: Visit, is_planned: bool):
-        fam = _get_family_name(v)
+        group_key = _get_required_user_flag(v)
         part = (v.part_of_day or "Onbekend").strip()
         if v.to_date:
             deadline = v.to_date.isoformat()
         else:
             deadline = "No Deadline"
 
-        fam_dict = results.setdefault(fam, {})
+        fam_dict = results.setdefault(group_key, {})
         part_dict = fam_dict.setdefault(part, {})
 
         current = part_dict.get(deadline, SimulationResultCell(0, 0))
@@ -378,7 +422,7 @@ async def simulate_week_capacity(
 
     def add_stats(visits: list[Visit], is_assigned: bool):
         for v in visits:
-            fam = _get_family_name(v)
+            group_key = _get_required_user_flag(v)
             part = (getattr(v, "part_of_day", None) or "").strip()
             if not part:
                 continue

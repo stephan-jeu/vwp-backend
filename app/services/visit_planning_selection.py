@@ -337,7 +337,7 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
 
 async def _load_all_users(db: AsyncSession) -> list[User]:
     """Load all users once. Extracted for easier monkeypatching in tests."""
-    return (await db.execute(select(User))).scalars().all()
+    return (await db.execute(select(User).order_by(User.id))).scalars().all()
 
 
 async def _load_user_capacities(db: AsyncSession, week: int) -> dict[int, int]:

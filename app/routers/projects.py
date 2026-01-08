@@ -104,18 +104,6 @@ async def update_project(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
     await db.refresh(project)
 
-    await log_activity(
-        db,
-        actor_id=admin.id,
-        action="project_updated",
-        target_type="project",
-        target_id=project.id,
-        details={
-            "code": project.code,
-            "location": project.location,
-        },
-    )
-
     return project
 
 

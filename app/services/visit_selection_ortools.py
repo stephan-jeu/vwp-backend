@@ -60,6 +60,10 @@ async def select_visits_cp_sat(
         
     if users is None:
         users = await _load_all_users(db)
+
+    # Ensure deterministic order for user list processing
+    if users:
+        users.sort(key=lambda u: getattr(u, "id", 0) or 0)
         
     if user_caps is None:
         user_caps = await _load_user_capacities(db, week)
