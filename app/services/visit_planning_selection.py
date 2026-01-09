@@ -16,7 +16,6 @@ from app.models.species import Species
 from app.models.family import Family
 from app.models.availability import AvailabilityWeek
 from app.models.user import User
-from app.services import travel_time
 from app.services.visit_status_service import (
     VisitStatusCode,
     derive_visit_status,

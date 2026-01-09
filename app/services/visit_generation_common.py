@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta, time
-from typing import Any
 
 from app.models.protocol import Protocol
-from app.models.visit import Visit
 
 _logger = logging.getLogger("uvicorn.error")
 

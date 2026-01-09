@@ -4,7 +4,6 @@ import logging
 import os
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Any
 
 from ortools.sat.python import cp_model
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,13 +12,11 @@ from app.models.cluster import Cluster
 from app.models.protocol import Protocol
 from app.models.visit import Visit
 from app.services.visit_generation_common import (
-    VisitRequest,
     _generate_visit_requests,
     _build_compatibility_graph,
     _derive_part_options_base,
     _select_most_restrictive_precipitation,
     calculate_visit_props,
-    MIN_EFFECTIVE_WINDOW_DAYS,
 )
 
 _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}

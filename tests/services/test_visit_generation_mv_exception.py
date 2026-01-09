@@ -1,5 +1,4 @@
 import pytest
-import pytest_asyncio
 from datetime import date
 from app.models.family import Family
 from app.models.species import Species

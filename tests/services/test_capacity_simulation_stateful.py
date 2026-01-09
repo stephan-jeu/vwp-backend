@@ -1,10 +1,7 @@
 import pytest
-from datetime import date, timedelta
-from typing import Any
-from unittest.mock import MagicMock
+from datetime import date
 from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.models.visit import Visit
 from app.models.species import Species

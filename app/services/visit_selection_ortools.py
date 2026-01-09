@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import NamedTuple
 
 from ortools.sat.python import cp_model
@@ -44,7 +44,6 @@ async def select_visits_cp_sat(
     from app.services.visit_planning_selection import (
         _priority_key,
         _qualifies_user_for_visit,
-        _load_week_capacity,
         _eligible_visits_for_week,
         _allowed_day_indices_for_visit,
         _load_user_capacities,

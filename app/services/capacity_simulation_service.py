@@ -9,22 +9,13 @@ from sqlalchemy.orm import selectinload
 
 from app.models.availability import AvailabilityWeek
 from app.models.cluster import Cluster
-from app.models.family import Family
 from app.models.project import Project
 from app.models.species import Species
-from app.models.user import User
 from app.models.visit import Visit
 from app.schemas.capacity import CapacitySimulationResponse, FamilyDaypartCapacity
 from app.services.visit_planning_selection import (
-    DAYPART_TO_AVAIL_FIELD,
     _any_function_contains,
     _first_function_name,
-    _qualifies_user_for_visit,
-    _load_all_users,
-    _priority_key,
-    _consume_capacity,
-    _load_week_capacity,
-    _select_visits_for_week_core,
 )
 from app.services.visit_selection_ortools import select_visits_cp_sat
 
