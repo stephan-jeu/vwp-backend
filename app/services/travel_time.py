@@ -49,3 +49,33 @@ async def get_travel_minutes(origin: str, destination: str) -> Optional[int]:
     except Exception as exc:
         _logger.error("Travel time lookup failed: %s", exc)
         return None
+
+
+async def get_travel_minutes_batch(
+    pairs: list[tuple[str, str]]
+) -> dict[tuple[str, str], int]:
+    """Fetch travel times for multiple origin-destination pairs in parallel.
+
+    Restricts concurrency to avoid hitting rate limits too aggressively.
+    Returns a dictionary mapping (origin, destination) -> minutes.
+    Pairs that fail or have no route are omitted/exclude from the result.
+    """
+    import asyncio
+
+    # Deduplicate pairs
+    unique_pairs = list(set(pairs))
+    if not unique_pairs:
+        return {}
+
+    sem = asyncio.Semaphore(10)  # Max 10 concurrent requests
+    results: dict[tuple[str, str], int] = {}
+
+    async def _fetch(pair: tuple[str, str]):
+        origin, dest = pair
+        async with sem:
+            minutes = await get_travel_minutes(origin, dest)
+            if minutes is not None:
+                results[pair] = minutes
+
+    await asyncio.gather(*[_fetch(p) for p in unique_pairs])
+    return results

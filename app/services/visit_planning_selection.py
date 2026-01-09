@@ -157,6 +157,7 @@ async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
 async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list[Visit]:
     week_friday = _end_of_work_week(week_monday)
 
+    target_week = week_monday.isocalendar().week
     stmt = (
         select(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
@@ -166,6 +167,19 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 Visit.from_date <= week_friday,
                 Visit.to_date >= week_monday,
                 Project.quote.is_(False),
+                # Exclude visits already planned for this week (Incremental planning)
+                # i.e., ignore if planned_week == target AND has researchers assigned.
+                # However, checking "has researchers" via relationship in typical WHERE needs correlated subquery or similar.
+                # For simplicity, if planned_week is target_week, we assume it is effectively "in the plan" 
+                # UNLESS it has no researchers? 
+                # Actually, many visits might be "manually assigned to week" but not "to researcher".
+                # Let's filter in python post-fetch to be safe and clear, or use NOT (planned_week==target AND exists(researchers)).
+                # Given SQLAlchemy async complexity, simplest is:
+                # not_(and_(Visit.planned_week == target_week, Visit.researchers.any()))
+                ~and_(
+                     Visit.planned_week == target_week,
+                     Visit.researchers.any()
+                )
             )
         )
         .options(
@@ -664,13 +678,15 @@ async def _select_visits_for_week_core(
     return selected, skipped, caps
 
 
-async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
-    """Select visits for the given work week (Mon–Fri) using OR-Tools CP-SAT.
+async def select_visits_for_week(
+    db: AsyncSession, week_monday: date,    timeout_seconds: float | None = None,
+    include_travel_time: bool = True,
+) -> dict:
+    """Run CP-SAT solver for a given week.
 
-    Replaces legacy greedy heuristic with global optimization for:
-    - Weighted Priority maximization.
-    - Strict day coordination (same-day requirement).
-    - Valid constraints.
+    Loads all relevant data (visits, users, capacities) and invokes the
+    solver to produce a recommended schedule. The result is returned as a
+    dictionary with detailed assignment info.
     """
     from app.services.visit_selection_ortools import select_visits_cp_sat
 
@@ -683,7 +699,7 @@ async def select_visits_for_week(db: AsyncSession, week_monday: date) -> dict:
             "capacity_remaining": caps,
         }
 
-    result = await select_visits_cp_sat(db, week_monday)
+    result = await select_visits_cp_sat(db, week_monday, timeout_seconds=timeout_seconds)
     
     effective_selected = result.selected
     effective_skipped = result.skipped

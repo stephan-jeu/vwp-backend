@@ -23,7 +23,9 @@ async def select_visits_cp_sat(
     visits: list[Visit] | None = None,
     users: list[User] | None = None,
     user_caps: dict[int, int] | None = None,
-    user_daypart_caps: dict[int, dict[str, int]] | None = None
+    user_daypart_caps: dict[int, dict[str, int]] | None = None,
+    timeout_seconds: float | None = None,
+    include_travel_time: bool = True,
 ) -> VisitSelectionResult:
     """
     Select visits and assign researchers using OR-Tools (CP-SAT).
@@ -259,43 +261,45 @@ async def select_visits_cp_sat(
     # 1->2 load (Delta 2^2 - 1^2 = 3) costs 90 points (marginal cost 60, +30 vs fresh user)
     LOAD_BALANCE_WEIGHT = 30
     
-    # Helper to pre-calculate travel times for valid pairs
-    # We only care about (i, j) pairs that are qualified/preferred
-    pairs_to_check = []
-    for i, v in v_map.items():
-        pref_uid = getattr(v, "preferred_researcher_id", None)
-        for j, u in u_map.items():
-            uid = getattr(u, "id", None)
-            is_preferred = (pref_uid is not None and uid is not None and uid == pref_uid)
-            if is_preferred or _qualifies_user_for_visit(u, v):
-                pairs_to_check.append((i, j))
-    
-    # Fetch travel times in batch/parallel if possible?
-    # travel_time service is one-by-one.
-    # We await them.
-    travel_costs = {} 
-    
     # Optimization: Check if we have travel_time service available (might be missing in tests if not mocked global?)
     # We imported it locally to be safe
     from app.services import travel_time
-    
-    for (i, j) in pairs_to_check:
-        v = v_map[i]
-        u = u_map[j]
-        # Cluster address vs User address
-        # Visit has cluster.address
-        cluster = getattr(v, "cluster", None)
-        dest = getattr(cluster, "address", None)
-        origin = getattr(u, "address", None)
+
+    travel_costs = {}
+
+    if include_travel_time:
+        # Helper to pre-calculate travel times for valid pairs
+        # We only care about (i, j) pairs that are qualified/preferred
+        pairs_to_check: list[tuple[str, str]] = []
+        pair_to_indices: dict[tuple[str, str], list[tuple[int, int]]] = {}
+
+        for i, v in v_map.items():
+            pref_uid = getattr(v, "preferred_researcher_id", None)
+            cluster = getattr(v, "cluster", None)
+            dest = getattr(cluster, "address", None)
+            if not dest:
+                continue
+            
+            for j, u in u_map.items():
+                uid = getattr(u, "id", None)
+                is_preferred = (pref_uid is not None and uid is not None and uid == pref_uid)
+                if is_preferred or _qualifies_user_for_visit(u, v):
+                    origin = getattr(u, "address", None)
+                    if origin:
+                        key = (origin, dest)
+                        pairs_to_check.append(key)
+                        if key not in pair_to_indices:
+                            pair_to_indices[key] = []
+                        pair_to_indices[key].append((i, j))
         
-        cost = 0
-        if origin and dest:
-            # Default to 0 if lookup fails/returns None
-            mins = await travel_time.get_travel_minutes(origin, dest)
-            if mins is not None:
-                cost = mins
-        
-        travel_costs[i, j] = cost
+        # Parallel Fetch
+        if pairs_to_check:
+             batch_results = await travel_time.get_travel_minutes_batch(pairs_to_check)
+             # Map back to indices
+             for (origin, dest), mins in batch_results.items():
+                 indices_list = pair_to_indices.get((origin, dest), [])
+                 for (i, j) in indices_list:
+                     travel_costs[i, j] = mins
 
     for i, v in v_map.items():
         base_val = visit_weights[i]
@@ -459,7 +463,21 @@ async def select_visits_cp_sat(
     
     # 3. Solve
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 5.0 # Increased from 1.0s to reduce timeouts
+    
+    # Calculate timeout if not provided
+    if timeout_seconds is None:
+        # Dynamic Scaling:
+        # Base floor 5s.
+        # Scale: N_visits * N_researchers * 0.002s
+        # 14*4=56 -> 0.1s -> 5s floor
+        # 500*50=25000 -> 50s -> 50s
+        complexity = len(visits) * len(users)
+        dynamic = complexity * 0.002
+        timeout_seconds = max(5.0, min(60.0, dynamic))
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug("Computed solver timeout: %.2fs (Complexity=%d)", timeout_seconds, complexity)
+            
+    solver.parameters.max_time_in_seconds = timeout_seconds
     status = solver.Solve(model)
     
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):

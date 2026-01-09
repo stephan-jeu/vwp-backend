@@ -333,7 +333,13 @@ async def simulate_capacity_planning(
         
         eligible_subset_visits = [visit_pool[i] for i in eligible_indices]
         
-        selection_result = await select_visits_cp_sat(db, current_monday, visits=eligible_subset_visits)
+        selection_result = await select_visits_cp_sat(
+            db, 
+            current_monday, 
+            visits=eligible_subset_visits, 
+            timeout_seconds=None,
+            include_travel_time=False
+        )
         
         for v in selection_result.selected:
             add_result(v, is_planned=True)
@@ -413,7 +419,13 @@ async def simulate_week_capacity(
     """
 
     # Use solver to determine optimal selection/assignment
-    selection_result = await select_visits_cp_sat(db, week_monday)
+    # Simulation: Fast (no travel time), Dynamic timeout
+    selection_result = await select_visits_cp_sat(
+        db, 
+        week_monday, 
+        timeout_seconds=None, 
+        include_travel_time=False
+    )
     
     if not selection_result.selected and not selection_result.skipped:
         return {}

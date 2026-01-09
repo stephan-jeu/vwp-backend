@@ -102,6 +102,7 @@ async def generate_planning(
     admin: AdminDep,
     db: DbDep,
     payload: PlanningGenerateRequest,
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> dict:
     """Run the weekly selection to generate a planning preview for a given week.
 
@@ -117,9 +118,17 @@ async def generate_planning(
         )
 
     # Compute Monday for current year ISO week
-    current_year = date.today().year
+    today = simulated_today or date.today()
+    current_year = today.year
     week_monday = date.fromisocalendar(current_year, week, 1)
-    result = await select_visits_for_week(db, week_monday)
+    # Use dynamic timeout (None) which defaults to max(5s, min(60s, complexity))
+    # Include travel time optimization
+    result = await select_visits_for_week(
+        db,
+        week_monday,
+        timeout_seconds=None,
+        include_travel_time=True
+    )
 
     await log_activity(
         db,

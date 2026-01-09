@@ -62,6 +62,43 @@ AdminDep = Annotated[User, Depends(require_admin)]
 UserDep = Annotated[User, Depends(get_current_user)]
 
 
+@router.get("/weeks", response_model=list[int])
+async def list_available_weeks(
+    current_user: UserDep,
+    db: DbDep,
+    mine: Annotated[bool, Query()] = False,
+) -> list[int]:
+    """Return a sorted list of unique ISO week numbers that have visits.
+
+    Aggregates weeks from both `planned_week` (explicit) and `from_date` (implicit),
+    returning a deduplicated, sorted list.
+    """
+    from app.models.visit import visit_researchers
+    
+    stmt = select(Visit.planned_week, Visit.from_date)
+    
+    if mine:
+        stmt = stmt.join(visit_researchers).where(
+            visit_researchers.c.user_id == current_user.id
+        )
+
+    stmt = stmt.where(
+        (Visit.planned_week.is_not(None)) | (Visit.from_date.is_not(None))
+    )
+    
+    rows = await db.execute(stmt)
+    weeks = set()
+    
+    for (p_week, f_date) in rows:
+        if p_week is not None and 1 <= p_week <= 53:
+            weeks.add(p_week)
+        elif f_date is not None:
+            # Fallback to calculated week from date
+            weeks.add(f_date.isocalendar()[1])
+
+    return sorted(list(weeks))
+
+
 @router.get("", response_model=VisitListResponse)
 async def list_visits(
     current_user: UserDep,
@@ -70,6 +107,7 @@ async def list_visits(
     page_size: Annotated[int, Query(ge=1, le=200)] = 100,
     search: Annotated[str | None, Query()] = None,
     statuses: Annotated[list[VisitStatusCode] | None, Query()] = None,
+    week: Annotated[int | None, Query(ge=1, le=53)] = None,
     simulated_today: Annotated[date | None, Query()] = None,
 ) -> VisitListResponse:
     """Return a paginated list of visits for the overview table.
@@ -88,6 +126,7 @@ async def list_visits(
             code/location, cluster address/number, functions, species
             and researcher names.
         statuses: Optional list of lifecycle status codes to filter by.
+        week: Optional ISO week number to filter by.
 
     Returns:
         Paginated :class:`VisitListResponse` with flattened rows.
@@ -106,6 +145,24 @@ async def list_visits(
         selectinload(Visit.preferred_researcher),
     )
     visits = (await db.execute(stmt)).scalars().all()
+
+    # --- Week Filtering ---
+    # We filter early if week is provided, to narrow down dataset before other filters
+    if week is not None:
+        def _get_iso_week(d: date) -> int:
+            return d.isocalendar()[1]
+
+        def _is_in_week(v: Visit, target_week: int) -> bool:
+            # 1. Matches planned_week explicit field
+            if v.planned_week == target_week:
+                return True
+            # 2. If planned_week not set, check from_date ISO week
+            if v.planned_week is None and v.from_date:
+                return _get_iso_week(v.from_date) == target_week
+            return False
+            
+        visits = [v for v in visits if _is_in_week(v, week)]
+
 
     # Optional text search across project, cluster and related names
     if search:
