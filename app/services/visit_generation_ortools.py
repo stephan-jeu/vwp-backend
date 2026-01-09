@@ -442,6 +442,27 @@ async def generate_visits_cp_sat(
         if has_langoren:
             remarks_lines.append("Geen mist, sneeuwval. Bodemtemperatuur < 15 graden")
             
+        # Special Case: SMP Zwaluw
+        has_smp_zwaluw = False
+        for r in assigned_reqs:
+             p = r.protocol
+             fam_name = getattr(getattr(getattr(p, "species", None), "family", None), "name", "")
+             func_name = getattr(getattr(p, "function", None), "name", "") or ""
+             if fam_name == "Zwaluw" and func_name.startswith("SMP"):
+                 has_smp_zwaluw = True
+                 break
+        
+        if has_smp_zwaluw:
+            remarks_lines.append("""Minimum temperatuur:
+25 Mei - 31 Mei: 17
+1 Jun - 7 Jun: 18
+8 Jun - 14 Jun: 19
+15 Jun - 21 Jun: 19.5
+22 Jun - 28 Jun: 20
+29 Jun - 5 Jul: 20
+6 Jul - 12 Jul: 20
+13 Jul - 19 Jul: 20""")
+            
         if remarks_lines:
              new_visit.remarks_field = "\n".join(remarks_lines)
         
