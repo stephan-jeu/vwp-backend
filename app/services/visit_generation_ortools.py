@@ -22,7 +22,7 @@ from app.services.visit_generation_common import (
 _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
 _logger = logging.getLogger("uvicorn.error")
 
-SOLVER_TIME_LIMIT_SECONDS = 5.0
+
 
 def _get_june_ordinals(year: int) -> list[int]:
     """Return ordinals for June 1st to June 30th."""
@@ -290,7 +290,15 @@ async def generate_visits_cp_sat(
 
     # Solve
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = SOLVER_TIME_LIMIT_SECONDS
+    
+    # Dynamic Time Limit: Scale with complexity (number of requests)
+    # Base 10s + 0.1s per request. For 500 requests -> 50s.
+    time_limit = max(10.0, len(requests) * 0.1)
+    solver.parameters.max_time_in_seconds = time_limit
+    
+    if _DEBUG_VISIT_GEN:
+        _logger.info("Solver Time Limit set to %.1fs for %d requests", time_limit, len(requests))
+
     status = solver.Solve(model)
     
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
