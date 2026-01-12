@@ -472,7 +472,7 @@ async def select_visits_cp_sat(
         # 500*50=25000 -> 50s -> 50s
         complexity = len(visits) * len(users)
         dynamic = complexity * 0.002
-        timeout_seconds = max(5.0, min(60.0, dynamic))
+        timeout_seconds = max(10.0, min(60.0, dynamic))
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug("Computed solver timeout: %.2fs (Complexity=%d)", timeout_seconds, complexity)
             
