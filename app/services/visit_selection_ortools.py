@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import NamedTuple
 
@@ -278,6 +279,20 @@ async def select_visits_cp_sat(
             dest = getattr(cluster, "address", None)
             if not dest:
                 continue
+            
+            dest = dest.strip()
+            # 1. Check for Decimal Coordinates: Number, Number
+            is_decimal = bool(re.match(r'^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$', dest))
+            # 2. Check for DMS Coordinates: Starts with digit, contains degree symbol
+            is_dms = bool(re.match(r'^\d+°', dest))
+
+            is_coords = is_decimal or is_dms
+
+            if not is_coords:
+                project = getattr(cluster, "project", None)
+                loc = getattr(project, "location", None)
+                if loc:
+                    dest = f"{dest}, {loc}"
             
             for j, u in u_map.items():
                 uid = getattr(u, "id", None)
