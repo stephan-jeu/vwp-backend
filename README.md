@@ -1,12 +1,14 @@
 ## Introduction
-This application is build for a dutch ecological consultancy agency called Habitus. The purpose is to generate and plan field visits to check for the presence of protected species. These visits have to follow specific protocols such as the Vleermuisprotocol 2021 that specify things like periods, time of day, number of visits, weather conditions etc. Other protocols are for example for Roofvogels, Huismus, Zwaluw etc. I have tried to encode these protocols into sqlalchmemy models (see @protocol.py and its relationships).
-Most of the visits are generated using project cluster species/functions combinations. This is probably the most complex part of the application and you can find the logic in @visit_generation.py 
 
-Another important module is actually planning visits for researchers. At the moment this is done on a weekly basis (although in the future it will probably be done specifying a period). See @visit_planning_selection.py  All researchers have certain weekly availability by day part: evening (usually around sunset), morning (usually a few hours before sunrise), daytime and flex (can be used for all three). They also have certain capabilities per species families, type of research like SMP (soort management plan), or facilites like a bike or a 'warmte beeld camera'. These are matched with the requirements of the visit, so that we can assign visits to the right researchers. We prioritize visits on criteria like visits that have a short time window left, for species that don't have a lot of available researchers. Once we have identified potential researchers for a visit we try to optimize to who we assign by looking at factors like travel time, the number of already assigned visits etc.
+This application is build for a dutch ecological consultancy agency called Habitus. The purpose is to generate and plan field visits to check for the presence of protected species. These visits have to follow specific protocols such as the Vleermuisprotocol 2021 that specify things like periods, time of day, number of visits, weather conditions etc. Other protocols are for example for Roofvogels, Huismus, Zwaluw etc. I have tried to encode these protocols into sqlalchmemy models (see @protocol.py and its relationships).
+Most of the visits are generated using project cluster species/functions combinations. This is probably the most complex part of the application and you can find the logic in @visit_generation.py
+
+Another important module is actually planning visits for researchers. At the moment this is done on a weekly basis (although in the future it will probably be done specifying a period). See @visit_planning_selection.py All researchers have certain weekly availability by day part: evening (usually around sunset), morning (usually a few hours before sunrise), daytime and flex (can be used for all three). They also have certain capabilities per species families, type of research like SMP (soort management plan), or facilites like a bike or a 'warmte beeld camera'. These are matched with the requirements of the visit, so that we can assign visits to the right researchers. We prioritize visits on criteria like visits that have a short time window left, for species that don't have a lot of available researchers. Once we have identified potential researchers for a visit we try to optimize to who we assign by looking at factors like travel time, the number of already assigned visits etc.
 
 ## Backend: Database & Alembic Migrations
 
 ### Environment variables (Settings)
+
 Set these to point to your Postgres instance. Defaults (shown) are used if not set.
 
 - **POSTGRES_USER**: database user (default: `postgres`)
@@ -22,40 +24,50 @@ These are read by `backend/core/settings.py` and form the async URL:
 `postgresql+asyncpg://<POSTGRES_USER>:<POSTGRES_PASSWORD>@<POSTGRES_HOST>:<POSTGRES_PORT>/<POSTGRES_DB>`
 
 ### Alembic commands
+
 Run all commands from the repository root so the `-c` path resolves correctly.
 
-1) Upgrade to latest
+1. Upgrade to latest
+
 ```bash
 alembic -c backend/alembic.ini upgrade head
 ```
 
-2) Downgrade one revision
+2. Downgrade one revision
+
 ```bash
 alembic -c backend/alembic.ini downgrade -1
 ```
 
-3) Create a new revision (autogenerate against `Base.metadata`)
+3. Create a new revision (autogenerate against `Base.metadata`)
+
 ```bash
 alembic -c backend/alembic.ini revision --autogenerate -m "your message"
 ```
 
-4) Stamp the database (mark current state without running SQL)
+4. Stamp the database (mark current state without running SQL)
+
 ```bash
 alembic -c backend/alembic.ini stamp head
 ```
 
 ### Notes
+
 - Alembic is configured for the async engine via `backend/alembic/env.py`.
 - Ensure the target database is reachable with the configured credentials before running migrations.
 
 ### Init database with protocols and users
+
 alembic revision --autogenerate -m "initial" --rev-id 20251130_initial
 alembic upgrade head
-TODO: use dump from production for families, species, functions, protocols and protocol_visit_windows. 
+TODO: use dump from production for families, species, functions, protocols and protocol_visit_windows.
 See scripts/dump_seeds.sh.
 Do not use the db/sql seed files for this!
 Modify python scripts/init_db.py.
 
+### Truncate visit data
 
-
-
+```bash
+cd backend
+python -m scripts.truncate_planning_data
+```
