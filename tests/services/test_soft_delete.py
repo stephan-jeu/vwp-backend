@@ -24,7 +24,7 @@ class _FakeSession:
 
     async def execute(self, stmt):
         sql = str(stmt)
-        self.executed.append((sql, getattr(stmt, "compile", lambda: None)))
+        self.executed.append((sql, stmt))
         # Respond to SELECT of child ids to enable recursion
         if "FROM clusters" in sql and "SELECT" in sql:
             return _FakeResult(
@@ -64,6 +64,13 @@ async def test_soft_delete_project_cascades_to_clusters_and_visits():
     # One UPDATE on clusters and one UPDATE on visits
     assert "UPDATE clusters" in sql_texts
     assert "UPDATE visits" in sql_texts
+
+    # Verify that we select children with include_deleted=True
+    select_clusters = next(
+        stmt for sql, stmt in db.executed if "FROM clusters" in sql and "SELECT" in sql
+    )
+    opts = select_clusters.get_execution_options()
+    assert opts.get("include_deleted") is True
 
 
 @pytest.mark.asyncio

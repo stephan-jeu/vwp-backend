@@ -60,7 +60,11 @@ async def _cascade_children(
         )
         # Recurse if the child also has configured children
         if _CASCADE_MAP.get(child_model):
-            res = await db.execute(select(id_col).where(fk_col.in_(parent_ids)))
+            res = await db.execute(
+                select(id_col)
+                .where(fk_col.in_(parent_ids))
+                .execution_options(include_deleted=True)
+            )
             next_ids = [row[0] for row in res.all()]
             if next_ids:
                 await _cascade_children(db, child_model, next_ids, now)

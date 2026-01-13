@@ -68,6 +68,5 @@ Modify python scripts/init_db.py.
 ### Truncate visit data
 
 ```bash
-cd backend
 python -m scripts.truncate_planning_data
 ```
