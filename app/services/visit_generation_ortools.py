@@ -200,6 +200,15 @@ async def generate_visits_cp_sat(
     if _DEBUG_VISIT_GEN:
         used_visits = len(set(greedy_assignment.values()))
         _logger.info("GREEDY: Found initial solution with %d visits (Hinting Solver)", used_visits)
+        
+        # DEBUG: Log distribution of requests in greedy bins
+        bins_debug = defaultdict(list)
+        for r_idx, v_idx in greedy_assignment.items():
+            bins_debug[v_idx].append(r_idx)
+            
+        for v_idx, r_list in sorted(bins_debug.items())[:5]: # Log first 5 bins
+             p_ids = [requests[r].protocol.id for r in r_list]
+             _logger.info("  Bucket %d has %d requests: Protos %s", v_idx, len(r_list), p_ids)
     # --------------------------------
 
     # Variables
