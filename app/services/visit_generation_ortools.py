@@ -419,13 +419,24 @@ async def generate_visits_cp_sat(
     time_limit = max(30.0, len(requests) * 0.5)
     solver.parameters.max_time_in_seconds = time_limit
     
-    # Enable parallelism to avoid getting stuck in a single search tree.
-    # We force 8 workers even on single-core machines to enable "Portfolio Search".
-    # This runs different search strategies (randomization, core-based, etc.) in time-sliced threads,
-    # significantly reducing the chance of hitting a worst-case exponential runtime.
-    solver.parameters.num_search_workers = 8
+    # Disable parallelism to prevent OOM on single-core/low-memory servers
+    # The heuristic hint is sufficient to guide the search without needing portfolio search.
+    solver.parameters.num_search_workers = 1
     
     if _DEBUG_VISIT_GEN:
+        used_visits = len(set(greedy_assignment.values()))
+        _logger.info("GREEDY: Found initial solution with %d visits (Hinting Solver)", used_visits)
+        
+        # DEBUG: Log distribution of requests in greedy bins
+        bins_debug = defaultdict(list)
+        for r_idx, v_idx in greedy_assignment.items():
+            bins_debug[v_idx].append(r_idx)
+            
+        for v_idx, r_list in sorted(bins_debug.items())[:5]: # Log first 5 bins
+             p_ids = [requests[r].protocol.id for r in r_list]
+             win = bin_windows.get(v_idx)
+             win_str = f"{date.fromordinal(win[0])} to {date.fromordinal(win[1])}" if win else "N/A"
+             _logger.info("  Bucket %d: %d reqs, Window [%s], Protos %s", v_idx, len(r_list), win_str, p_ids)
         _logger.info("Solver Time Limit set to %.1fs for %d requests", time_limit, len(requests))
 
     status = solver.Solve(model)
