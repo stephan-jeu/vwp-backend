@@ -62,7 +62,15 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
     
     all_parts = {"Ochtend", "Dag", "Avond"}
     
-    for r_idx, r in enumerate(requests):
+    
+    all_parts = {"Ochtend", "Dag", "Avond"}
+    
+    # Sort requests by start date to align bins with time flow.
+    # This reduces the chance of Predecessor Gap conflicts between bins.
+    sorted_indices = sorted(range(len(requests)), key=lambda i: requests[i].window_from.toordinal())
+    
+    for r_idx in sorted_indices:
+        r = requests[r_idx]
         placed = False
         r_parts = r.part_of_day_options if r.part_of_day_options is not None else all_parts
         r_start = r.window_from.toordinal()
