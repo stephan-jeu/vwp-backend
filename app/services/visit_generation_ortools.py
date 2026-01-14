@@ -42,10 +42,10 @@ def _get_maternity_ordinals(year: int) -> list[int]:
     return [(start + timedelta(days=i)).toordinal() for i in range(delta + 1)]
 
 
-def _generate_greedy_solution(requests: list) -> dict[int, int]:
+def _generate_greedy_solution(requests: list) -> tuple[dict[int, int], dict[int, tuple[int, int]]]:
     """
     Generate a simple First-Fit greedy assignment of requests to visits.
-    Returns: dict {request_index: visit_index}
+    Returns: (assignment {request_index: visit_index}, bin_windows {visit_index: (start, end)})
     """
     # Sort requests to potentially improve packing (e.g. most constrained first?)
     # For now, just process in order or by ID.
@@ -123,7 +123,7 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
             bin_parts[new_v_idx] = r_parts
             bin_windows[new_v_idx] = (r_start, r_end)
             
-    return assignment
+    return assignment, bin_windows
 
 
 async def generate_visits_cp_sat(
@@ -203,7 +203,7 @@ async def generate_visits_cp_sat(
     # a greedy First-Fit solution and provide it as a hint to the solver.
     # This helps the solver start from a "Reasonable" neighborhood.
     
-    greedy_assignment = _generate_greedy_solution(requests)
+    greedy_assignment, bin_windows = _generate_greedy_solution(requests)
     
     if _DEBUG_VISIT_GEN:
         used_visits = len(set(greedy_assignment.values()))
