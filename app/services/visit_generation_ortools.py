@@ -55,18 +55,29 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
     # Map visit_index -> list of assigned request indices
     bins: dict[int, list[int]] = {}
     assignment: dict[int, int] = {}
+    # Track common allowed parts for each bin to avoid "Clique" failures
+    # (where A approx B, B approx C, A approx C, but A+B+C have no common part)
+    bin_parts: dict[int, set[str]] = {}
+    
+    all_parts = {"Ochtend", "Dag", "Avond"}
     
     for r_idx, r in enumerate(requests):
         placed = False
+        r_parts = r.part_of_day_options if r.part_of_day_options is not None else all_parts
         
         # Try to fit in existing bins
         for v_idx, existing_r_idxs in bins.items():
-            # Check compatibility with ALL requests currently in this bin
+            # 1. Check Common Part Intersection
+            current_bin_parts = bin_parts[v_idx]
+            intersection = current_bin_parts.intersection(r_parts)
+            
+            if not intersection:
+                continue
+                
+            # 2. Check compatibility with ALL requests currently in this bin
             compatible_with_all = True
             for existing_idx in existing_r_idxs:
                 existing_req = requests[existing_idx]
-                # Check if r is compatible with existing_req
-                # Note: 'compatible_request_ids' contains IDs of requests compatible with 'r'
                 if existing_req.id not in r.compatible_request_ids:
                     compatible_with_all = False
                     break
@@ -74,6 +85,7 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
             if compatible_with_all:
                 bins[v_idx].append(r_idx)
                 assignment[r_idx] = v_idx
+                bin_parts[v_idx] = intersection
                 placed = True
                 break
         
@@ -82,6 +94,7 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
             new_v_idx = len(bins) 
             bins[new_v_idx] = [r_idx]
             assignment[r_idx] = new_v_idx
+            bin_parts[new_v_idx] = r_parts
             
     return assignment
 
