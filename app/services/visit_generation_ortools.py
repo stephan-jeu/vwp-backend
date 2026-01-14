@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 from ortools.sat.python import cp_model
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
@@ -364,9 +365,9 @@ async def generate_visits_cp_sat(
     solver = cp_model.CpSolver()
     
     # Dynamic Time Limit: Scale with complexity (number of requests)
-    # Base 25s + 0.4s per request. For 75 requests -> ~35s. For 500 -> 250s.
+    # Base 30s + 0.5s per request. For 75 requests -> ~50s. For 500 -> 250s.
     # We can be more aggressive now that we have the Greedy Hint to prevent disaster cases.
-    time_limit = max(25.0, len(requests) * 0.4)
+    time_limit = max(30.0, len(requests) * 0.5)
     solver.parameters.max_time_in_seconds = time_limit
     
     if _DEBUG_VISIT_GEN:
@@ -564,17 +565,43 @@ async def generate_visits_cp_sat(
         visits.append(new_visit)
         
     # Final Sort and Numbering
-    visits.sort(key=lambda x: (
-        x.from_date or date.max,
-        getattr(x, "_sort_series_start", date.max),
-        0 if x.part_of_day == "Ochtend" else 1 if x.part_of_day == "Dag" else 2
-    ))
+    # Final Sort and Numbering
+    # --------------------------
+    # To fix restart-from-1 issue when adding visits, we fetch ALL existing visits for this cluster.
     
-    for i, v in enumerate(visits):
+    # 1. Fetch existing visits
+    stmt = select(Visit).where(Visit.cluster_id == cluster.id)
+    result = await db.execute(stmt)
+    existing_visits = result.scalars().all()
+    
+    # 2. Combine with new visits (which are not yet in DB, but objects exist)
+    all_cluster_visits = list(existing_visits) + visits
+    
+    # 3. Sort Chronologically
+    # Primary: Date
+    # Secondary: Series Start (computed for new, None/AttributeError for old?)
+    # Tertiary: Part of day
+    # Tie-break: ID (stable for old), random/memory for new.
+    
+    def sort_key(x: Visit):
+        d = x.from_date or date.max
+        # For existing visits, _sort_series_start won't be set. Use date as fallback.
+        s_start = getattr(x, "_sort_series_start", d)
+        pod_map = {"Ochtend": 0, "Dag": 1, "Avond": 2}
+        pod = pod_map.get(x.part_of_day, 3)
+        return (d, s_start, pod)
+
+    all_cluster_visits.sort(key=sort_key)
+    
+    # 4. Re-Apply Numbering
+    for i, v in enumerate(all_cluster_visits):
         v.visit_nr = i + 1
+        # If it's an existing visit, we need to ensure it's added to session for update?
+        # Typically selecting it attaches it to session. 
+        # But if we modified it (visit_nr changed), we should ensure it's tracked.
         db.add(v)
         
-        if _DEBUG_VISIT_GEN:
+        if _DEBUG_VISIT_GEN and i >= len(existing_visits): # Log new ones
              _logger.info("  -> Created Visit %d: %s %s (%s)", v.visit_nr, v.from_date, v.part_of_day, v.remarks_field)
 
     return visits, warnings

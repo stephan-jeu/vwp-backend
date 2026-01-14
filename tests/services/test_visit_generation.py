@@ -410,6 +410,8 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
         sql = str(_stmt)
         if "FROM protocols" in sql:
             return _FakeResult([p1])
+        if "FROM visits" in sql:
+            return _FakeResult([])
         # Just return p1's function/species for any query to avoid empty lists
         return _FakeResult([p1.function, p1.species])
 
