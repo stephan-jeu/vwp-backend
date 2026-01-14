@@ -370,6 +370,12 @@ async def generate_visits_cp_sat(
     time_limit = max(30.0, len(requests) * 0.5)
     solver.parameters.max_time_in_seconds = time_limit
     
+    # Enable parallelism to avoid getting stuck in a single search tree.
+    # We force 8 workers even on single-core machines to enable "Portfolio Search".
+    # This runs different search strategies (randomization, core-based, etc.) in time-sliced threads,
+    # significantly reducing the chance of hitting a worst-case exponential runtime.
+    solver.parameters.num_search_workers = 8
+    
     if _DEBUG_VISIT_GEN:
         _logger.info("Solver Time Limit set to %.1fs for %d requests", time_limit, len(requests))
 
