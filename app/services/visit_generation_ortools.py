@@ -292,8 +292,8 @@ async def generate_visits_cp_sat(
     solver = cp_model.CpSolver()
     
     # Dynamic Time Limit: Scale with complexity (number of requests)
-    # Base 10s + 0.1s per request. For 500 requests -> 50s.
-    time_limit = max(10.0, len(requests) * 0.1)
+    # Base 30s + 0.5s per request. For 500 requests -> 280s.
+    time_limit = max(30.0, len(requests) * 0.5)
     solver.parameters.max_time_in_seconds = time_limit
     
     if _DEBUG_VISIT_GEN:
