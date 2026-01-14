@@ -55,26 +55,43 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
     # Map visit_index -> list of assigned request indices
     bins: dict[int, list[int]] = {}
     assignment: dict[int, int] = {}
-    # Track common allowed parts for each bin to avoid "Clique" failures
-    # (where A approx B, B approx C, A approx C, but A+B+C have no common part)
+    
+    # Track common constraints to prevent "Clique Failures"
     bin_parts: dict[int, set[str]] = {}
+    bin_windows: dict[int, tuple[int, int]] = {} # (start_ordinal, end_ordinal)
     
     all_parts = {"Ochtend", "Dag", "Avond"}
     
     for r_idx, r in enumerate(requests):
         placed = False
         r_parts = r.part_of_day_options if r.part_of_day_options is not None else all_parts
+        r_start = r.window_from.toordinal()
+        r_end = r.window_to.toordinal()
         
         # Try to fit in existing bins
         for v_idx, existing_r_idxs in bins.items():
             # 1. Check Common Part Intersection
             current_bin_parts = bin_parts[v_idx]
-            intersection = current_bin_parts.intersection(r_parts)
+            intersection_parts = current_bin_parts.intersection(r_parts)
+            if not intersection_parts:
+                continue
             
-            if not intersection:
+            # 2. Check Common Window Intersection
+            # (must overlap by at least MIN_EFFECTIVE_WINDOW_DAYS, or at least be valid)
+            # The solver penalizes short windows < 7 days.
+            # Compatibility usually requires roughly 10 days overlap.
+            # Let's enforce a safe positive overlap to ensure validity.
+            
+            b_start, b_end = bin_windows[v_idx]
+            common_start = max(b_start, r_start)
+            common_end = min(b_end, r_end)
+            
+            # Enforce at least 1 day of overlap to be physically possible
+            # Ideally enforce MIN_EFFECTIVE_WINDOW_DAYS (10) to match graph strictness
+            if (common_end - common_start) < 7: # Use 7 as safe "not penalized" lower bound
                 continue
                 
-            # 2. Check compatibility with ALL requests currently in this bin
+            # 3. Check compatibility with ALL requests currently in this bin
             compatible_with_all = True
             for existing_idx in existing_r_idxs:
                 existing_req = requests[existing_idx]
@@ -85,7 +102,8 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
             if compatible_with_all:
                 bins[v_idx].append(r_idx)
                 assignment[r_idx] = v_idx
-                bin_parts[v_idx] = intersection
+                bin_parts[v_idx] = intersection_parts
+                bin_windows[v_idx] = (common_start, common_end)
                 placed = True
                 break
         
@@ -95,6 +113,7 @@ def _generate_greedy_solution(requests: list) -> dict[int, int]:
             bins[new_v_idx] = [r_idx]
             assignment[r_idx] = new_v_idx
             bin_parts[new_v_idx] = r_parts
+            bin_windows[new_v_idx] = (r_start, r_end)
             
     return assignment
 
