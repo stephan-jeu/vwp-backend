@@ -17,6 +17,134 @@ class VisitSelectionResult(NamedTuple):
     skipped: list[Visit]
     remaining_caps: dict[str, int] # Global daypart caps (approximate)
 
+def _generate_greedy_planning_solution(
+    visits: list[Visit],
+    users: list[User],
+    user_caps: dict[int, int],
+    user_daypart_caps: dict[int, dict[str, int]],
+    week_monday: date
+) -> tuple[set[int], dict[int, int], dict[int, list[int]]]:
+    """
+    Generate a Greedy First-Fit solution for planning.
+    
+    Returns:
+    - scheduled_indices: set of visit indices (in local 'visits' list)
+    - visit_days: dict {v_idx: day_idx (0-4)}
+    - visit_assignments: dict {v_idx: [u_idx (in local 'users' list), ...]}
+    """
+    from app.services.visit_planning_selection import (
+        _allowed_day_indices_for_visit,
+        _qualifies_user_for_visit,
+    )
+    
+    # Mutable State
+    # We clone caps roughly to track usage
+    # user_rem_weekly: {uid: int}
+    user_rem_weekly = {uid: cap for uid, cap in user_caps.items()}
+    
+    # user_rem_daypart: {uid: {part: int, 'Flex': int}}
+    # Deep copy needed
+    user_rem_daypart = {}
+    for uid, caps in user_daypart_caps.items():
+        user_rem_daypart[uid] = caps.copy()
+        
+    # user_busy: {uid: {day_idx}} - prevent multi-booking per day
+    user_busy: dict[int, set[int]] = {}
+    for u in users:
+        user_busy[getattr(u, "id", 0)] = set()
+        
+    scheduled_indices = set()
+    visit_days = {}
+    visit_assigns = {}
+    
+    # Iterate visits (already sorted by priority in caller, usually)
+    # But caller sorts *after* calling this? No, caller sorts `visits` list in place?
+    # Actually caller logic: `visits.sort(...)` happens inside `select_visits_cp_sat`.
+    # We should trust the order passed in is decent, or sort here if we want.
+    # The caller sorts `visits` at line ~120. We inject this call later?
+    # Ah, I need to make sure I call this function *after* the sort in the main function.
+    # The replacement puts it before `model` setup. The sort is before that. So list IS sorted.
+    
+    for i, v in enumerate(visits):
+        req_res = getattr(v, "required_researchers", 1) or 1
+        part = getattr(v, "part_of_day", None)
+        if not part: continue
+        
+        allowed_days = _allowed_day_indices_for_visit(week_monday, v)
+        if not allowed_days: continue
+        
+        pref_uid = getattr(v, "preferred_researcher_id", None)
+        
+        # Try finding a valid day and team
+        # Greedy strategy: First valid day that can host the full team
+        
+        assigned_team = []
+        chosen_day = -1
+        
+        for d in allowed_days:
+            # Try to form a team for day d
+            potential_team = []
+            
+            for j, u in enumerate(users):
+                uid = getattr(u, "id", None)
+                if uid is None: continue
+                
+                # Check 1: Already busy on day d?
+                if d in user_busy[uid]:
+                    continue
+                    
+                # Check 2: Weekly Capacity > 0
+                if user_rem_weekly.get(uid, 0) <= 0:
+                    continue
+                    
+                # Check 3: Daypart Capacity
+                # Check Dedicated or Flex
+                u_dp = user_rem_daypart.get(uid, {})
+                has_dedicated = u_dp.get(part, 0) > 0
+                has_flex = u_dp.get("Flex", 0) > 0
+                
+                if not (has_dedicated or has_flex):
+                    continue
+                    
+                # Check 4: Qualification / Preference
+                is_preferred = (pref_uid is not None and uid == pref_uid)
+                if not (is_preferred or _qualifies_user_for_visit(u, v)):
+                    continue
+                
+                # Valid candidate
+                potential_team.append(j)
+                
+                if len(potential_team) == req_res:
+                    break
+            
+            if len(potential_team) == req_res:
+                # Found a fit!
+                assigned_team = potential_team
+                chosen_day = d
+                break
+        
+        if assigned_team:
+            # Commit
+            scheduled_indices.add(i)
+            visit_days[i] = chosen_day
+            visit_assigns[i] = assigned_team
+            
+            for u_idx in assigned_team:
+                u = users[u_idx]
+                uid = getattr(u, "id", 0)
+                
+                # Update State
+                user_rem_weekly[uid] -= 1
+                user_busy[uid].add(chosen_day)
+                
+                u_dp = user_rem_daypart.get(uid, {})
+                if u_dp.get(part, 0) > 0:
+                    u_dp[part] -= 1
+                else:
+                    u_dp["Flex"] -= 1
+
+    return scheduled_indices, visit_days, visit_assigns
+
 async def select_visits_cp_sat(
     db: AsyncSession, 
     week_monday: date,
@@ -473,6 +601,40 @@ async def select_visits_cp_sat(
             
             obj_terms.append(p_excess * -PROJECT_DIVERSITY_PENALTY)
 
+    # --- Heuristic Hint Injection ---
+    
+    # Generate greedy solution
+    g_scheduled, g_day, g_assign = _generate_greedy_planning_solution(
+        visits, users, user_caps, user_daypart_caps, week_monday
+    )
+    
+    if _logger.isEnabledFor(logging.INFO):
+        _logger.info("GREEDY PLANNING: Scheduled %d/%d visits", len(g_scheduled), len(visits))
+        
+    # Apply hints
+    for i in v_map:
+        # Scheduled status
+        if i in g_scheduled:
+             model.AddHint(scheduled[i], 1)
+             
+             # Day hint
+             if i in g_day:
+                 d = g_day[i]
+                 model.AddHint(visit_day[i, d], 1)
+             
+             # Assignment hints
+             if i in g_assign:
+                 for u_idx in g_assign[i]:
+                     # map back to j
+                     # We need to find j for this user. 
+                     # Users list is indexed 0..N, u_map is {j: u}. 
+                     # u_map keys match enumerate(users) index.
+                     # Our greedy returns indices relative to the 'users' list passed in.
+                     if (i, u_idx) in x:
+                         model.AddHint(x[i, u_idx], 1)
+        else:
+             model.AddHint(scheduled[i], 0)
+
     model.Maximize(sum(obj_terms))
     
     # 3. Solve
@@ -481,13 +643,12 @@ async def select_visits_cp_sat(
     # Calculate timeout if not provided
     if timeout_seconds is None:
         # Dynamic Scaling:
-        # Base floor 5s.
-        # Scale: N_visits * N_researchers * 0.002s
-        # 14*4=56 -> 0.1s -> 5s floor
-        # 500*50=25000 -> 50s -> 50s
+        # Base floor 15s (was 30s).
+        # Scale: N_visits * N_researchers * 0.005s
+        # Max: 60s (was 120s).
         complexity = len(visits) * len(users)
         dynamic = complexity * 0.005
-        timeout_seconds = max(30.0, min(120.0, dynamic))
+        timeout_seconds = max(15.0, min(60.0, dynamic))
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug("Computed solver timeout: %.2fs (Complexity=%d)", timeout_seconds, complexity)
             
