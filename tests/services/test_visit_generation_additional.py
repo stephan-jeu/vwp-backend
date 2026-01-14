@@ -514,7 +514,8 @@ async def test_min_effective_window_days_prevents_merge(mocker, fake_db):
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
 
     # Monkeypatch threshold
-    mocker.patch("app.services.visit_generation_ortools.MIN_EFFECTIVE_WINDOW_DAYS", 10)
+    # Monkeypatch threshold
+    mocker.patch("app.services.visit_generation_common.MIN_EFFECTIVE_WINDOW_DAYS", 10)
 
     cluster = Cluster(id=12, project_id=1, address="c12", cluster_number=12)
 

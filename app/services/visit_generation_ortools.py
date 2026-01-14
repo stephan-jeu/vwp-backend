@@ -37,7 +37,52 @@ def _get_maternity_ordinals(year: int) -> list[int]:
     start = date(year, 5, 15)
     end = date(year, 7, 15)
     delta = (end - start).days
+    delta = (end - start).days
     return [(start + timedelta(days=i)).toordinal() for i in range(delta + 1)]
+
+
+def _generate_greedy_solution(requests: list) -> dict[int, int]:
+    """
+    Generate a simple First-Fit greedy assignment of requests to visits.
+    Returns: dict {request_index: visit_index}
+    """
+    # Sort requests to potentially improve packing (e.g. most constrained first?)
+    # For now, just process in order or by ID.
+    # Sorting by number of compatibility constraints (degree) might be better, 
+    # but simple First Fit is usually surprising good as a baseline.
+    
+    # Map visit_index -> list of assigned request indices
+    bins: dict[int, list[int]] = {}
+    assignment: dict[int, int] = {}
+    
+    for r_idx, r in enumerate(requests):
+        placed = False
+        
+        # Try to fit in existing bins
+        for v_idx, existing_r_idxs in bins.items():
+            # Check compatibility with ALL requests currently in this bin
+            compatible_with_all = True
+            for existing_idx in existing_r_idxs:
+                existing_req = requests[existing_idx]
+                # Check if r is compatible with existing_req
+                # Note: 'compatible_request_ids' contains IDs of requests compatible with 'r'
+                if existing_req.id not in r.compatible_request_ids:
+                    compatible_with_all = False
+                    break
+            
+            if compatible_with_all:
+                bins[v_idx].append(r_idx)
+                assignment[r_idx] = v_idx
+                placed = True
+                break
+        
+        if not placed:
+            # Create new bin
+            new_v_idx = len(bins) 
+            bins[new_v_idx] = [r_idx]
+            assignment[r_idx] = new_v_idx
+            
+    return assignment
 
 
 async def generate_visits_cp_sat(
@@ -111,14 +156,41 @@ async def generate_visits_cp_sat(
     # 2. Model Construction
     model = cp_model.CpModel()
     max_visits = len(requests)
+
+    # --- Heuristic Hint Injection ---
+    # To avoid "FEASIBLE" but poor solutions (e.g. 1 visit per request), we calculate 
+    # a greedy First-Fit solution and provide it as a hint to the solver.
+    # This helps the solver start from a "Reasonable" neighborhood.
     
+    greedy_assignment = _generate_greedy_solution(requests)
+    
+    if _DEBUG_VISIT_GEN:
+        used_visits = len(set(greedy_assignment.values()))
+        _logger.info("GREEDY: Found initial solution with %d visits (Hinting Solver)", used_visits)
+    # --------------------------------
+
     # Variables
     visit_active = [model.NewBoolVar(f"visit_active_{v}") for v in range(max_visits)]
     
     req_to_visit = {}
     for r_idx, req in enumerate(requests):
         for v in range(max_visits):
-            req_to_visit[(r_idx, v)] = model.NewBoolVar(f"r{r_idx}_in_v{v}")
+            var = model.NewBoolVar(f"r{r_idx}_in_v{v}")
+            req_to_visit[(r_idx, v)] = var
+            
+            # Apply Hint
+            if greedy_assignment.get(r_idx) == v:
+                model.AddHint(var, 1)
+            else:
+                model.AddHint(var, 0)
+    
+    # Hint visit_active status based on greedy assignment
+    active_visit_indices = set(greedy_assignment.values())
+    for v in range(max_visits):
+        if v in active_visit_indices:
+             model.AddHint(visit_active[v], 1)
+        else:
+             model.AddHint(visit_active[v], 0)
             
     min_date_ord = min(r.window_from.toordinal() for r in requests)
     max_date_ord = max(r.window_to.toordinal() for r in requests)

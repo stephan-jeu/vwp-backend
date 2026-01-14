@@ -64,18 +64,9 @@ async def test_simulate_capacity_planning_stateful(monkeypatch: pytest.MonkeyPat
     async def fake_load_all_open_visits(_db, _start_date):
         return [v1, v2]
 
-    async def fake_load_week_capacity(_db, week: int):
-        if week == 2:
-            return {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
-        return {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 0}
-
     monkeypatch.setattr(
         "app.services.capacity_simulation_service._load_all_open_visits",
         fake_load_all_open_visits,
-    )
-    monkeypatch.setattr(
-        "app.services.capacity_simulation_service._load_week_capacity",
-        fake_load_week_capacity,
     )
     
     # Mock user loading required by OR-Tools solver

@@ -145,13 +145,10 @@ async def test_simulate_week_capacity_aggregates_required_and_assigned(
         fake_core,
     )
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._load_all_users",
+        "app.services.visit_planning_selection._load_all_users",
         fake_load_users,
     )
-    monkeypatch.setattr(
-        "app.services.capacity_simulation_service._qualifies_user_for_visit",
-        lambda user, visit: True,
-    )
+
 
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
@@ -194,13 +191,10 @@ async def test_simulate_week_capacity_tracks_shortfall_when_insufficient_capacit
         fake_core,
     )
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._load_all_users",
+        "app.services.visit_planning_selection._load_all_users",
         fake_load_users,
     )
-    monkeypatch.setattr(
-        "app.services.capacity_simulation_service._qualifies_user_for_visit",
-        lambda user, visit: True,
-    )
+
 
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
@@ -240,13 +234,10 @@ async def test_simulate_week_capacity_uses_flex_when_part_capacity_empty(
         fake_core,
     )
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._load_all_users",
+        "app.services.visit_planning_selection._load_all_users",
         fake_load_users,
     )
-    monkeypatch.setattr(
-        "app.services.capacity_simulation_service._qualifies_user_for_visit",
-        lambda user, visit: True,
-    )
+
 
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
@@ -289,13 +280,10 @@ async def test_simulate_week_capacity_shares_user_capacity_across_families(
         fake_core,
     )
     monkeypatch.setattr(
-        "app.services.capacity_simulation_service._load_all_users",
+        "app.services.visit_planning_selection._load_all_users",
         fake_load_users,
     )
-    monkeypatch.setattr(
-        "app.services.capacity_simulation_service._qualifies_user_for_visit",
-        lambda user, visit: True,
-    )
+
 
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
