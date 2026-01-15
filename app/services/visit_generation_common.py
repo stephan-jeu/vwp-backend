@@ -374,7 +374,7 @@ def calculate_visit_props(
     part_of_day: str | None, 
     reference_date: date | None = None,
     visit_indices: dict[int, int] | None = None
-) -> tuple[int | None, str | None]:
+) -> tuple[int | None, str | None, str | None]:
     """Calculate duration (minutes) and start time text based on protocols and part of day."""
 
     effective_timings: list[EffectiveTiming] = []
@@ -388,6 +388,30 @@ def calculate_visit_props(
     ]
     duration_min = int(max(durations) * 60) if durations else None
 
+    # EXCEPTION: Massawinterverblijfplaats
+    # If ANY protocol is Massawinterverblijfplaats, we override the entire logic.
+    # - Start text is "00:00"
+    # - Duration is max of individual durations (already calculated as duration_min above)
+    # BUT: If combined with Paarverblijf MV (which has strict Sunset logic), we should NOT override.
+    has_massawinter = any(
+        (getattr(getattr(p, "function", None), "name", "") == "Massawinterverblijfplaats")
+        for p in protocols
+    )
+    
+    has_mv_paarverblijf = any(
+         (
+             getattr(getattr(p, "function", None), "name", "") == "Paarverblijf" and 
+             (
+                 getattr(getattr(p, "species", None), "abbreviation", "") == "MV" or 
+                 getattr(getattr(p, "species", None), "name", "") == "MV"
+             )
+         )
+         for p in protocols
+    )
+
+    if has_massawinter and not has_mv_paarverblijf:
+        return duration_min, "00:00", None
+
     # Logic for Evening/Absolute scenarios
     use_improved_logic = False
     all_absolute = all(t.start_timing_reference == "ABSOLUTE_TIME" for t in effective_timings)
@@ -398,6 +422,7 @@ def calculate_visit_props(
         if refs <= {"ABSOLUTE_TIME", "SUNSET"}:
              mixed_absolute_sunset = True
              
+    remarks_suffix: str | None = None
     if all_absolute or mixed_absolute_sunset:
         use_improved_logic = True
         
@@ -412,6 +437,13 @@ def calculate_visit_props(
                  minutes = tm.minute if hasattr(tm, 'minute') else 0
                  minutes_total = hours * 60 + minutes
                  
+                 # Check for remarks triggers (mixed scenario)
+                 if mixed_absolute_sunset:
+                     if minutes_total == 0: # 00:00
+                         remarks_suffix = "Tot minimaal 2:00 onderzoeken"
+                     elif minutes_total == 1320: # 22:00 (22*60)
+                         remarks_suffix = "Tot minimaal 0:00 onderzoeken."
+
                  if minutes_total < 600:
                      minutes_total += 1440
                  p_start_min = minutes_total
@@ -494,7 +526,7 @@ def calculate_visit_props(
         hours_before = abs(min_to_sunrise) / 60.0
         h_str = f"{hours_before:g}".replace(".", ",")
         start_text = f"{h_str} uur voor zonsopkomst"
-        return duration_min, start_text
+        return duration_min, start_text, remarks_suffix
 
     # Default fallback text logic (ported)
     # Store candidates as tuples: (sort_key_minutes, text_str)
@@ -574,4 +606,4 @@ def calculate_visit_props(
         text_candidates.sort(key=lambda x: x[0])
         start_text = text_candidates[0][1]
 
-    return duration_min, start_text
+    return duration_min, start_text, locals().get("remarks_suffix", None)

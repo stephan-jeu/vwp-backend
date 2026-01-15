@@ -60,8 +60,6 @@ def _generate_greedy_solution(requests: list) -> tuple[dict[int, int], dict[int,
     bin_parts: dict[int, set[str]] = {}
     bin_windows: dict[int, tuple[int, int]] = {} # (start_ordinal, end_ordinal)
     
-    all_parts = {"Ochtend", "Dag", "Avond"}
-    
     
     all_parts = {"Ochtend", "Dag", "Avond"}
     
@@ -405,7 +403,17 @@ async def generate_visits_cp_sat(
     model.Minimize(
         sum(visit_active[v] * M for v in range(max_visits)) + 
         sum(is_short[v] * SHORT_PENALTY for v in range(max_visits)) +
-        sum(rp * 2 for rp in req_parts) + 
+        # Preference Logic:
+        # Default: Prefer Morning (Minimizing rp*2 -> 0 is best)
+        # Paarverblijf: Prefer Evening (Minimizing (2-rp)*2 -> 2 is best)
+        sum(
+            (
+                (2 - req_parts[i]) * 2 
+                if getattr(getattr(requests[i].protocol, "function", None), "name", "") == "Paarverblijf" 
+                else req_parts[i] * 2
+            )
+            for i in range(len(req_parts))
+        ) + 
         sum(req_start) + 
         sum(visit_part) 
     )
@@ -498,9 +506,14 @@ async def generate_visits_cp_sat(
              ref_date = min(r.window_from for r in assigned_reqs) if assigned_reqs else visit_date
              v_indices = {r.protocol.id: r.visit_index for r in assigned_reqs}
              
-             dur, txt = calculate_visit_props(unique_protos, part_str, reference_date=ref_date, visit_indices=v_indices)
+             dur, txt, rem = calculate_visit_props(unique_protos, part_str, reference_date=ref_date, visit_indices=v_indices)
              new_visit.duration = dur
              new_visit.start_time_text = txt
+             if rem:
+                 if new_visit.remarks_field:
+                     new_visit.remarks_field += "\n" + rem
+                 else:
+                     new_visit.remarks_field = rem
         except ImportError:
              pass
 
