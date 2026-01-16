@@ -187,6 +187,7 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             selectinload(Visit.researchers),
             selectinload(Visit.preferred_researcher),
             selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.protocol_visit_windows),
         )
     )
     return (await db.execute(stmt)).scalars().unique().all()

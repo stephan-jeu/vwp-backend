@@ -204,16 +204,69 @@ async def select_visits_cp_sat(
     if db and not isinstance(db, list): # Hack: avoid calling valid db ops if it's a list (test mock)
         await _apply_existing_assignments_to_capacities(db, week, user_caps, user_daypart_caps)
 
-    # Filter out visits with no daypart - they cannot be scheduled
+    # Filter out visits with no daypart
+    # AND enforce "Sequential Order": If multiple visits for same protocol are present,
+    # keep only the one with the Lowest visit_index.
+    
+    from collections import defaultdict
+    protocol_groups = defaultdict(list)
+    
     clean_visits = []
     skipped_visits = []
+    
+    # 1. Group by Protocol
     for v in visits:
         pod = getattr(v, "part_of_day", None)
         if not pod or pod not in DAYPART_TO_AVAIL_FIELD:
              skipped_visits.append(v)
+             continue
+             
+        # Check Protocol Windows
+        pvws = getattr(v, "protocol_visit_windows", []) or []
+        if not pvws:
+            # If no protocol info, treat as independent
+            clean_visits.append(v)
+            continue
+            
+        for pvw in pvws:
+            protocol_groups[pvw.protocol_id].append((pvw.visit_index, v))
+            
+    # 2. Identify "Allowed" visits (lowest index per protocol)
+    # A visit is rejected if it has a window that is NOT the lowest index for that protocol.
+    # Wait, simple logic:
+    # visits_to_reject = set()
+    # For each protocol, find min_index. Reject any v that maps to index > min_index.
+    
+    visits_to_reject_ids = set()
+    
+    for pid, items in protocol_groups.items():
+        if not items: continue
+        
+        # Sort by index
+        items.sort(key=lambda x: x[0])
+        min_index = items[0][0]
+        
+        for idx, v in items:
+            if idx > min_index:
+                visits_to_reject_ids.add(v.id)
+                
+    # 3. Re-build clean list
+    final_visits = []
+    for v in visits:
+        pod = getattr(v, "part_of_day", None)
+        # Skip if already skipped (invalid pod)
+        if not pod or pod not in DAYPART_TO_AVAIL_FIELD:
+            continue
+            
+        if v.id in visits_to_reject_ids:
+            skipped_visits.append(v)
+            _logger.info(
+                "Skipping out-of-order visit %s (Protocol constraint)", getattr(v, "id", None)
+            )
         else:
-             clean_visits.append(v)
-    visits = clean_visits
+            final_visits.append(v)
+            
+    visits = final_visits
     
     # 2. Model Setup
     model = cp_model.CpModel()
