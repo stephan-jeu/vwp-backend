@@ -166,6 +166,12 @@ async def clear_planned_researchers(
     if week is not None:
         week_start, week_end = _work_week_bounds(date.today().year, week)
         stmt = stmt.where(
+            # Target visits explicitly planned for this week OR occurring in this week
+            # We want to clear "Planning" which implies mapped to a week.
+            # So targets:
+            # 1. planned_week == week
+            # 2. OR date overlap (fallback for legacy/implicit)
+            (Visit.planned_week == week) |
             and_(
                 Visit.from_date <= week_end,
                 Visit.to_date >= week_start,
@@ -177,7 +183,7 @@ async def clear_planned_researchers(
     visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
     for v in visits:
         v.researchers.clear()
-        v.week = None
+        v.planned_week = None
 
     await db.commit()
 

@@ -166,19 +166,14 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 Visit.from_date <= week_friday,
                 Visit.to_date >= week_monday,
                 Project.quote.is_(False),
-                # Exclude visits already planned for this week (Incremental planning)
-                # i.e., ignore if planned_week == target AND has researchers assigned.
-                # However, checking "has researchers" via relationship in typical WHERE needs correlated subquery or similar.
-                # For simplicity, if planned_week is target_week, we assume it is effectively "in the plan" 
-                # UNLESS it has no researchers? 
-                # Actually, many visits might be "manually assigned to week" but not "to researcher".
-                # Let's filter in python post-fetch to be safe and clear, or use NOT (planned_week==target AND exists(researchers)).
-                # Given SQLAlchemy async complexity, simplest is:
-                # not_(and_(Visit.planned_week == target_week, Visit.researchers.any()))
+                # Exclude visits that are already planned in a way we want to preserve.
+                # User requirement (2026-01-16):
+                # "only ignore visits that have planned_week AND researcher(s) assigned"
+                # This prevents poaching visits from other weeks if they are fully planned.
                 ~and_(
-                     Visit.planned_week == target_week,
-                     Visit.researchers.any()
-                )
+                    Visit.planned_week.isnot(None),
+                    Visit.researchers.any(),
+                ),
             )
         )
         .options(

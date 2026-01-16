@@ -155,6 +155,7 @@ async def select_visits_cp_sat(
     user_daypart_caps: dict[int, dict[str, int]] | None = None,
     timeout_seconds: float | None = None,
     include_travel_time: bool = True,
+    ignore_existing_assignments: bool = False,
 ) -> VisitSelectionResult:
     """
     Select visits and assign researchers using OR-Tools (CP-SAT).
@@ -201,7 +202,7 @@ async def select_visits_cp_sat(
     if user_daypart_caps is None:
         user_daypart_caps = await _load_user_daypart_capacities(db, week)
         
-    if db and not isinstance(db, list): # Hack: avoid calling valid db ops if it's a list (test mock)
+    if db and not isinstance(db, list) and not ignore_existing_assignments: # Hack: avoid calling valid db ops if it's a list (test mock)
         await _apply_existing_assignments_to_capacities(db, week, user_caps, user_daypart_caps)
 
     # Filter out visits with no daypart

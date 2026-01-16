@@ -198,6 +198,7 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
             selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.protocol_visit_windows),
         )
         .order_by(Visit.id)
     )
@@ -329,7 +330,8 @@ async def simulate_capacity_planning(
             current_monday, 
             visits=eligible_subset_visits, 
             timeout_seconds=None,
-            include_travel_time=False
+            include_travel_time=False,
+            ignore_existing_assignments=True,
         )
         
         for v in selection_result.selected:
