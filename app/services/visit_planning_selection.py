@@ -156,7 +156,92 @@ async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
 async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list[Visit]:
     week_friday = _end_of_work_week(week_monday)
 
-    target_week = week_monday.isocalendar().week
+    async with db.begin_nested() if db.in_transaction() else db.begin() as _:
+            # Sub-query for look-back logic (Protocol Frequency Control)
+            # Find protocols that have 'locked' visits in the past, up to 8 weeks.
+            # Then check if the gap between 'locked' visit and 'this week' is less than
+            # the protocol's min_period.
+            
+            # 1. Determine Window [week - 8, week - 1]
+            week_num = week_monday.isocalendar().week
+            # We look back up to 8 weeks (arbitrary safe upper bound for "weeks" or "months" periods)
+            lookback_start = max(1, week_num - 8)
+            lookback_end = max(0, week_num - 1)
+            
+            blocked_protocols = set()
+            if lookback_end >= lookback_start:
+                # We need to import ProtocolVisitWindow here or inside function if not top-level
+                from app.models.protocol_visit_window import ProtocolVisitWindow
+                from app.models.protocol import Protocol
+                # Junction table
+                from app.models.visit import visit_protocol_visit_windows
+
+                # Query visits that are planned in the lookback window AND have researchers
+                # AND retrieve their associated protocol info (min_period value/unit)
+                # AND the "end date" (or planned week) of the locked visit.
+                
+                # We need the Protocol object to get frequency settings.
+                stmt_hist = (
+                    select(
+                        Protocol.id, 
+                        Protocol.min_period_between_visits_value,
+                        Protocol.min_period_between_visits_unit,
+                        Visit.to_date, # Use visit end date as reference? Or start? 
+                        # Usually gap is End -> Start.
+                        Visit.planned_week
+                    )
+                    .join(ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id)
+                    .join(visit_protocol_visit_windows, visit_protocol_visit_windows.c.protocol_visit_window_id == ProtocolVisitWindow.id)
+                    .join(Visit, Visit.id == visit_protocol_visit_windows.c.visit_id)
+                    .where(
+                        and_(
+                            Visit.planned_week >= lookback_start,
+                            Visit.planned_week <= lookback_end,
+                            Visit.researchers.any(), # Only locked/assigned visits count
+                            # Ensure we are looking at roughly the same time period (year safety)
+                            Visit.to_date >= (week_monday - timedelta(weeks=10))
+                        )
+                    )
+                )
+                rows_p = (await db.execute(stmt_hist)).unique().all()
+                
+                # Check conflicts
+                # Target start date for new visits is roughly week_monday.
+                for (prot_id, min_val, min_unit, locked_visit_end, locked_week) in rows_p:
+                    if not min_val: 
+                        continue
+                        
+                    # Calculate required gap
+                    # Units: 'days', 'weeks', 'months' (common convention, verify model if needed)
+                    # Use days for comparison.
+                    required_gap_days = 0
+                    if min_unit == 'weeks':
+                        required_gap_days = min_val * 7
+                    elif min_unit == 'months':
+                        required_gap_days = min_val * 30 # Approx
+                    else: # days or None
+                        required_gap_days = min_val
+                    
+                    # Gap = (Target Start - Locked End)
+                    # Target Start is week_monday.
+                    # Locked End is locked_visit_end (date).
+                    # If locked_visit_end is None (fallback), use week of locked visit?
+                    
+                    ref_date = locked_visit_end
+                    if not ref_date:
+                        # Fallback: estimate from week number
+                        # This handles edge cases where date fields might be empty but planned_week is set
+                        # (though usually planned visits have dates).
+                        # Let's assume week_monday of locked week + 4 days (Friday)
+                        # We can approximate gap by weeks difference.
+                        weeks_diff = week_num - locked_week
+                        days_diff = weeks_diff * 7
+                    else:
+                        days_diff = (week_monday - ref_date).days
+                        
+                    if days_diff < required_gap_days:
+                        blocked_protocols.add(prot_id)
+
     stmt = (
         select(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
@@ -185,7 +270,22 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             selectinload(Visit.protocol_visit_windows),
         )
     )
-    return (await db.execute(stmt)).scalars().unique().all()
+    
+    candidates = (await db.execute(stmt)).scalars().unique().all()
+    
+    if not blocked_protocols:
+        return candidates
+
+    # Filter out candidates belonging to blocked protocols
+    filtered = []
+    for v in candidates:
+        # Check if v has any protocol in blocked_protocols
+        v_pids = {pvw.protocol_id for pvw in (v.protocol_visit_windows or [])}
+        if not v_pids.isdisjoint(blocked_protocols):
+            continue
+        filtered.append(v)
+        
+    return filtered
 
 
 def _consume_capacity(caps: dict, part: str, required: int) -> bool:
@@ -613,18 +713,9 @@ async def _select_visits_for_week_core(
     visits = await _eligible_visits_for_week(db, week_monday)  # type: ignore[arg-type]
 
     # Normalize planned_week vs researchers invariant before status filtering.
-    # - If there is a planned_week but no researchers, clear planned_week.
-    # - If there are researchers but no planned_week, clear the researchers
-    #   list so the visit is treated as unplanned again.
-    for v in visits:
-        research_list = getattr(v, "researchers", None)
-        researchers = research_list or []
-        has_researchers = bool(researchers)
-        has_planned_week = getattr(v, "planned_week", None) is not None
-        if has_planned_week and not has_researchers:
-            v.planned_week = None
-        elif has_researchers and not has_planned_week and research_list is not None:
-            research_list.clear()
+    # [REMOVED] destructive normalization that modified objects in-place.
+    # Logic should be robust enough to handle partial states or normalization
+    # should happen explicitly during save, not read/simulation.
 
     # Filter to visits that are currently OPEN according to the centralized
     # status service. Use ``week_monday`` as the reference "today" so that

@@ -74,6 +74,8 @@ async def list_available_weeks(
     returning a deduplicated, sorted list.
     """
     from app.models.visit import visit_researchers
+    from app.models.availability import AvailabilityWeek
+    from sqlalchemy import func
     
     stmt = select(Visit.planned_week, Visit.from_date)
     
@@ -95,6 +97,17 @@ async def list_available_weeks(
         elif f_date is not None:
             # Fallback to calculated week from date
             weeks.add(f_date.isocalendar()[1])
+
+    # If listing for all (admin usage usually), also include weeks with availability
+    if not mine:
+        avail_stmt = select(AvailabilityWeek.week).where(
+            (AvailabilityWeek.morning_days > 0) |
+            (AvailabilityWeek.daytime_days > 0) |
+            (AvailabilityWeek.nighttime_days > 0) |
+            (AvailabilityWeek.flex_days > 0)
+        ).distinct()
+        avail_weeks = (await db.execute(avail_stmt)).scalars().all()
+        weeks.update(avail_weeks)
 
     return sorted(list(weeks))
 

@@ -60,8 +60,11 @@ async def get_planning(
         planned = [
             v
             for v in planned
-            if (getattr(v, "from_date", None) and getattr(v, "to_date", None))
-            and (v.from_date <= week_end and v.to_date >= week_start)
+            if (getattr(v, "planned_week", None) == week) or
+            (
+                (getattr(v, "from_date", None) and getattr(v, "to_date", None))
+                and (v.from_date <= week_end and v.to_date >= week_start)
+            )
         ]
 
     # Map to read items
@@ -130,6 +133,16 @@ async def generate_planning(
         include_travel_time=True
     )
 
+    # Post-planning Sanitization: Check for future conflicts
+    from app.services.visit_sanitization import sanitize_future_planning
+    sanitized = await sanitize_future_planning(
+        db, 
+        week_monday, 
+        result.get("selected_visit_ids", [])
+    )
+    if sanitized:
+        result["sanitized_future_visit_ids"] = sanitized
+
     await log_activity(
         db,
         actor_id=admin.id,
@@ -141,6 +154,7 @@ async def generate_planning(
             "year": current_year,
             "selected_visit_ids": result.get("selected_visit_ids", []),
             "skipped_visit_ids": result.get("skipped_visit_ids", []),
+            "sanitized_future_visit_ids": sanitized,
             "capacity_remaining": result.get("capacity_remaining", {}),
         },
     )

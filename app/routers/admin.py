@@ -17,9 +17,10 @@ from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
 from app.schemas.trash import TrashItem, TrashKind
-from app.schemas.capacity import CapacitySimulationResponse
+from app.schemas.capacity import CapacitySimulationResponse, FamilyDaypartCapacity, WeekView, WeekResultCell
 from app.services.activity_log_service import log_activity
-from app.services.capacity_simulation_service import simulate_capacity_planning
+from app.services.capacity_simulation_service import generate_and_store_simulation
+from app.models.simulation_result import SimulationResult
 from app.services.security import require_admin
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
@@ -90,21 +91,74 @@ async def list_activity_logs(
     )
 
 
+async def _sim_result_to_response(res: SimulationResult) -> CapacitySimulationResponse:
+    # Hydrate JSON to Pydantic
+    grid_raw = res.grid_data.get("deadline_view", {})
+    week_raw = res.grid_data.get("week_view", {})
+    
+    # Grid
+    final_grid = {}
+    for fam, parts in grid_raw.items():
+        final_grid[fam] = {}
+        for part, deadlines in parts.items():
+            final_grid[fam][part] = {}
+            for deadline, cell_data in deadlines.items():
+                final_grid[fam][part][deadline] = FamilyDaypartCapacity(**cell_data)
+
+    # Week View
+    week_view = None
+    if week_raw:
+        # Pydantic automatic parsing from dict structure?
+        # WeekView.rows is dict[str, dict[str, WeekResultCell]]
+        # WeekResultCell is simple.
+        # Let's try direct instantiation or allow pydantic validation
+        week_view = WeekView(weeks=week_raw.get("weeks", []), rows=week_raw.get("rows", {}))
+
+    return CapacitySimulationResponse(
+        horizon_start=res.horizon_start,
+        horizon_end=res.horizon_end,
+        created_at=res.created_at,
+        updated_at=res.updated_at,
+        grid=final_grid,
+        week_view=week_view
+    )
+
+
 @router.get("/capacity/visits/families", response_model=CapacitySimulationResponse)
 async def get_family_capacity(
     _: AdminDep,
     db: DbDep,
-    start: date | None = Query(None),
 ) -> CapacitySimulationResponse:
-    """Run a long-term family capacity simulation (admin only).
+    """Get persisted capacity simulation result. Generates if missing."""
+    
+    # Fetch latest
+    stmt = select(SimulationResult).order_by(SimulationResult.created_at.desc()).limit(1)
+    res = (await db.execute(stmt)).scalar_one_or_none()
+    
+    if not res:
+        res = await generate_and_store_simulation(db)
+        
+    return await _sim_result_to_response(res)
 
-    The simulation starts at the Monday of the ISO week for the supplied
-    ``start`` date (or the current week if omitted) and runs until the
-    end of that calendar year. It returns a per-week, per-family,
-    per-part-of-day grid with required, assigned and shortfall counts.
-    """
 
-    return await simulate_capacity_planning(db, start)
+@router.post("/capacity/visits/families", response_model=CapacitySimulationResponse)
+async def regenerate_family_capacity(
+    admin: AdminDep,
+    db: DbDep,
+) -> CapacitySimulationResponse:
+    """Force regenerate simulation."""
+    res = await generate_and_store_simulation(db)
+    
+    await log_activity(
+        db,
+        actor_id=admin.id,
+        action="simulation_regenerated",
+        target_type="system",
+        target_id=res.id,
+        details={}
+    )
+    
+    return await _sim_result_to_response(res)
 
 
 @router.get("/functions", response_model=list[FunctionRead])

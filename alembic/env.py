@@ -26,6 +26,7 @@ from app.models import (  # noqa: E402,F401
     project,
     protocol,
     protocol_visit_window,
+    simulation_result,
     species,
     user,
     visit,

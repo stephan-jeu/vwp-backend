@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import NamedTuple
+from typing import NamedTuple, Any
 
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,7 +11,10 @@ from app.models.availability import AvailabilityWeek
 from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.species import Species
-from app.models.visit import Visit
+from app.models.visit import Visit, visit_protocol_visit_windows
+from app.models.protocol import Protocol
+from app.models.protocol_visit_window import ProtocolVisitWindow
+from app.models.simulation_result import SimulationResult
 from app.schemas.capacity import CapacitySimulationResponse, FamilyDaypartCapacity
 from app.services.visit_planning_selection import (
     _any_function_contains,
@@ -198,7 +201,7 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
             selectinload(Visit.cluster).selectinload(Cluster.project),
-            selectinload(Visit.protocol_visit_windows),
+            selectinload(Visit.protocol_visit_windows).selectinload(ProtocolVisitWindow.protocol),
         )
         .order_by(Visit.id)
     )
@@ -238,21 +241,41 @@ async def _load_all_open_visits(db: AsyncSession, start_date: date) -> list[Visi
     return active_visits
 
 
-async def simulate_capacity_planning(
-    db: AsyncSession,
-    start_monday: date | None,
-) -> CapacitySimulationResponse:
-    """Simulate capacity planning for the remainder of the year.
-
-    Stateful simulation:
-    1. Start with all open visits.
-    2. Iterate week by week.
-    3. In each week, try to plan visits that can be done in that week.
-    4. If planned, remove from pool.
-    5. If not, keep in pool for next week.
-    6. At end, report grouped by deadline.
+async def _load_initial_protocol_states(db: AsyncSession, start_date: date) -> dict[int, date]:
     """
+    Load the last 'locked' visit end-date for each protocol prior to start_date.
+    Returns: {protocol_id: last_visit_to_date}
+    """
+    # We want the max(to_date) of locked visits where to_date < start_date
+    # Group by protocol.
+    
+    stmt = (
+        select(
+            ProtocolVisitWindow.protocol_id,
+            func.max(Visit.to_date)
+        )
+        .join(visit_protocol_visit_windows, visit_protocol_visit_windows.c.protocol_visit_window_id == ProtocolVisitWindow.id)
+        .join(Visit, Visit.id == visit_protocol_visit_windows.c.visit_id)
+        .where(
+            and_(
+                Visit.researchers.any(), # Locked
+                Visit.to_date < start_date
+            )
+        )
+        .group_by(ProtocolVisitWindow.protocol_id)
+    )
+    
+    rows = (await db.execute(stmt)).all()
+    return {pid: d for pid, d in rows if d is not None}
 
+
+async def generate_and_store_simulation(
+    db: AsyncSession,
+    start_monday: date | None = None
+) -> SimulationResult:
+    """
+    Run the stateful capacity simulation and persist the result.
+    """
     if start_monday is None:
         today = date.today()
         iso_year, iso_week, iso_weekday = today.isocalendar()
@@ -264,139 +287,411 @@ async def simulate_capacity_planning(
     horizon_start = start_monday
     horizon_end = date(start_monday.year, 12, 31)
 
-    # 1. Fetch all relevant visits
+    # 1. Load Initial State
+    protocol_state = await _load_initial_protocol_states(db, horizon_start)
+    
+    # 2. Load Visits (Pool)
+    # Ensure we load Protocol info for frequency checks
     all_visits = await _load_all_open_visits(db, horizon_start)
-
-    # Sort by global priority once? Or re-sort every week?
-    # Priority depends on "weeks until deadline", so it changes every week.
-    # But base priority (tier) is static.
-
-    # We need a mutable pool
+    
+    # Enrich visits with protocol data locally to avoid N+1 queries during loop?
+    # _load_all_open_visits already loads protocol_visit_windows -> protocol.
+    # We need to map visit_id -> protocol_id and min_period.
+    
+    visit_protocol_info = {}
+    for v in all_visits:
+        # A visit might have multiple protocols, but usually one drives the frequency.
+        # We'll take the first relevant one if multiple.
+        # Ideally we check all, but let's assume primary.
+        pvw_list = v.protocol_visit_windows or []
+        for pvw in pvw_list:
+             if pvw.protocol:
+                 visit_protocol_info[v.id] = pvw.protocol
+                 break
+    
     visit_pool = list(all_visits)
-
-    # Track results: family -> part -> deadline_week -> {planned, unplannable}
-    # We use a nested dict structure
-    # deadline_week is the ISO week of the visit.to_date
-    results: dict[str, dict[str, dict[str, SimulationResultCell]]] = {}
-
-    # Helper to add result
-    def add_result(v: Visit, is_planned: bool):
+    
+    # Data Structures for Result
+    
+    # Deadline View: family -> part -> deadline_week -> {planned, unplannable}
+    deadline_results: dict[str, dict[str, dict[str, SimulationResultCell]]] = {}
+    
+    # Week View: 
+    # weeks: list of ISO strings
+    # rows: { "Totalen": {week: {spare, planned}}, "Fam - Part": {week: {spare, planned}} }
+    week_view_rows: dict[str, dict[str, Any]] = {} 
+    # We'll build week_view_rows progressively.
+    simulated_weeks = []
+    
+    def add_deadline_result(v: Visit, is_planned: bool):
         group_key = _get_required_user_flag(v)
         part = (v.part_of_day or "Onbekend").strip()
-        if v.to_date:
-            deadline = v.to_date.isoformat()
-        else:
-            deadline = "No Deadline"
-
-        fam_dict = results.setdefault(group_key, {})
+        deadline = v.to_date.isoformat() if v.to_date else "No Deadline"
+        
+        fam_dict = deadline_results.setdefault(group_key, {})
         part_dict = fam_dict.setdefault(part, {})
-
+        
         current = part_dict.get(deadline, SimulationResultCell(0, 0))
         if is_planned:
-            part_dict[deadline] = SimulationResultCell(
-                current.planned + 1, current.unplannable
-            )
+            part_dict[deadline] = SimulationResultCell(current.planned + 1, current.unplannable)
         else:
-            part_dict[deadline] = SimulationResultCell(
-                current.planned, current.unplannable + 1
-            )
+            part_dict[deadline] = SimulationResultCell(current.planned, current.unplannable + 1)
 
-    # 2. Iterate weeks
+    # 3. Simulation Loop
     current_monday = horizon_start
+    
+    # Pre-load all users for capacity calculations
+    from app.services.visit_planning_selection import (
+        _load_all_users, 
+        _load_user_capacities, 
+        _load_user_daypart_capacities
+    )
+    all_users = await _load_all_users(db)
+    
     while current_monday <= horizon_end:
         week_friday = current_monday + timedelta(days=4)
-        week_iso = current_monday.isocalendar().week
-
-        # Load capacity for this week
-        # caps = await _load_week_capacity(db, week_iso) # Not needed for CP-SAT solver directly
-
-        # Filter pool for visits that CAN be done this week
-        # i.e. from_date <= week_friday AND to_date >= current_monday
+        week_iso_id = _week_id(current_monday)
+        simulated_weeks.append(week_iso_id)
+        
+        # A. Determine Eligibility (with State Check)
         eligible_indices = []
         for i, v in enumerate(visit_pool):
             f = v.from_date or date.min
             t = v.to_date or date.max
-            if f <= week_friday and t >= current_monday:
-                eligible_indices.append(i)
+            
+            # Date window check
+            if not (f <= week_friday and t >= current_monday):
+                continue
+                
+            # Frequency Check
+            proto = visit_protocol_info.get(v.id)
+            if proto:
+                last_date = protocol_state.get(proto.id)
+                if last_date:
+                    # Calculate gap: Monday of this week - Last End Date
+                    # (Strictly speaking, gap should be >= min_period)
+                    # We compare days.
+                    days_diff = (current_monday - last_date).days
+                    
+                    min_val = proto.min_period_between_visits_value
+                    min_unit = proto.min_period_between_visits_unit
+                    
+                    if min_val:
+                        req_days = 0
+                        if min_unit == 'weeks': req_days = min_val * 7
+                        elif min_unit == 'months': req_days = min_val * 30
+                        else: req_days = min_val
+                        
+                        if days_diff < req_days:
+                            # Too soon! Skip logic, but keep in pool.
+                            continue
 
-        # Try to plan using OR-Tools Solver
-        # We pass only the eligible visits to the solver.
-        # Since we are simulating, we don't commit to DB.
+            eligible_indices.append(i)
+
+        # B. Run Solver
+        eligible_subset = [visit_pool[i] for i in eligible_indices]
         
-        eligible_subset_visits = [visit_pool[i] for i in eligible_indices]
+        # We need capacities for this week to calculate Spare later anyway.
+        week_num = current_monday.isocalendar().week
+        
+        # Note: select_visits_cp_sat fetches capacities internally if not provided.
+        # But we need them for spare calc. So let's fetch and pass.
+        
+        u_caps_weekly = await _load_user_capacities(db, week_num)
+        u_caps_daypart = await _load_user_daypart_capacities(db, week_num)
         
         selection_result = await select_visits_cp_sat(
             db, 
-            current_monday, 
-            visits=eligible_subset_visits, 
-            timeout_seconds=None,
+            current_monday,
+            visits=eligible_subset,
+            users=all_users,
+            user_caps=u_caps_weekly,
+            user_daypart_caps=u_caps_daypart,
+            timeout_seconds=0.5, # Fast for simulation
             include_travel_time=False,
-            ignore_existing_assignments=True,
+            ignore_existing_assignments=True
         )
         
+        # C. Update State & Results
+        
+        # 1. Successful visits
         for v in selection_result.selected:
-            add_result(v, is_planned=True)
+            add_deadline_result(v, is_planned=True)
+            # Update protocol state
+            proto = visit_protocol_info.get(v.id)
+            if proto:
+                # Set last visited to this week's roughly end date (Friday)
+                protocol_state[proto.id] = week_friday
+
+        # 2. Week View: Calculate Spare Capacity & Planned Count
+        # Planned count for this week is len(selection_result.selected)
+        # But we want it broken down by Group/Part.
+        
+        # Remaining capacities returned by solver are global approximations?
+        # Actually select_visits_cp_sat returns 'remaining_caps' which might be useful?
+        # But 'remaining_caps' in VisitSelectionResult is global daypart caps, not per user/family.
+        # We need to calculate spare capacity based on the solver's assignments.
+        # The solver doesn't return the *modified* user objects with decremented capacity in a simple way
+        # unless we parse assignments.
+        # However, `selection_result.selected` has `researchers` assigned (User objects).
+        # We can simulate consumption on our local capacity copy.
+        
+        # Clone for modification
+        local_weekly = u_caps_weekly.copy()
+        local_daypart = {uid: d.copy() for uid, d in u_caps_daypart.items()}
+        
+        # Consume for selected visits
+        week_planned_map: dict[str, dict[str, int]] = {} # Family -> Part -> Count
+        total_planned_this_week = 0
+        
+        for v in selection_result.selected:
+            total_planned_this_week += 1
             
-        # Rebuild pool:
-        # Keep visits that were NOT eligible this week
-        # PLUS visits that were eligible but SKIPPED by the solver.
+            group_key = _get_required_user_flag(v)
+            part = (v.part_of_day or "Onbekend").strip()
+            
+            pm = week_planned_map.setdefault(group_key, {})
+            pm[part] = pm.get(part, 0) + 1
+            
+            for r in v.researchers:
+                # Consume capacity logic (simplified from capacity_simulation_service helpers)
+                uid = r.id
+                if local_weekly.get(uid, 0) > 0:
+                    local_weekly[uid] -= 1
+                    
+                    udp = local_daypart.get(uid, {})
+                    if udp.get(part, 0) > 0:
+                        udp[part] -= 1
+                    elif udp.get('Flex', 0) > 0:
+                        udp['Flex'] -= 1
+        
+        # Now Calculate Spare Capacity for each "Family - Part"
+        # Iterate all users. If user can do "Family - Part" (based on User.flags or knowledge),
+        # then add their remaining capacity (for that part/flex) to the spare pool.
+        
+        # We need a mapping of "User -> Can do what".
+        # This is hard because "Family" flags are string property checks.
+        # We can iterate the generic groups we know of.
+        # Or simpler: Just iterate "Totalen" and maybe "Vleermuis / Roofvogel" if we can detect.
+        
+        # Let's support "Totalen" (Top row) and generic groups present in the visit types.
+        
+        # Total Spare Capacity (Sum of all users' remaining slots)
+        total_spare = sum(local_weekly.values())
+        
+        # Add to "Totalen" row
+        tot_row = week_view_rows.setdefault("Totalen", {})
+        tot_row[week_iso_id] = { "spare": total_spare, "planned": total_planned_this_week }
+        
+        # Break down by rows seen in results?
+        # Iterate all known families/parts?
+        # We can iterate over the keys present in `week_planned_map` to ensure we have rows for them.
+        # Plus maybe some default ones?
+        
+        # For each User, we need to know if they contribute to a Group.
+        # Helper: _user_belongs_to_group(user, group_key) -> bool
+        # This requires checking user flags against the group key string (e.g. "Vleermuis").
+        
+        # Optimizing: Calculate spare for groups relevant to planned/unplannable results
+        # PLUS mandatory groups to ensure they show up in the table even if empty
+        mandatory_groups = {
+            "SMP Huismus", "SMP Vleermuis", "SMP Gierzwaluw", 
+            "Pad", "Langoor", "Roofvogel", "VR/FG", 
+            "Vleermuis", "Zwaluw", "Vlinder", 
+            "Teunisbloempijlstaart", "Zangvogel", "Biggenkruid", "Schijfhoren"
+        }
+        
+        active_groups = set(deadline_results.keys()) | set(week_planned_map.keys()) | mandatory_groups
+        
+        for group_key in active_groups:
+            # Check every user's remaining capacity 
+            # Only if they match the group.
+            # This might be slow if many groups * many users.
+            # We can optimize if needed.
+            
+            # Assuming standard parts for simplicity in rows, or use what's in map.
+            relevant_parts = ["Ochtend", "Dag", "Avond"]
+             
+            for part in relevant_parts:
+                spare_for_group_part = 0
+                for u in all_users:
+                    # Check if user matches group
+                    # Simplified matching logic:
+                    # If group_key in user.flags or similar.
+                    # We need a `_user_matches_group` helper.
+                    # We'll inline a simple one:
+                    
+                    # Map group keys to user model boolean fields
+                    # 1. Explicit Mappings for complex keys
+                    field_map = {
+                        "VR/FG": "vrfg",
+                        "SMP Vleermuis": "smp_vleermuis",
+                        "SMP Huismus": "smp_huismus",
+                        "SMP Gierzwaluw": "smp_gierzwaluw",
+                    }
+                    
+                    target_field = field_map.get(group_key)
+                    
+                    # 2. Fallback: Lowercase group key (e.g. "Vleermuis" -> "vleermuis")
+                    if not target_field:
+                        # Handle "SMP <Other>" -> try "smp_<other>" ?? 
+                        # For now, just lower() the whole key if it's a simple word.
+                        # If it has spaces (like "SMP Other"), lower().replace(" ", "_")?
+                        # The User model fields are simple (vleermuis, zwaluw).
+                        # Clean key logic was: group_key.replace("SMP ", "").title()
+                        # Better to just try to find a matching field.
+                        candidate = group_key.lower().replace(" ", "_").replace("/", "")
+                        if hasattr(u, candidate):
+                            target_field = candidate
+                        
+                    # 3. Check property
+                    if target_field and hasattr(u, target_field):
+                        matches = getattr(u, target_field)
+                    else:
+                        # If we can't find a matching flag, do we count them?
+                        # Previous logic defaulted to True ("matches = True") which caused 46 capacity for VR/FG.
+                        # Defaulting to False is safer to avoid unrelated people showing up.
+                        # Only exception: is there a "General" capacity?
+                        matches = False
+
+                    if matches:
+                        # Current logic: min(weekly_remaining, daypart_remaining + flex)
+                        rem_w = local_weekly.get(u.id, 0)
+                        rem_dp = local_daypart.get(u.id, {}).get(part, 0)
+                        rem_fl = local_daypart.get(u.id, {}).get("Flex", 0)
+                        
+                        # Heuristic: Capacity for this specific part is dedicated + flex, 
+                        # capped by weekly remaining.
+                        cap = min(rem_w, rem_dp + rem_fl)
+                        spare_for_group_part += cap
+                
+                planned_count = week_planned_map.get(group_key, {}).get(part, 0)
+                
+                if spare_for_group_part > 0 or planned_count > 0:
+                    row_label = f"{group_key} - {part}"
+                    r_data = week_view_rows.setdefault(row_label, {})
+                    r_data[week_iso_id] = { "spare": spare_for_group_part, "planned": planned_count }
+
+        # D. Pool Maintenance
+        # Remove planned
+        # Retain skipped
+        
+        # selected indices in subset -> map back to pool?
+        # select_visits_cp_sat returns Visit objects.
+        selected_ids = {v.id for v in selection_result.selected}
         
         new_pool = []
-        # Add non-eligible visits (indices not in eligible_indices)
-        eligible_indices_set = set(eligible_indices)
-        for i, v in enumerate(visit_pool):
-            if i not in eligible_indices_set:
+        for v in visit_pool:
+            if v.id not in selected_ids:
                 new_pool.append(v)
         
-        # Add skipped visits (solver rejected them)
-        # Note: skipped visits in selection_result.skipped might include visits filtered by solver (e.g. no daypart)
-        # But we only passed eligible visits in, so they should return.
-        
-        for v in selection_result.skipped:
-             new_pool.append(v)
-
         visit_pool = new_pool
-
         current_monday += timedelta(days=7)
 
-    # 3. Remaining visits are unplannable (within the horizon)
+    # 4. Process Remaining (Unplannable)
     for v in visit_pool:
-        # If the visit execution window extends beyond the simulation horizon,
-        # simply ignore it rather than marking it as unplannable/shortfall.
-        # This prevents next year's visits from appearing in this year's view.
         if v.to_date and v.to_date > horizon_end:
             continue
-        add_result(v, is_planned=False)
+        add_deadline_result(v, is_planned=False)
 
-    # Convert NamedTuple to dict for JSON serialization if needed,
-    # or rely on Pydantic schema compatibility.
-    # The schema expects: grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]]
-    # But we changed the meaning. We need to update the schema or map to it.
-    # The user wants: "display in each cell nr of unplannable visits/nr of planned visits"
-    # Let's reuse FamilyDaypartCapacity but abuse fields:
-    # assigned -> planned
-    # shortfall -> unplannable
-    # required -> total (planned + unplannable)
-    # spare -> 0
-
-    final_grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]] = {}
-
-    for fam, parts in results.items():
-        final_grid[fam] = {}
+    # 5. Serialization & Storage
+    
+    # Transform deadline_results to old 'grid' schema
+    final_deadline_grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]] = {}
+    for fam, parts in deadline_results.items():
+        final_deadline_grid[fam] = {}
         for part, deadlines in parts.items():
-            final_grid[fam][part] = {}
+            final_deadline_grid[fam][part] = {}
             for deadline, cell in deadlines.items():
-                final_grid[fam][part][deadline] = FamilyDaypartCapacity(
+                final_deadline_grid[fam][part][deadline] = FamilyDaypartCapacity(
                     required=cell.planned + cell.unplannable,
                     assigned=cell.planned,
                     shortfall=cell.unplannable,
                     spare=0,
                 )
+    
+    # Use Pydantic's .dict() or model_dump() if available, else manual dict
+    # Assuming .dict() works for these schemas
+    # But wait, grid_data needs to be JSON serializable. 
+    # FamilyDaypartCapacity is a Pydantic model (Schema).
+    # We should convert to dicts.
+    
+    def serialize_grid(g):
+        # Recursive dict conversion
+        out = {}
+        for k, v in g.items():
+            if isinstance(v, dict):
+                out[k] = serialize_grid(v)
+            elif hasattr(v, 'dict'):
+                out[k] = v.dict()
+            else:
+                out[k] = v
+        return out
+        
+    full_json = {
+        "deadline_view": serialize_grid(final_deadline_grid),
+        "week_view": {
+            "weeks": simulated_weeks,
+            "rows": week_view_rows
+        }
+    }
+    
+    # Save to DB
+    # Upsert logic: Override existing latest result if present
+    stmt = select(SimulationResult).order_by(SimulationResult.created_at.desc()).limit(1)
+    existing = (await db.execute(stmt)).scalar_one_or_none()
+    
+    if existing:
+        # existing.updated_at will be updated automatically by onupdate
+        existing.horizon_start = horizon_start
+        existing.horizon_end = horizon_end
+        existing.grid_data = full_json
+        sim_res = existing
+        # No need to add(), it's attached
+    else:
+        sim_res = SimulationResult(
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            grid_data=full_json
+        )
+        db.add(sim_res)
+    
+    await db.commit()
+    await db.refresh(sim_res)
+    
+    return sim_res
 
+
+async def simulate_capacity_planning(
+    db: AsyncSession,
+    start_monday: date | None,
+) -> CapacitySimulationResponse:
+    """
+    Deprecated/Legacy Wrapper.
+    Re-directs to generate_and_store but returns the OLD schema structure (CapacitySimulationResponse)
+    mapping from the stored 'deadline_view'.
+    """
+    res = await generate_and_store_simulation(db, start_monday)
+    
+    # Reconstruct CapacitySimulationResponse from the stored deadline_view
+    # grid_data["deadline_view"] is dicts, need to parse back to objects?
+    # Schema expects objects.
+    
+    grid_raw = res.grid_data["deadline_view"]
+    
+    # Re-hydrate Pydantic models
+    final_grid = {}
+    for fam, parts in grid_raw.items():
+        final_grid[fam] = {}
+        for part, deadlines in parts.items():
+            final_grid[fam][part] = {}
+            for deadline, cell_data in deadlines.items():
+                final_grid[fam][part][deadline] = FamilyDaypartCapacity(**cell_data)
+                
     return CapacitySimulationResponse(
-        horizon_start=horizon_start,
-        horizon_end=horizon_end,
-        grid=final_grid,
+        horizon_start=res.horizon_start,
+        horizon_end=res.horizon_end,
+        grid=final_grid
     )
 
 
