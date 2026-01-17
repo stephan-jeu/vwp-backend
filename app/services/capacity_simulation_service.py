@@ -407,7 +407,7 @@ async def generate_and_store_simulation(
             users=all_users,
             user_caps=u_caps_weekly,
             user_daypart_caps=u_caps_daypart,
-            timeout_seconds=0.5, # Fast for simulation
+            timeout_seconds=5.0, # Increased for accuracy per user request
             include_travel_time=False,
             ignore_existing_assignments=True
         )
