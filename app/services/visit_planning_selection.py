@@ -186,9 +186,9 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                         Protocol.id, 
                         Protocol.min_period_between_visits_value,
                         Protocol.min_period_between_visits_unit,
-                        Visit.to_date, # Use visit end date as reference? Or start? 
-                        # Usually gap is End -> Start.
-                        Visit.planned_week
+                        Visit.from_date, # Use visit START date as reference for Optimistic Planning
+                        Visit.planned_week,
+                        Visit.cluster_id
                     )
                     .join(ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id)
                     .join(visit_protocol_visit_windows, visit_protocol_visit_windows.c.protocol_visit_window_id == ProtocolVisitWindow.id)
@@ -207,7 +207,9 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 
                 # Check conflicts
                 # Target start date for new visits is roughly week_monday.
-                for (prot_id, min_val, min_unit, locked_visit_end, locked_week) in rows_p:
+                blocked_pairs = set()
+                
+                for (prot_id, min_val, min_unit, locked_visit_start, locked_week, locked_cluster_id) in rows_p:
                     if not min_val: 
                         continue
                         
@@ -222,26 +224,28 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     else: # days or None
                         required_gap_days = min_val
                     
-                    # Gap = (Target Start - Locked End)
-                    # Target Start is week_monday.
-                    # Locked End is locked_visit_end (date).
-                    # If locked_visit_end is None (fallback), use week of locked visit?
+                    # Gap = (Target End - Locked Start) [OPTIMISTIC]
+                    # Target End is week_friday (week_monday + 4).
+                    # Locked Start is locked_visit_start.
                     
-                    ref_date = locked_visit_end
+                    ref_date = locked_visit_start
                     if not ref_date:
                         # Fallback: estimate from week number
-                        # This handles edge cases where date fields might be empty but planned_week is set
-                        # (though usually planned visits have dates).
-                        # Let's assume week_monday of locked week + 4 days (Friday)
-                        # We can approximate gap by weeks difference.
-                        weeks_diff = week_num - locked_week
-                        days_diff = weeks_diff * 7
-                    else:
-                        days_diff = (week_monday - ref_date).days
+                        # Assume locked visit happened on MONDAY of its week to be rigorous? 
+                        # OR MONDAY to be Optimistic? 
+                        # Optimistic goal: Maximize gap. So Assume Locked = Monday.
+                        ref_week_monday = date.fromisocalendar(week_monday.year, locked_week, 1) # Approx year
+                        ref_date = ref_week_monday
+
+                    # Target Friday
+                    target_friday = week_friday 
+                        
+                    days_diff = (target_friday - ref_date).days
                         
                     if days_diff < required_gap_days:
-                        blocked_protocols.add(prot_id)
-
+                        # Block this protocol FOR THIS CLUSTER only
+                        blocked_pairs.add((prot_id, locked_cluster_id))
+    
     stmt = (
         select(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
@@ -273,16 +277,25 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
     
     candidates = (await db.execute(stmt)).scalars().unique().all()
     
-    if not blocked_protocols:
+    if not blocked_pairs:
         return candidates
 
-    # Filter out candidates belonging to blocked protocols
+    # Filter out candidates belonging to blocked (protocol, cluster) pairs
     filtered = []
     for v in candidates:
-        # Check if v has any protocol in blocked_protocols
+        # Check if v has any (protocol, cluster) in blocked_pairs
         v_pids = {pvw.protocol_id for pvw in (v.protocol_visit_windows or [])}
-        if not v_pids.isdisjoint(blocked_protocols):
+        
+        # Candidate is blocked if ANY of its protocols are blocked FOR ITS CLUSTER
+        is_blocked = False
+        for pid in v_pids:
+            if (pid, v.cluster_id) in blocked_pairs:
+                is_blocked = True
+                break
+        
+        if is_blocked:
             continue
+            
         filtered.append(v)
         
     return filtered

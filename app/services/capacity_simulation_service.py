@@ -368,10 +368,12 @@ async def generate_and_store_simulation(
             if proto:
                 last_date = protocol_state.get(proto.id)
                 if last_date:
-                    # Calculate gap: Monday of this week - Last End Date
-                    # (Strictly speaking, gap should be >= min_period)
-                    # We compare days.
-                    days_diff = (current_monday - last_date).days
+                    # Calculate gap: 
+                    # OPTIMISTIC APPROACH (User Request 2026-01-18):
+                    # We assume the current candidate visit can be scheduled as late as possible 
+                    # in the week (Friday) to maximize the gap and allow planning.
+                    # days_diff = (week_friday - last_date).days
+                    days_diff = (week_friday - last_date).days
                     
                     min_val = proto.min_period_between_visits_value
                     min_unit = proto.min_period_between_visits_unit
@@ -420,8 +422,10 @@ async def generate_and_store_simulation(
             # Update protocol state
             proto = visit_protocol_info.get(v.id)
             if proto:
-                # Set last visited to this week's roughly end date (Friday)
-                protocol_state[proto.id] = week_friday
+                # Set last visited to this week's roughly BEGINNING (Monday)
+                # OPTIMISTIC APPROACH (User Request 2026-01-18):
+                # We assume the visit was done as early as possible to maximize the gap for the NEXT visit.
+                protocol_state[proto.id] = current_monday
 
         # 2. Week View: Calculate Spare Capacity & Planned Count
         # Planned count for this week is len(selection_result.selected)
