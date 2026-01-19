@@ -35,3 +35,5 @@ class SpeciesCompactRead(BaseModel):
     id: int
     name: str
     abbreviation: str | None = None
+
+    model_config = {"from_attributes": True}

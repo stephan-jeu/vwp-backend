@@ -132,7 +132,16 @@ def _priority_key(week_monday: date, v: Visit) -> tuple:
 
 
 async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
-    stmt = select(AvailabilityWeek).where(AvailabilityWeek.week == week)
+    stmt = (
+        select(AvailabilityWeek)
+        .join(User, AvailabilityWeek.user_id == User.id)
+        .where(
+            and_(
+                AvailabilityWeek.week == week,
+                User.deleted_at.is_(None),
+            )
+        )
+    )
     rows = (await db.execute(stmt)).scalars().all()
 
     total_morning = sum(r.morning_days or 0 for r in rows)
@@ -472,7 +481,16 @@ async def _load_all_users(db: AsyncSession) -> list[User]:
 async def _load_user_capacities(db: AsyncSession, week: int) -> dict[int, int]:
     """Return per-user total capacity for the ISO week (sum of all dayparts + flex)."""
     try:
-        stmt = select(AvailabilityWeek).where(AvailabilityWeek.week == week)
+        stmt = (
+            select(AvailabilityWeek)
+            .join(User, AvailabilityWeek.user_id == User.id)
+            .where(
+                and_(
+                    AvailabilityWeek.week == week,
+                    User.deleted_at.is_(None),
+                )
+            )
+        )
         rows = (await db.execute(stmt)).scalars().all()
     except Exception:
         # In tests a fake DB may not support this; treat as no capacity info.
@@ -507,7 +525,16 @@ async def _load_user_daypart_capacities(
     "Dag", "Avond") plus "Flex".
     """
     try:
-        stmt = select(AvailabilityWeek).where(AvailabilityWeek.week == week)
+        stmt = (
+            select(AvailabilityWeek)
+            .join(User, AvailabilityWeek.user_id == User.id)
+            .where(
+                and_(
+                    AvailabilityWeek.week == week,
+                    User.deleted_at.is_(None),
+                )
+            )
+        )
         rows = (await db.execute(stmt)).scalars().all()
     except Exception:
         # In tests a fake DB may not support this; treat as unlimited capacity.

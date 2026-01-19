@@ -133,5 +133,5 @@ async def delete_user(db: AsyncSession, user_id: int) -> None:
     row = await db.get(User, user_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    await soft_delete_entity(db, row, cascade=False)
+    await soft_delete_entity(db, row, cascade=True)
     await db.commit()

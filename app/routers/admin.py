@@ -33,6 +33,7 @@ from app.services.trash_service import (
     restore_trash_item as svc_restore_trash_item,
     hard_delete_trash_item as svc_hard_delete_trash_item,
 )
+from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
 from db.session import get_db
 
 
@@ -41,6 +42,14 @@ router = APIRouter()
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 AdminDep = Annotated[User, Depends(require_admin)]
+
+
+@router.get("/tight-visits", response_model=list[TightVisitResponse])
+async def list_tight_visits(
+    _: AdminDep, db: DbDep, simulated_today: date | None = Query(None)
+) -> list[TightVisitResponse]:
+    """Identify and return 'tight' visit chains."""
+    return await get_tight_visit_chains(db, simulated_today=simulated_today)
 
 
 @router.get("")

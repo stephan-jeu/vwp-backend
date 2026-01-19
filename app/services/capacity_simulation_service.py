@@ -11,6 +11,8 @@ from app.models.availability import AvailabilityWeek
 from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.species import Species
+from app.models.species import Species
+from app.models.user import User
 from app.models.visit import Visit, visit_protocol_visit_windows
 from app.models.protocol import Protocol
 from app.models.protocol_visit_window import ProtocolVisitWindow
@@ -106,7 +108,16 @@ async def _load_user_daypart_capacities(
     """
 
     try:
-        stmt = select(AvailabilityWeek).where(AvailabilityWeek.week == week)
+        stmt = (
+            select(AvailabilityWeek)
+            .join(User, AvailabilityWeek.user_id == User.id)
+            .where(
+                and_(
+                    AvailabilityWeek.week == week,
+                    User.deleted_at.is_(None),
+                )
+            )
+        )
         rows = (await db.execute(stmt)).scalars().all()
     except Exception:  # pragma: no cover - defensive for fake DBs
         return {}
@@ -333,9 +344,10 @@ async def generate_and_store_simulation(
         
         current = part_dict.get(deadline, SimulationResultCell(0, 0))
         if is_planned:
-            part_dict[deadline] = SimulationResultCell(current.planned + 1, current.unplannable)
+            part_dict[deadline] = SimulationResultCell(current.planned + len(v.researchers), current.unplannable)
         else:
-            part_dict[deadline] = SimulationResultCell(current.planned, current.unplannable + 1)
+            req = v.required_researchers or 1
+            part_dict[deadline] = SimulationResultCell(current.planned, current.unplannable + req)
 
     # 3. Simulation Loop
     current_monday = horizon_start
@@ -449,13 +461,14 @@ async def generate_and_store_simulation(
         total_planned_this_week = 0
         
         for v in selection_result.selected:
-            total_planned_this_week += 1
+            total_planned_this_week += len(v.researchers)
             
             group_key = _get_required_user_flag(v)
             part = (v.part_of_day or "Onbekend").strip()
             
             pm = week_planned_map.setdefault(group_key, {})
-            pm[part] = pm.get(part, 0) + 1
+            # Count person-slots for this group/part
+            pm[part] = pm.get(part, 0) + len(v.researchers)
             
             for r in v.researchers:
                 # Consume capacity logic (simplified from capacity_simulation_service helpers)

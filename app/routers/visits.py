@@ -100,12 +100,18 @@ async def list_available_weeks(
 
     # If listing for all (admin usage usually), also include weeks with availability
     if not mine:
-        avail_stmt = select(AvailabilityWeek.week).where(
-            (AvailabilityWeek.morning_days > 0) |
-            (AvailabilityWeek.daytime_days > 0) |
-            (AvailabilityWeek.nighttime_days > 0) |
-            (AvailabilityWeek.flex_days > 0)
-        ).distinct()
+        avail_stmt = (
+            select(AvailabilityWeek.week)
+            .join(User, AvailabilityWeek.user_id == User.id)
+            .where(
+                (AvailabilityWeek.morning_days > 0)
+                | (AvailabilityWeek.daytime_days > 0)
+                | (AvailabilityWeek.nighttime_days > 0)
+                | (AvailabilityWeek.flex_days > 0)
+            )
+            .where(User.deleted_at.is_(None))
+            .distinct()
+        )
         avail_weeks = (await db.execute(avail_stmt)).scalars().all()
         weeks.update(avail_weeks)
 
