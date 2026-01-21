@@ -26,4 +26,4 @@ COPY . .
 
 # Start de FastAPI app met Uvicorn
 # We gebruiken 0.0.0.0 om bereikbaar te zijn binnen het Docker netwerk
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
