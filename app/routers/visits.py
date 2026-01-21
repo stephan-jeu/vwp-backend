@@ -274,6 +274,8 @@ async def list_visits(
                     )
                     for s in v.species
                 ],
+                "custom_function_name": v.custom_function_name,
+                "custom_species_name": v.custom_species_name,
                 "required_researchers": v.required_researchers,
                 "visit_nr": v.visit_nr,
                 "planned_week": v.planned_week,
@@ -376,6 +378,8 @@ async def get_visit_detail(
             )
             for s in visit.species
         ],
+        custom_function_name=visit.custom_function_name,
+        custom_species_name=visit.custom_species_name,
         required_researchers=visit.required_researchers,
         visit_nr=visit.visit_nr,
         from_date=visit.from_date,
@@ -579,6 +583,8 @@ async def list_advertised_visits(
                     )
                     for s in v.species
                 ],
+                custom_function_name=v.custom_function_name,
+                custom_species_name=v.custom_species_name,
                 required_researchers=v.required_researchers,
                 visit_nr=v.visit_nr,
                 planned_week=v.planned_week,
@@ -1157,6 +1163,8 @@ async def list_visits_for_audit(
                     )
                     for s in v.species
                 ],
+                custom_function_name=v.custom_function_name,
+                custom_species_name=v.custom_species_name,
                 required_researchers=v.required_researchers,
                 visit_nr=v.visit_nr,
                 planned_week=v.planned_week,

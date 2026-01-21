@@ -128,3 +128,6 @@ class Visit(TimestampMixin, SoftDeleteMixin, Base):
     quote: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Custom text fields for ad-hoc visits
+    custom_function_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    custom_species_name: Mapped[str | None] = mapped_column(String(256), nullable=True)

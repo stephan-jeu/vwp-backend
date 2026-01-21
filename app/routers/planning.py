@@ -194,6 +194,14 @@ async def clear_planned_researchers(
     else:
         stmt = stmt.options(selectinload(Visit.researchers))
 
+    # Protect Manual/Custom visits from being cleared
+    stmt = stmt.where(
+        and_(
+            Visit.custom_function_name.is_(None),
+            Visit.custom_species_name.is_(None),
+        )
+    )
+
     visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
     for v in visits:
         v.researchers.clear()

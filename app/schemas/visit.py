@@ -46,6 +46,8 @@ class VisitBase(BaseModel):
     part_of_day: str | None = None
     # Human-readable Dutch representation of the start time
     start_time_text: str | None = None
+    custom_function_name: str | None = None
+    custom_species_name: str | None = None
 
 
 class VisitCreate(VisitBase):
@@ -104,6 +106,8 @@ class VisitUpdate(BaseModel):
     function_ids: list[int] | None = None
     species_ids: list[int] | None = None
     researcher_ids: list[int] | None = None
+    custom_function_name: str | None = None
+    custom_species_name: str | None = None
 
 
 class VisitExecuteRequest(BaseModel):
@@ -263,6 +267,8 @@ class VisitListRow(BaseModel):
         start_time_text: Human-readable start time description.
         preferred_researcher_id: Optional preferred researcher id.
         preferred_researcher: Compact preferred researcher representation.
+        custom_function_name: Optional custom function name.
+        custom_species_name: Optional custom species name.
         researchers: Assigned researchers for the visit.
     """
 
@@ -301,6 +307,8 @@ class VisitListRow(BaseModel):
     start_time_text: str | None = None
     preferred_researcher_id: int | None = None
     preferred_researcher: UserNameRead | None = None
+    custom_function_name: str | None = None
+    custom_species_name: str | None = None
     researchers: list[UserNameRead] = []
     advertized: bool
     quote: bool

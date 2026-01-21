@@ -272,6 +272,9 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     Visit.planned_week.isnot(None),
                     Visit.researchers.any(),
                 ),
+                # Exclude custom visits (manual planning only)
+                Visit.custom_function_name.is_(None),
+                Visit.custom_species_name.is_(None),
             )
         )
         .options(
