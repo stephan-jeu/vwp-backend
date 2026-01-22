@@ -166,95 +166,110 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
     week_friday = _end_of_work_week(week_monday)
 
     async with db.begin_nested() if db.in_transaction() else db.begin() as _:
-            # Sub-query for look-back logic (Protocol Frequency Control)
-            # Find protocols that have 'locked' visits in the past, up to 8 weeks.
-            # Then check if the gap between 'locked' visit and 'this week' is less than
-            # the protocol's min_period.
-            
-            # 1. Determine Window [week - 8, week - 1]
-            week_num = week_monday.isocalendar().week
-            # We look back up to 8 weeks (arbitrary safe upper bound for "weeks" or "months" periods)
-            lookback_start = max(1, week_num - 8)
-            lookback_end = max(0, week_num - 1)
-            
-            blocked_protocols = set()
-            if lookback_end >= lookback_start:
-                # We need to import ProtocolVisitWindow here or inside function if not top-level
-                from app.models.protocol_visit_window import ProtocolVisitWindow
-                from app.models.protocol import Protocol
-                # Junction table
-                from app.models.visit import visit_protocol_visit_windows
+        # Sub-query for look-back logic (Protocol Frequency Control)
+        # Find protocols that have 'locked' visits in the past, up to 8 weeks.
+        # Then check if the gap between 'locked' visit and 'this week' is less than
+        # the protocol's min_period.
 
-                # Query visits that are planned in the lookback window AND have researchers
-                # AND retrieve their associated protocol info (min_period value/unit)
-                # AND the "end date" (or planned week) of the locked visit.
-                
-                # We need the Protocol object to get frequency settings.
-                stmt_hist = (
-                    select(
-                        Protocol.id, 
-                        Protocol.min_period_between_visits_value,
-                        Protocol.min_period_between_visits_unit,
-                        Visit.from_date, # Use visit START date as reference for Optimistic Planning
-                        Visit.planned_week,
-                        Visit.cluster_id
-                    )
-                    .join(ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id)
-                    .join(visit_protocol_visit_windows, visit_protocol_visit_windows.c.protocol_visit_window_id == ProtocolVisitWindow.id)
-                    .join(Visit, Visit.id == visit_protocol_visit_windows.c.visit_id)
-                    .where(
-                        and_(
-                            Visit.planned_week >= lookback_start,
-                            Visit.planned_week <= lookback_end,
-                            Visit.researchers.any(), # Only locked/assigned visits count
-                            # Ensure we are looking at roughly the same time period (year safety)
-                            Visit.to_date >= (week_monday - timedelta(weeks=10))
-                        )
+        # 1. Determine Window [week - 8, week - 1]
+        week_num = week_monday.isocalendar().week
+        # We look back up to 8 weeks (arbitrary safe upper bound for "weeks" or "months" periods)
+        lookback_start = max(1, week_num - 8)
+        lookback_end = max(0, week_num - 1)
+
+        if lookback_end >= lookback_start:
+            # We need to import ProtocolVisitWindow here or inside function if not top-level
+            from app.models.protocol_visit_window import ProtocolVisitWindow
+            from app.models.protocol import Protocol
+
+            # Junction table
+            from app.models.visit import visit_protocol_visit_windows
+
+            # Query visits that are planned in the lookback window AND have researchers
+            # AND retrieve their associated protocol info (min_period value/unit)
+            # AND the "end date" (or planned week) of the locked visit.
+
+            # We need the Protocol object to get frequency settings.
+            stmt_hist = (
+                select(
+                    Protocol.id,
+                    Protocol.min_period_between_visits_value,
+                    Protocol.min_period_between_visits_unit,
+                    Visit.from_date,  # Use visit START date as reference for Optimistic Planning
+                    Visit.planned_week,
+                    Visit.cluster_id,
+                )
+                .join(
+                    ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id
+                )
+                .join(
+                    visit_protocol_visit_windows,
+                    visit_protocol_visit_windows.c.protocol_visit_window_id
+                    == ProtocolVisitWindow.id,
+                )
+                .join(Visit, Visit.id == visit_protocol_visit_windows.c.visit_id)
+                .where(
+                    and_(
+                        Visit.planned_week >= lookback_start,
+                        Visit.planned_week <= lookback_end,
+                        Visit.researchers.any(),  # Only locked/assigned visits count
+                        # Ensure we are looking at roughly the same time period (year safety)
+                        Visit.to_date >= (week_monday - timedelta(weeks=10)),
                     )
                 )
-                rows_p = (await db.execute(stmt_hist)).unique().all()
-                
-                # Check conflicts
-                # Target start date for new visits is roughly week_monday.
-                blocked_pairs = set()
-                
-                for (prot_id, min_val, min_unit, locked_visit_start, locked_week, locked_cluster_id) in rows_p:
-                    if not min_val: 
-                        continue
-                        
-                    # Calculate required gap
-                    # Units: 'days', 'weeks', 'months' (common convention, verify model if needed)
-                    # Use days for comparison.
-                    required_gap_days = 0
-                    if min_unit == 'weeks':
-                        required_gap_days = min_val * 7
-                    elif min_unit == 'months':
-                        required_gap_days = min_val * 30 # Approx
-                    else: # days or None
-                        required_gap_days = min_val
-                    
-                    # Gap = (Target End - Locked Start) [OPTIMISTIC]
-                    # Target End is week_friday (week_monday + 4).
-                    # Locked Start is locked_visit_start.
-                    
-                    ref_date = locked_visit_start
-                    if not ref_date:
-                        # Fallback: estimate from week number
-                        # Assume locked visit happened on MONDAY of its week to be rigorous? 
-                        # OR MONDAY to be Optimistic? 
-                        # Optimistic goal: Maximize gap. So Assume Locked = Monday.
-                        ref_week_monday = date.fromisocalendar(week_monday.year, locked_week, 1) # Approx year
-                        ref_date = ref_week_monday
+            )
+            rows_p = (await db.execute(stmt_hist)).unique().all()
 
-                    # Target Friday
-                    target_friday = week_friday 
-                        
-                    days_diff = (target_friday - ref_date).days
-                        
-                    if days_diff < required_gap_days:
-                        # Block this protocol FOR THIS CLUSTER only
-                        blocked_pairs.add((prot_id, locked_cluster_id))
-    
+            # Check conflicts
+            # Target start date for new visits is roughly week_monday.
+            blocked_pairs = set()
+
+            for (
+                prot_id,
+                min_val,
+                min_unit,
+                locked_visit_start,
+                locked_week,
+                locked_cluster_id,
+            ) in rows_p:
+                if not min_val:
+                    continue
+
+                # Calculate required gap
+                # Units: 'days', 'weeks', 'months' (common convention, verify model if needed)
+                # Use days for comparison.
+                required_gap_days = 0
+                if min_unit == "weeks":
+                    required_gap_days = min_val * 7
+                elif min_unit == "months":
+                    required_gap_days = min_val * 30  # Approx
+                else:  # days or None
+                    required_gap_days = min_val
+
+                # Gap = (Target End - Locked Start) [OPTIMISTIC]
+                # Target End is week_friday (week_monday + 4).
+                # Locked Start is locked_visit_start.
+
+                ref_date = locked_visit_start
+                if not ref_date:
+                    # Fallback: estimate from week number
+                    # Assume locked visit happened on MONDAY of its week to be rigorous?
+                    # OR MONDAY to be Optimistic?
+                    # Optimistic goal: Maximize gap. So Assume Locked = Monday.
+                    ref_week_monday = date.fromisocalendar(
+                        week_monday.year, locked_week, 1
+                    )  # Approx year
+                    ref_date = ref_week_monday
+
+                # Target Friday
+                target_friday = week_friday
+
+                days_diff = (target_friday - ref_date).days
+
+                if days_diff < required_gap_days:
+                    # Block this protocol FOR THIS CLUSTER only
+                    blocked_pairs.add((prot_id, locked_cluster_id))
+
     stmt = (
         select(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
@@ -286,9 +301,9 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             selectinload(Visit.protocol_visit_windows),
         )
     )
-    
+
     candidates = (await db.execute(stmt)).scalars().unique().all()
-    
+
     if not blocked_pairs:
         return candidates
 
@@ -297,19 +312,19 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
     for v in candidates:
         # Check if v has any (protocol, cluster) in blocked_pairs
         v_pids = {pvw.protocol_id for pvw in (v.protocol_visit_windows or [])}
-        
+
         # Candidate is blocked if ANY of its protocols are blocked FOR ITS CLUSTER
         is_blocked = False
         for pid in v_pids:
             if (pid, v.cluster_id) in blocked_pairs:
                 is_blocked = True
                 break
-        
+
         if is_blocked:
             continue
-            
+
         filtered.append(v)
-        
+
     return filtered
 
 
@@ -808,7 +823,9 @@ async def _select_visits_for_week_core(
 
 
 async def select_visits_for_week(
-    db: AsyncSession, week_monday: date,    timeout_seconds: float | None = None,
+    db: AsyncSession,
+    week_monday: date,
+    timeout_seconds: float | None = None,
     include_travel_time: bool = True,
 ) -> dict:
     """Run CP-SAT solver for a given week.
@@ -828,18 +845,20 @@ async def select_visits_for_week(
             "capacity_remaining": caps,
         }
 
-    result = await select_visits_cp_sat(db, week_monday, timeout_seconds=timeout_seconds)
-    
+    result = await select_visits_cp_sat(
+        db, week_monday, timeout_seconds=timeout_seconds
+    )
+
     effective_selected = result.selected
     effective_skipped = result.skipped
-    
+
     if db:
         await db.commit()
 
     # Re-calculate remaining global capacity for reporting purposes (UI)
     week = week_monday.isocalendar().week
     caps = await _load_week_capacity(db, week)
-    
+
     for v in effective_selected:
         part = (v.part_of_day or "").strip()
         if part in DAYPART_TO_AVAIL_FIELD:

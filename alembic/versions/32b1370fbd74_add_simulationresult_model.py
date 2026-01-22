@@ -5,15 +5,13 @@ Revises: 9ceabb355994
 Create Date: 2026-01-17 12:37:20.450390
 
 """
-from __future__ import annotations
 
-from alembic import op
-import sqlalchemy as sa
+from __future__ import annotations
 
 
 # revision identifiers, used by Alembic.
-revision = '32b1370fbd74'
-down_revision = '9ceabb355994'
+revision = "32b1370fbd74"
+down_revision = "9ceabb355994"
 branch_labels = None
 depends_on = None
 

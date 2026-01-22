@@ -27,10 +27,12 @@ class WeekResultCell(BaseModel):
     spare: int
     planned: int
 
+
 class WeekView(BaseModel):
     weeks: list[str]
     # Label -> Week -> Cell
     rows: dict[str, dict[str, WeekResultCell]]
+
 
 class CapacitySimulationResponse(BaseModel):
     """Response model for long-term family capacity simulations.

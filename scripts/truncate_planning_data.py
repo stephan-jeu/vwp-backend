@@ -6,7 +6,9 @@ from db.session import engine
 # Add the parent directory to sys.path to allow imports from app/core/db
 # This might be needed if running as a script directly
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 
 async def truncate_planning_data():
     """
@@ -29,7 +31,7 @@ async def truncate_planning_data():
     for t in tables:
         print(f"  - {t}")
     print("\nThis action is irreversible.")
-    
+
     # Simple confirmation
     confirm = input("Type 'yes' to proceed: ")
     if confirm != "yes":
@@ -42,8 +44,11 @@ async def truncate_planning_data():
             print(f"Truncating {table}...")
             # RESTART IDENTITY resets auto-increment counters
             # CASCADE deletes dependent rows in other tables (though we try to list them all)
-            await conn.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;"))
+            await conn.execute(
+                text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;")
+            )
         print("✅ Done.")
+
 
 if __name__ == "__main__":
     try:

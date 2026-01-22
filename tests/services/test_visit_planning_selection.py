@@ -876,12 +876,23 @@ async def test_assign_requires_all_families(
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -919,12 +930,23 @@ async def test_assign_requires_smp(monkeypatch: pytest.MonkeyPatch, week_monday:
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -959,12 +981,23 @@ async def test_assign_requires_vrfg(monkeypatch: pytest.MonkeyPatch, week_monday
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1006,12 +1039,23 @@ async def test_assign_requires_visit_flags(
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1079,12 +1123,23 @@ async def test_sleutel_requires_at_least_one_intern(
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1136,12 +1191,23 @@ async def test_single_user_can_be_assigned_to_multiple_visits_when_capacity_allo
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1212,12 +1278,23 @@ async def test_single_user_not_assigned_more_visits_than_feasible_days(
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1276,12 +1353,23 @@ async def test_single_user_not_assigned_two_visits_same_day_across_dayparts(
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
-        return {uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10} for uid in [1, 2, 3]}
+        return {
+            uid: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 10}
+            for uid in [1, 2, 3]
+        }
+
     async def fake_user_caps_fn(_db: Any, _week: int):
         return {uid: 10 for uid in [1, 2, 3]}
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_user_daypart_caps_fn)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn)
+
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_user_daypart_caps_fn,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1400,6 +1488,7 @@ async def test_preferred_researcher_assigned_without_qualification_when_capacity
     monkeypatch.setattr(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
+
     async def fake_user_daypart_caps_fn(_db: Any, _week: int):
         return {
             1: {"Ochtend": 5, "Dag": 0, "Avond": 0, "Flex": 0},
@@ -1480,6 +1569,12 @@ async def test_eligible_visits_query_filters_quote_projects(week_monday: date):
     captured_stmt = {}
 
     class FakeResult:
+        def unique(self):
+            return self
+
+        def all(self):
+            return []
+
         def scalars(self):
             class S:
                 def unique(self_non):
@@ -1490,7 +1585,23 @@ async def test_eligible_visits_query_filters_quote_projects(week_monday: date):
 
             return S()
 
+    class _AsyncCtx:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            return False
+
     class FakeDB:
+        def in_transaction(self) -> bool:
+            return False
+
+        def begin(self) -> _AsyncCtx:
+            return _AsyncCtx()
+
+        def begin_nested(self) -> _AsyncCtx:
+            return _AsyncCtx()
+
         async def execute(self, stmt):  # type: ignore[no-untyped-def]
             captured_stmt["stmt"] = stmt
             return FakeResult()

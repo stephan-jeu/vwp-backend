@@ -11,7 +11,8 @@ OUT_PATH = os.path.join(OUT_DIR, "update_maternity_pvws.sql")
 def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    sql = """
+    sql = (
+        """
 -- Update protocol_visit_windows for protocols requiring a maternity-period visit
 -- Rule:
 --  - For each protocol p where requires_maternity_period_visit = true:
@@ -66,7 +67,9 @@ SET window_from = k.kraam_to
 FROM kraam_first k
 WHERE pvw.protocol_id = k.protocol_id
   AND pvw.visit_index = 2;
-""".strip() + "\n"
+""".strip()
+        + "\n"
+    )
 
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         f.write(sql)

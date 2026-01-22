@@ -17,7 +17,11 @@ from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
 from app.schemas.trash import TrashItem, TrashKind
-from app.schemas.capacity import CapacitySimulationResponse, FamilyDaypartCapacity, WeekView, WeekResultCell
+from app.schemas.capacity import (
+    CapacitySimulationResponse,
+    FamilyDaypartCapacity,
+    WeekView,
+)
 from app.services.activity_log_service import log_activity
 from app.services.capacity_simulation_service import generate_and_store_simulation
 from app.models.simulation_result import SimulationResult
@@ -104,7 +108,7 @@ async def _sim_result_to_response(res: SimulationResult) -> CapacitySimulationRe
     # Hydrate JSON to Pydantic
     grid_raw = res.grid_data.get("deadline_view", {})
     week_raw = res.grid_data.get("week_view", {})
-    
+
     # Grid
     final_grid = {}
     for fam, parts in grid_raw.items():
@@ -121,7 +125,9 @@ async def _sim_result_to_response(res: SimulationResult) -> CapacitySimulationRe
         # WeekView.rows is dict[str, dict[str, WeekResultCell]]
         # WeekResultCell is simple.
         # Let's try direct instantiation or allow pydantic validation
-        week_view = WeekView(weeks=week_raw.get("weeks", []), rows=week_raw.get("rows", {}))
+        week_view = WeekView(
+            weeks=week_raw.get("weeks", []), rows=week_raw.get("rows", {})
+        )
 
     return CapacitySimulationResponse(
         horizon_start=res.horizon_start,
@@ -129,7 +135,7 @@ async def _sim_result_to_response(res: SimulationResult) -> CapacitySimulationRe
         created_at=res.created_at,
         updated_at=res.updated_at,
         grid=final_grid,
-        week_view=week_view
+        week_view=week_view,
     )
 
 
@@ -139,14 +145,16 @@ async def get_family_capacity(
     db: DbDep,
 ) -> CapacitySimulationResponse:
     """Get persisted capacity simulation result. Generates if missing."""
-    
+
     # Fetch latest
-    stmt = select(SimulationResult).order_by(SimulationResult.created_at.desc()).limit(1)
+    stmt = (
+        select(SimulationResult).order_by(SimulationResult.created_at.desc()).limit(1)
+    )
     res = (await db.execute(stmt)).scalar_one_or_none()
-    
+
     if not res:
         res = await generate_and_store_simulation(db)
-        
+
     return await _sim_result_to_response(res)
 
 
@@ -157,16 +165,16 @@ async def regenerate_family_capacity(
 ) -> CapacitySimulationResponse:
     """Force regenerate simulation."""
     res = await generate_and_store_simulation(db)
-    
+
     await log_activity(
         db,
         actor_id=admin.id,
         action="simulation_regenerated",
         target_type="system",
         target_id=res.id,
-        details={}
+        details={},
     )
-    
+
     return await _sim_result_to_response(res)
 
 

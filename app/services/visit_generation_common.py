@@ -24,9 +24,11 @@ _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "ye
 
 # ---- Effective Timing --------------------------------------------------------
 
+
 @dataclass
 class EffectiveTiming:
     """Consolidated timing properties for a protocol after exception resolution."""
+
     protocol_id: int
     start_timing_reference: str | None
     start_time_absolute_from: time | None
@@ -34,15 +36,17 @@ class EffectiveTiming:
     visit_duration_hours: float | None
 
 
-def _get_effective_timing(p: Protocol, visit_index: int | None = None, part_of_day: str | None = None) -> EffectiveTiming:
+def _get_effective_timing(
+    p: Protocol, visit_index: int | None = None, part_of_day: str | None = None
+) -> EffectiveTiming:
     """Resolve effective timing for a protocol, applying exceptions (RD v1, MV)."""
-    
+
     eff = EffectiveTiming(
         protocol_id=p.id,
         start_timing_reference=getattr(p, "start_timing_reference", None),
         start_time_absolute_from=getattr(p, "start_time_absolute_from", None),
         start_time_relative_minutes=getattr(p, "start_time_relative_minutes", None),
-        visit_duration_hours=getattr(p, "visit_duration_hours", None)
+        visit_duration_hours=getattr(p, "visit_duration_hours", None),
     )
 
     fn = getattr(p, "function", None)
@@ -51,24 +55,25 @@ def _get_effective_timing(p: Protocol, visit_index: int | None = None, part_of_d
     sp_abbr = sp.abbreviation if sp else ""
     sp_name = sp.name if sp else ""
 
-    is_paarverblijf = (fn_name == "Paarverblijf")
-    is_rd = (sp_abbr == "RD")
-    is_mv = (sp_abbr == "MV" or sp_name == "MV")
+    is_paarverblijf = fn_name == "Paarverblijf"
+    is_rd = sp_abbr == "RD"
+    is_mv = sp_abbr == "MV" or sp_name == "MV"
 
     # EXCEPTION: MV Paarverblijf -> Override to Sunset for Evening
     if is_paarverblijf and is_mv and part_of_day == "Avond":
-         eff.start_timing_reference = "SUNSET"
-         eff.start_time_relative_minutes = 0
+        eff.start_timing_reference = "SUNSET"
+        eff.start_time_relative_minutes = 0
 
     # EXCEPTION: RD Paarverblijf Visit 1 -> Force Absolute 00:00
     if is_paarverblijf and is_rd and visit_index == 1:
         eff.start_timing_reference = "ABSOLUTE_TIME"
         eff.start_time_absolute_from = time(0, 0)
-        
+
     return eff
 
 
 # ---- Biological Compatibility & Helpers --------------------------------------
+
 
 def _to_current_year(d: date) -> date:
     today = date.today()
@@ -80,6 +85,7 @@ def _to_current_year(d: date) -> date:
             return date(current_year, 2, 28)
         raise
 
+
 def _unit_to_days(value: int | None, unit: str | None) -> int:
     if not value:
         return 0
@@ -89,6 +95,7 @@ def _unit_to_days(value: int | None, unit: str | None) -> int:
     if u in {"week", "weeks", "weeken", "weken"}:
         return value * 7
     return value
+
 
 def _normalize_family_name(name: str | None) -> str:
     if not name:
@@ -100,16 +107,17 @@ def _normalize_family_name(name: str | None) -> str:
         return "zwaluw"
     return n
 
+
 def _same_family(a: Protocol, b: Protocol) -> bool:
     try:
         if a.species.family_id == b.species.family_id:
             return True
     except Exception:
         pass
-    
+
     fam_obj = getattr(getattr(a, "species", None), "family", None)
     n1 = _normalize_family_name(getattr(fam_obj, "name", None))
-    
+
     try:
         fam_obj_b = getattr(getattr(b, "species", None), "family", None)
         n2 = _normalize_family_name(getattr(fam_obj_b, "name", None))
@@ -117,11 +125,12 @@ def _same_family(a: Protocol, b: Protocol) -> bool:
         n2 = ""
     return bool(n1) and n1 == n2
 
+
 def _is_allowed_cross_family(a: Protocol, b: Protocol) -> bool:
     try:
         fam_a_obj = getattr(getattr(a, "species", None), "family", None)
         fam_a = _normalize_family_name(getattr(fam_a_obj, "name", None))
-        
+
         fam_b_obj = getattr(getattr(b, "species", None), "family", None)
         fam_b = _normalize_family_name(getattr(fam_b_obj, "name", None))
     except Exception:
@@ -131,6 +140,7 @@ def _is_allowed_cross_family(a: Protocol, b: Protocol) -> bool:
     allowed_pairs = [{"vleermuis", "zwaluw"}]
     return any(pair == allowed for allowed in allowed_pairs)
 
+
 def _is_smp(p: Protocol) -> bool:
     try:
         fn = getattr(p, "function", None)
@@ -139,11 +149,12 @@ def _is_smp(p: Protocol) -> bool:
     except Exception:
         return False
 
+
 def _check_bio_compatibility(p1: Protocol, p2: Protocol) -> bool:
     # SMP Gating
     smp1 = _is_smp(p1)
     smp2 = _is_smp(p2)
-    
+
     if smp1 or smp2:
         if not (smp1 and smp2):
             return False
@@ -159,11 +170,12 @@ def _check_bio_compatibility(p1: Protocol, p2: Protocol) -> bool:
 
     if _same_family(p1, p2):
         return True
-        
+
     return _is_allowed_cross_family(p1, p2)
 
 
 # ---- Part of Day Logic -------------------------------------------------------
+
 
 def _derive_part_options_base(protocol: Protocol) -> set[str] | None:
     """Return allowed part-of-day options based on timing reference only."""
@@ -182,12 +194,13 @@ def _derive_part_options_base(protocol: Protocol) -> set[str] | None:
     if ref_start == "SUNRISE":
         rel_min = protocol.start_time_relative_minutes
         if rel_min is not None and rel_min >= 0:
-             return {"Dag"}
+            return {"Dag"}
         return {"Ochtend"}
     if ref_start == "SUNSET_TO_SUNRISE":
         return {"Avond", "Ochtend"}
-        
+
     return None
+
 
 def _derive_part_of_day(protocol: Protocol) -> str | None:
     if getattr(protocol, "requires_morning_visit", False):
@@ -197,7 +210,10 @@ def _derive_part_of_day(protocol: Protocol) -> str | None:
 
     ref = protocol.start_timing_reference or ""
     if ref == "SUNRISE":
-        if protocol.start_time_relative_minutes is not None and protocol.start_time_relative_minutes >= 0:
+        if (
+            protocol.start_time_relative_minutes is not None
+            and protocol.start_time_relative_minutes >= 0
+        ):
             return "Dag"
         else:
             return "Ochtend"
@@ -210,23 +226,25 @@ def _derive_part_of_day(protocol: Protocol) -> str | None:
 
 # ---- Visit Request Graph Model -----------------------------------------------
 
+
 @dataclass
 class VisitRequest:
     """Represents a single required visit occurrence (Node)."""
+
     protocol: Protocol
     visit_index: int
     window_from: date
     window_to: date
     pvw_id: int
     part_of_day_options: set[str] | None  # None means any
-    
+
     compatible_request_ids: set[str] = field(default_factory=set)
     predecessor: tuple[str, int] | None = None
 
     @property
     def id(self) -> str:
         return f"p{self.protocol.id}_v{self.visit_index}"
-    
+
     # helper for effective start calc during generation
     effective_window_from: date | None = None
 
@@ -234,21 +252,20 @@ class VisitRequest:
 def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
     """Explode protocols into individual required visit occurrences."""
     requests: list[VisitRequest] = []
-    
+
     req_map: dict[str, VisitRequest] = {}
-    
+
     for p in protocols:
         if not p.visit_windows:
             continue
-            
+
         windows = sorted(p.visit_windows, key=lambda w: w.visit_index)
         prev_request: VisitRequest | None = None
-        
+
         min_gap_days = _unit_to_days(
-            p.min_period_between_visits_value, 
-            p.min_period_between_visits_unit
+            p.min_period_between_visits_value, p.min_period_between_visits_unit
         )
-        
+
         req_morning = getattr(p, "requires_morning_visit", False)
         req_evening = getattr(p, "requires_evening_visit", False)
         base_parts = _derive_part_options_base(p)
@@ -256,28 +273,32 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
         for i, w in enumerate(windows):
             wf = _to_current_year(w.window_from)
             wt = _to_current_year(w.window_to)
-            
+
             if wf > wt:
                 continue
 
             parts = set(base_parts) if base_parts is not None else None
-            
+
             # Legacy logic: enforce morning/evening flags mostly on V1
             if w.visit_index == 1:
                 if req_morning:
-                    if parts is None: parts = {"Ochtend"}
-                    else: parts.intersection_update({"Ochtend"})
+                    if parts is None:
+                        parts = {"Ochtend"}
+                    else:
+                        parts.intersection_update({"Ochtend"})
                 if req_evening:
-                    if parts is None: parts = {"Avond"}
-                    else: parts.intersection_update({"Avond"})
-            
+                    if parts is None:
+                        parts = {"Avond"}
+                    else:
+                        parts.intersection_update({"Avond"})
+
             if not parts and base_parts:
                 parts = base_parts
 
             predecessor = None
             if w.visit_index > 1 and prev_request:
                 predecessor = (prev_request.id, min_gap_days or 0)
-            
+
             req = VisitRequest(
                 protocol=p,
                 visit_index=w.visit_index,
@@ -285,9 +306,9 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
                 window_to=wt,
                 pvw_id=w.id,
                 part_of_day_options=parts,
-                predecessor=predecessor
+                predecessor=predecessor,
             )
-            
+
             requests.append(req)
             req_map[req.id] = req
             prev_request = req
@@ -302,7 +323,7 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
             min_valid = pred_eff + timedelta(days=gap)
             if min_valid > wd_start:
                 wd_start = min_valid
-        
+
         r.effective_window_from = wd_start
 
     return requests
@@ -314,10 +335,11 @@ def _build_compatibility_graph(requests: list[VisitRequest]) -> None:
         for j in range(i + 1, n):
             r1 = requests[i]
             r2 = requests[j]
-            
+
             if _are_compatible(r1, r2):
                 r1.compatible_request_ids.add(r2.id)
                 r2.compatible_request_ids.add(r1.id)
+
 
 def _are_compatible(r1: VisitRequest, r2: VisitRequest) -> bool:
     if r1.protocol.id == r2.protocol.id:
@@ -325,24 +347,23 @@ def _are_compatible(r1: VisitRequest, r2: VisitRequest) -> bool:
 
     if not _check_bio_compatibility(r1.protocol, r2.protocol):
         return False
-        
-    overlap = _overlap_days(
-        r1.window_from, r1.window_to,
-        r2.window_from, r2.window_to
-    )
+
+    overlap = _overlap_days(r1.window_from, r1.window_to, r2.window_from, r2.window_to)
     if overlap < MIN_EFFECTIVE_WINDOW_DAYS:
         return False
-        
+
     if not _check_part_intersection(r1.part_of_day_options, r2.part_of_day_options):
         return False
-        
+
     return True
+
 
 def _overlap_days(start1: date, end1: date, start2: date, end2: date) -> int:
     overlap_start = max(start1, start2)
     overlap_end = min(end1, end2)
     delta = (overlap_end - overlap_start).days
     return delta if delta > 0 else 0
+
 
 def _check_part_intersection(set1: set[str] | None, set2: set[str] | None) -> bool:
     if set1 is None or set2 is None:
@@ -351,6 +372,7 @@ def _check_part_intersection(set1: set[str] | None, set2: set[str] | None) -> bo
 
 
 # ---- Misc Helpers ------------------------------------------------------------
+
 
 def _select_most_restrictive_precipitation(options: list[str]) -> str | None:
     if not options:
@@ -370,10 +392,10 @@ def _select_most_restrictive_precipitation(options: list[str]) -> str | None:
 
 
 def calculate_visit_props(
-    protocols: list[Protocol], 
-    part_of_day: str | None, 
+    protocols: list[Protocol],
+    part_of_day: str | None,
     reference_date: date | None = None,
-    visit_indices: dict[int, int] | None = None
+    visit_indices: dict[int, int] | None = None,
 ) -> tuple[int | None, str | None, str | None]:
     """Calculate duration (minutes) and start time text based on protocols and part of day."""
 
@@ -384,7 +406,9 @@ def calculate_visit_props(
         effective_timings.append(eff)
 
     durations = [
-        t.visit_duration_hours for t in effective_timings if t.visit_duration_hours is not None
+        t.visit_duration_hours
+        for t in effective_timings
+        if t.visit_duration_hours is not None
     ]
     duration_min = int(max(durations) * 60) if durations else None
 
@@ -394,19 +418,22 @@ def calculate_visit_props(
     # - Duration is max of individual durations (already calculated as duration_min above)
     # BUT: If combined with Paarverblijf MV (which has strict Sunset logic), we should NOT override.
     has_massawinter = any(
-        (getattr(getattr(p, "function", None), "name", "") == "Massawinterverblijfplaats")
+        (
+            getattr(getattr(p, "function", None), "name", "")
+            == "Massawinterverblijfplaats"
+        )
         for p in protocols
     )
-    
+
     has_mv_paarverblijf = any(
-         (
-             getattr(getattr(p, "function", None), "name", "") == "Paarverblijf" and 
-             (
-                 getattr(getattr(p, "species", None), "abbreviation", "") == "MV" or 
-                 getattr(getattr(p, "species", None), "name", "") == "MV"
-             )
-         )
-         for p in protocols
+        (
+            getattr(getattr(p, "function", None), "name", "") == "Paarverblijf"
+            and (
+                getattr(getattr(p, "species", None), "abbreviation", "") == "MV"
+                or getattr(getattr(p, "species", None), "name", "") == "MV"
+            )
+        )
+        for p in protocols
     )
 
     if has_massawinter and not has_mv_paarverblijf:
@@ -414,58 +441,70 @@ def calculate_visit_props(
 
     # Logic for Evening/Absolute scenarios
     use_improved_logic = False
-    all_absolute = all(t.start_timing_reference == "ABSOLUTE_TIME" for t in effective_timings)
+    all_absolute = all(
+        t.start_timing_reference == "ABSOLUTE_TIME" for t in effective_timings
+    )
     mixed_absolute_sunset = False
-    
+
     if not all_absolute and part_of_day == "Avond" and reference_date:
         refs = {t.start_timing_reference for t in effective_timings}
         if refs <= {"ABSOLUTE_TIME", "SUNSET"}:
-             mixed_absolute_sunset = True
-             
+            mixed_absolute_sunset = True
+
     remarks_suffix: str | None = None
     if all_absolute or mixed_absolute_sunset:
         use_improved_logic = True
-        
+
         starts = []
         ends = []
-        
+
         for t in effective_timings:
             p_start_min = None
-            if t.start_timing_reference == "ABSOLUTE_TIME" and t.start_time_absolute_from:
-                 tm = t.start_time_absolute_from
-                 hours = tm.hour if hasattr(tm, 'hour') else 0
-                 minutes = tm.minute if hasattr(tm, 'minute') else 0
-                 minutes_total = hours * 60 + minutes
-                 
-                 # Check for remarks triggers (mixed scenario)
-                 if mixed_absolute_sunset:
-                     if minutes_total == 0: # 00:00
-                         remarks_suffix = "Tot minimaal 2:00 onderzoeken"
-                     elif minutes_total == 1320: # 22:00 (22*60)
-                         remarks_suffix = "Tot minimaal 0:00 onderzoeken."
+            if (
+                t.start_timing_reference == "ABSOLUTE_TIME"
+                and t.start_time_absolute_from
+            ):
+                tm = t.start_time_absolute_from
+                hours = tm.hour if hasattr(tm, "hour") else 0
+                minutes = tm.minute if hasattr(tm, "minute") else 0
+                minutes_total = hours * 60 + minutes
 
-                 if minutes_total < 600:
-                     minutes_total += 1440
-                 p_start_min = minutes_total
+                # Check for remarks triggers (mixed scenario)
+                if mixed_absolute_sunset:
+                    if minutes_total == 0:  # 00:00
+                        remarks_suffix = "Tot minimaal 2:00 onderzoeken"
+                    elif minutes_total == 1320:  # 22:00 (22*60)
+                        remarks_suffix = "Tot minimaal 0:00 onderzoeken."
 
-            elif mixed_absolute_sunset and t.start_timing_reference == "SUNSET" and reference_date:
-                 m = reference_date.month
-                 sunset_min = 20 * 60 
-                 if m == 7: sunset_min = 22 * 60
-                 elif m == 8: sunset_min = 21 * 60
-                 elif m == 9: sunset_min = 20 * 60
-                 
-                 rel = t.start_time_relative_minutes or 0
-                 p_start_min = sunset_min + rel
-                 
-                 if p_start_min < 600: 
-                     p_start_min += 1440
-            
+                if minutes_total < 600:
+                    minutes_total += 1440
+                p_start_min = minutes_total
+
+            elif (
+                mixed_absolute_sunset
+                and t.start_timing_reference == "SUNSET"
+                and reference_date
+            ):
+                m = reference_date.month
+                sunset_min = 20 * 60
+                if m == 7:
+                    sunset_min = 22 * 60
+                elif m == 8:
+                    sunset_min = 21 * 60
+                elif m == 9:
+                    sunset_min = 20 * 60
+
+                rel = t.start_time_relative_minutes or 0
+                p_start_min = sunset_min + rel
+
+                if p_start_min < 600:
+                    p_start_min += 1440
+
             if p_start_min is not None:
                 starts.append(p_start_min)
                 dur = (t.visit_duration_hours or 0) * 60
                 ends.append(p_start_min + dur)
-                
+
         if starts and ends:
             min_start = min(starts)
             max_end = max(ends)
@@ -503,7 +542,7 @@ def calculate_visit_props(
         for p in protocols
         if derive_start_time_minutes(p) is not None
     ]
-    
+
     starts_from_end_minus_duration: list[int] = []
     for p in protocols:
         end_m = derive_end_time_minutes(p)
@@ -532,74 +571,83 @@ def calculate_visit_props(
     # Store candidates as tuples: (sort_key_minutes, text_str)
     # Sort key should use the same logic as duration calculation (wrap < 600 to +1440)
     text_candidates: list[tuple[float, str]] = []
-    
+
     # Re-loop to pick text
     for i, p in enumerate(protocols):
         eff = effective_timings[i]
-        
+
         # Override text for exceptions?
         # MV exception for Start Text
         fn = getattr(p, "function", None)
         sp = getattr(p, "species", None)
         fam = getattr(getattr(p, "species", None), "family", None)
-        
+
         is_mv = (sp.abbreviation == "MV" or sp.name == "MV") if sp else False
         is_paarverblijf = (fn.name == "Paarverblijf") if fn else False
-        
+
         if is_mv and is_paarverblijf and part_of_day == "Avond":
-             text_candidates.append((0, "Zonsondergang")) # Priority sort? 
-             continue
+            text_candidates.append((0, "Zonsondergang"))  # Priority sort?
+            continue
         if is_mv and is_paarverblijf and part_of_day == "Ochtend":
-             text_candidates.append((0, "3 uur voor zonsopgang")) 
-             continue
-             
+            text_candidates.append((0, "3 uur voor zonsopgang"))
+            continue
+
         # Vlinder Exception
         if fam and getattr(fam, "name", "") == "Vlinder":
-             text_candidates.append((0, "Tussen 10:00 en 15:00 starten (evt. om 09:00 starten als het dan al 22 graden is en zonnig)"))
-             continue
+            text_candidates.append(
+                (
+                    0,
+                    "Tussen 10:00 en 15:00 starten (evt. om 09:00 starten als het dan al 22 graden is en zonnig)",
+                )
+            )
+            continue
 
-        if eff.start_timing_reference == "ABSOLUTE_TIME" and eff.start_time_absolute_from:
-             tm = eff.start_time_absolute_from
-             hours = tm.hour
-             minutes = tm.minute
-             minutes_total = hours * 60 + minutes
-             if minutes_total < 600:
-                 minutes_total += 1440
-             
-             t_str = tm.strftime("%H:%M")
-             text_candidates.append((minutes_total, t_str))
-             
+        if (
+            eff.start_timing_reference == "ABSOLUTE_TIME"
+            and eff.start_time_absolute_from
+        ):
+            tm = eff.start_time_absolute_from
+            hours = tm.hour
+            minutes = tm.minute
+            minutes_total = hours * 60 + minutes
+            if minutes_total < 600:
+                minutes_total += 1440
+
+            t_str = tm.strftime("%H:%M")
+            text_candidates.append((minutes_total, t_str))
+
         elif eff.start_timing_reference == "SUNSET":
-             rel = eff.start_time_relative_minutes or 0
-             # Estimate sort key for sunset: 20:00 (1200 min) base is decent
-             # This is just for sorting relative to absolute.
-             sort_key = 1200 + rel 
-             if sort_key < 600: sort_key += 1440
+            rel = eff.start_time_relative_minutes or 0
+            # Estimate sort key for sunset: 20:00 (1200 min) base is decent
+            # This is just for sorting relative to absolute.
+            sort_key = 1200 + rel
+            if sort_key < 600:
+                sort_key += 1440
 
-             if rel == 0:
-                 text_candidates.append((sort_key, "Zonsondergang"))
-             elif rel > 0:
-                 h_str = f"{rel/60.0:g}".replace(".", ",")
-                 text_candidates.append((sort_key, f"{h_str} uur na zonsondergang"))
-             else:
-                 h_str = f"{abs(rel)/60.0:g}".replace(".", ",")
-                 text_candidates.append((sort_key, f"{h_str} uur voor zonsondergang"))
+            if rel == 0:
+                text_candidates.append((sort_key, "Zonsondergang"))
+            elif rel > 0:
+                h_str = f"{rel / 60.0:g}".replace(".", ",")
+                text_candidates.append((sort_key, f"{h_str} uur na zonsondergang"))
+            else:
+                h_str = f"{abs(rel) / 60.0:g}".replace(".", ",")
+                text_candidates.append((sort_key, f"{h_str} uur voor zonsondergang"))
         elif eff.start_timing_reference == "SUNRISE":
-             rel = eff.start_time_relative_minutes or 0
-             # Estimate sort key for sunrise: 06:00 (360 min) base?
-             # But usually Ochtend. 
-             # Let's say Sunrise = 06:00 = 360.
-             sort_key = 360 + rel
-             
-             if rel == 0:
-                 text_candidates.append((sort_key, "Zonsopkomst"))
-             elif rel > 0:
-                 h_str = f"{rel/60.0:g}".replace(".", ",")
-                 text_candidates.append((sort_key, f"{h_str} uur na zonsopkomst"))
-             else:
-                 h_str = f"{abs(rel)/60.0:g}".replace(".", ",")
-                 text_candidates.append((sort_key, f"{h_str} uur voor zonsopkomst"))
-                 
+            rel = eff.start_time_relative_minutes or 0
+            # Estimate sort key for sunrise: 06:00 (360 min) base?
+            # But usually Ochtend.
+            # Let's say Sunrise = 06:00 = 360.
+            sort_key = 360 + rel
+
+            if rel == 0:
+                text_candidates.append((sort_key, "Zonsopkomst"))
+            elif rel > 0:
+                h_str = f"{rel / 60.0:g}".replace(".", ",")
+                text_candidates.append((sort_key, f"{h_str} uur na zonsopkomst"))
+            else:
+                h_str = f"{abs(rel) / 60.0:g}".replace(".", ",")
+                text_candidates.append((sort_key, f"{h_str} uur voor zonsopkomst"))
+
     # Pick candidate with minimal sort key (earliest time)
     if text_candidates:
         # Sort by key (minutes)

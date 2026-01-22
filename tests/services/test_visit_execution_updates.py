@@ -30,6 +30,7 @@ async def test_update_subsequent_visits_no_pvws():
 @pytest.mark.asyncio
 async def test_update_subsequent_visits_updates_date():
     db = AsyncMock()
+    db.add = MagicMock()
 
     # Setup data
     protocol = Protocol(
@@ -111,6 +112,7 @@ async def test_update_subsequent_visits_no_update_needed():
 @pytest.mark.asyncio
 async def test_update_subsequent_visits_june_window_clamped_left():
     db = AsyncMock()
+    db.add = MagicMock()
 
     # Arrange: 2-visit protocol requiring June, second visit window 28 May - 21 June
     protocol = Protocol(
@@ -159,6 +161,7 @@ async def test_update_subsequent_visits_june_window_clamped_left():
 @pytest.mark.asyncio
 async def test_update_subsequent_visits_june_window_clamped_both_sides():
     db = AsyncMock()
+    db.add = MagicMock()
 
     # Arrange: 2-visit protocol requiring June, second visit window 25 May - 5 July
     protocol = Protocol(
@@ -207,6 +210,7 @@ async def test_update_subsequent_visits_june_window_clamped_both_sides():
 @pytest.mark.asyncio
 async def test_update_subsequent_visits_june_requirement_ignored_when_execution_in_june():
     db = AsyncMock()
+    db.add = MagicMock()
 
     # Arrange: requirement is present but execution happens in June, so no June clamp
     protocol = Protocol(

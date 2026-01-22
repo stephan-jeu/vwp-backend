@@ -83,11 +83,11 @@ async def test_travel_time_scoring_picks_closest(
         if origin == "Origin 2":
             return 60  # bucket 4
         return None
-        
+
     async def fake_load_dp_caps(_db, _week):
         return {
             1: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
-            2: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0}
+            2: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
         }
 
     monkeypatch.setattr(
@@ -157,7 +157,7 @@ async def test_excludes_over_75_minutes(
     async def fake_load_dp_caps(_db, _week):
         return {
             1: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
-            2: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0}
+            2: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
         }
 
     monkeypatch.setattr(
@@ -234,11 +234,11 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
     # Equal travel times so criterion 2 decides second assignment
     async def fake_travel_minutes(origin: str, destination: str) -> int | None:
         return 10
-        
+
     async def fake_load_dp_caps(_db, _week):
         return {
             1: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
-            2: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0}
+            2: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
         }
 
     monkeypatch.setattr(
@@ -270,17 +270,18 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
 
     # Expect user 1 gets v1, user 2 gets v2 due to lower already-assigned ratio
     assert result["selected_visit_ids"] == [10, 11]
-    
+
     # OR-Tools solver may return symmetric solution (U1->V2, U2->V1) as costs are identical.
     # The important thing is that the load is balanced (different users assigned).
     r1_id = getattr(v1.researchers[0], "id")
     r2_id = getattr(v2.researchers[0], "id")
-    
+
     # Both must be assigned
     assert r1_id in (1, 2)
     assert r2_id in (1, 2)
     # And they must be different (load balanced)
     assert r1_id != r2_id
+
 
 @pytest.mark.asyncio
 async def test_avoid_multiple_large_team_visits_soft_constraint(
@@ -288,87 +289,123 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
 ) -> None:
     # 2 Visits, Size 3.
     v1 = make_visit(
-        vid=100, 
-        part_of_day="Ochtend", 
-        from_date=week_monday, 
-        to_date=week_monday+timedelta(days=4), 
+        vid=100,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=4),
         required_researchers=3,
-        address="Dest"
+        address="Dest",
     )
     v2 = make_visit(
-        vid=101, 
-        part_of_day="Ochtend", 
-        from_date=week_monday, 
-        to_date=week_monday+timedelta(days=4), 
+        vid=101,
+        part_of_day="Ochtend",
+        from_date=week_monday,
+        to_date=week_monday + timedelta(days=4),
         required_researchers=3,
-        address="Dest"
+        address="Dest",
     )
-    
+
     # Users A, B, C (local, 0 travel)
     # Users D, E, F (remote, 70 travel)
     # Capacity: plenty.
-    
+
     users = []
     for i, name in enumerate(["A", "B", "C", "D", "E", "F"]):
-        users.append(SimpleNamespace(id=i+10, address=name))
-        
+        users.append(SimpleNamespace(id=i + 10, address=name))
+
     async def fake_travel_minutes(origin: str, destination: str) -> int | None:
-        if origin in ["A", "B", "C"]: return 0
-        if origin in ["D", "E", "F"]: return 70
+        if origin in ["A", "B", "C"]:
+            return 0
+        if origin in ["D", "E", "F"]:
+            return 70
         return 0
 
-    async def fake_eligible(db, wm): return [v1, v2]
-    async def fake_load_caps(db, w): return {"Ochtend": 100, "Dag": 100, "Avond": 100, "Flex": 100}
-    async def fake_load_users(db): return users
-    async def fake_load_user_caps(db, w): return {u.id: 10 for u in users} # plenty
-    async def fake_load_dp_caps(db, w): return {u.id: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 0} for u in users}
+    async def fake_eligible(db, wm):
+        return [v1, v2]
+
+    async def fake_load_caps(db, w):
+        return {"Ochtend": 100, "Dag": 100, "Avond": 100, "Flex": 100}
+
+    async def fake_load_users(db):
+        return users
+
+    async def fake_load_user_caps(db, w):
+        return {u.id: 10 for u in users}  # plenty
+
+    async def fake_load_dp_caps(db, w):
+        return {u.id: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 0} for u in users}
 
     # Monkeypatching
-    monkeypatch.setattr("app.services.visit_planning_selection._qualifies_user_for_visit", lambda u, v: True)
-    monkeypatch.setattr("app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_week_capacity", fake_load_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_all_users", fake_load_users)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_capacities", fake_load_user_caps)
-    monkeypatch.setattr("app.services.visit_planning_selection._load_user_daypart_capacities", fake_load_dp_caps)
-    monkeypatch.setattr("app.services.travel_time.get_travel_minutes", fake_travel_minutes)
-    
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._qualifies_user_for_visit",
+        lambda u, v: True,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_week_capacity", fake_load_caps
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_all_users", fake_load_users
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_capacities",
+        fake_load_user_caps,
+    )
+    monkeypatch.setattr(
+        "app.services.visit_planning_selection._load_user_daypart_capacities",
+        fake_load_dp_caps,
+    )
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes", fake_travel_minutes
+    )
+
     # Run
     # With FIX (Load Weight 30, Travel 70, Large Penalty 60):
     # Reuse A: Marginal Load 90 + Large Penalty 60 = 150.
     # New D: Marginal Load 30 + Travel 70 = 100.
     # Logic prefers New D (150 > 100).
     # So we expect NO overlap.
-    
-    result = await select_visits_for_week(DummyDB(), week_monday)
-    
+
+    await select_visits_for_week(DummyDB(), week_monday)
+
     assigned_ids_v1 = [r.id for r in v1.researchers]
     assigned_ids_v2 = [r.id for r in v2.researchers]
-    
+
     intersection = set(assigned_ids_v1) & set(assigned_ids_v2)
-    assert len(intersection) == 0, "Should avoid multiple large visits if travel cost is reasonable (70 < 90+60)"
+    assert len(intersection) == 0, (
+        "Should avoid multiple large visits if travel cost is reasonable (70 < 90+60)"
+    )
 
     # Part 2: Verify it is a SOFT constraint.
     # If travel is very high (e.g. 200), we should accept the penalty and reuse.
     # Reuse A: 150.
     # New D: Load 30 + Travel 200 = 230.
     # 230 > 150 -> Reuse A.
-    
+
     async def fake_travel_minutes_high(origin: str, destination: str) -> int | None:
-        if origin in ["A", "B", "C"]: return 0
-        if origin in ["D", "E", "F"]: return 200
+        if origin in ["A", "B", "C"]:
+            return 0
+        if origin in ["D", "E", "F"]:
+            return 200
         return 0
-        
-    monkeypatch.setattr("app.services.travel_time.get_travel_minutes", fake_travel_minutes_high)
-    
-    # Must clear researchers to avoid 'planned' interference in this specific test setup 
+
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes", fake_travel_minutes_high
+    )
+
+    # Must clear researchers to avoid 'planned' interference in this specific test setup
     # (since we are reusing visit objects in memory)
     v1.researchers = []
     v2.researchers = []
-    
-    result_high = await select_visits_for_week(DummyDB(), week_monday)
-    
+
+    await select_visits_for_week(DummyDB(), week_monday)
+
     assigned_ids_v1_high = [r.id for r in v1.researchers]
     assigned_ids_v2_high = [r.id for r in v2.researchers]
-    
+
     intersection_high = set(assigned_ids_v1_high) & set(assigned_ids_v2_high)
-    assert len(intersection_high) == 3, "Should reuse researchers if travel cost is prohibitive (230 > 150)"
+    assert len(intersection_high) == 3, (
+        "Should reuse researchers if travel cost is prohibitive (230 > 150)"
+    )

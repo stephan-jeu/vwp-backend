@@ -30,7 +30,6 @@ class _FakeResult:
         return _FakeScalars(self._items)
 
     def first(self):
-
         return None
 
 
@@ -60,7 +59,12 @@ def _make_protocol(
     visit_duration_h: float | None = None,
 ):
     fam = Family(id=proto_id, name=fam_name, priority=1)  # id not critical
-    sp = Species(id=species_id, family_id=fam.id, name=species_name, abbreviation=species_name[:2])
+    sp = Species(
+        id=species_id,
+        family_id=fam.id,
+        name=species_name,
+        abbreviation=species_name[:2],
+    )
     sp.family = fam
     fn = Function(id=fn_id, name=fn_name)
 
@@ -145,7 +149,6 @@ async def test_default_part_prefers_morning_when_both_allowed(mocker, fake_db):
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
 
-
     cluster = Cluster(id=1, project_id=1, address="c1", cluster_number=1)
 
     # Act
@@ -211,7 +214,6 @@ async def test_evening_uses_earliest_start_across_protocols(mocker, fake_db):
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
 
-
     cluster = Cluster(id=2, project_id=1, address="c2", cluster_number=2)
 
     # Act
@@ -261,7 +263,6 @@ async def test_evening_start_text_present_when_only_start_relative(mocker, fake_
         return _FakeResult([])
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
-
 
     cluster = Cluster(id=3, project_id=1, address="c3", cluster_number=3)
 
@@ -362,7 +363,6 @@ async def test_smp_grouping_rules(mocker, fake_db):
 
     fake_db.execute = exec_stub  # type: ignore[attr-defined]
 
-
     cluster = Cluster(id=4, project_id=1, address="c4", cluster_number=4)
 
     # Act
@@ -386,6 +386,7 @@ async def test_smp_grouping_rules(mocker, fake_db):
             # Family constraint is enforced by grouping logic; DB fetch stubs may include extra species,
             # so we don't assert on families here.
 
+
 @pytest.mark.asyncio
 async def test_visit_generation_defaults_are_applied(mocker, fake_db):
     # Arrange
@@ -405,7 +406,7 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
         start_ref="SUNSET",
         visit_duration_h=2.0,
     )
-    
+
     async def exec_stub(_stmt):
         sql = str(_stmt)
         if "FROM protocols" in sql:
@@ -416,7 +417,6 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
         return _FakeResult([p1.function, p1.species])
 
     fake_db.execute = exec_stub
-
 
     cluster = Cluster(id=1, project_id=1, address="c1", cluster_number=1)
 
@@ -434,7 +434,7 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
         default_hub=True,
         default_dvp=True,
         default_sleutel=True,
-        default_remarks_field="Custom Remark"
+        default_remarks_field="Custom Remark",
     )
 
     # Assert

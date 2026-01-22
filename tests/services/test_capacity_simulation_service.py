@@ -99,7 +99,10 @@ async def test_simulate_week_capacity_empty_when_no_selected(
 ) -> None:
     async def fake_core(_db: Any, _week_monday: date, **kwargs):
         from app.services.visit_selection_ortools import VisitSelectionResult
-        return VisitSelectionResult([], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 0})
+
+        return VisitSelectionResult(
+            [], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 0}
+        )
 
     monkeypatch.setattr(
         "app.services.capacity_simulation_service.select_visits_cp_sat",
@@ -123,8 +126,11 @@ async def test_simulate_week_capacity_aggregates_required_and_assigned(
 
     async def fake_core(_db: Any, _week_monday: date, **kwargs):
         from app.services.visit_selection_ortools import VisitSelectionResult
-        return VisitSelectionResult([v1, v2], [], {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0})
-    
+
+        return VisitSelectionResult(
+            [v1, v2], [], {"Ochtend": 2, "Dag": 0, "Avond": 0, "Flex": 0}
+        )
+
     # One user with two morning slots.
     availability_rows = [
         SimpleNamespace(
@@ -149,7 +155,6 @@ async def test_simulate_week_capacity_aggregates_required_and_assigned(
         fake_load_users,
     )
 
-
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
     # Expected key is now "Vleermuis" (Capitalized by new logic)
@@ -169,7 +174,10 @@ async def test_simulate_week_capacity_tracks_shortfall_when_insufficient_capacit
 
     async def fake_core(_db: Any, _week_monday: date, **kwargs):
         from app.services.visit_selection_ortools import VisitSelectionResult
-        return VisitSelectionResult([], [v], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0})
+
+        return VisitSelectionResult(
+            [], [v], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
+        )
 
     # One user with only one morning slot available.
     availability_rows = [
@@ -195,7 +203,6 @@ async def test_simulate_week_capacity_tracks_shortfall_when_insufficient_capacit
         fake_load_users,
     )
 
-
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
     cell = result["Vleermuis"]["Ochtend"]
@@ -213,7 +220,10 @@ async def test_simulate_week_capacity_uses_flex_when_part_capacity_empty(
 
     async def fake_core(_db: Any, _week_monday: date, **kwargs):
         from app.services.visit_selection_ortools import VisitSelectionResult
-        return VisitSelectionResult([v], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 1})
+
+        return VisitSelectionResult(
+            [v], [], {"Ochtend": 0, "Dag": 0, "Avond": 0, "Flex": 1}
+        )
 
     availability_rows = [
         SimpleNamespace(
@@ -238,7 +248,6 @@ async def test_simulate_week_capacity_uses_flex_when_part_capacity_empty(
         fake_load_users,
     )
 
-
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
     cell = result["Vleermuis"]["Ochtend"]
@@ -259,7 +268,10 @@ async def test_simulate_week_capacity_shares_user_capacity_across_families(
     async def fake_core(_db: Any, _week_monday: date, **kwargs):
         # Order is important: whichever comes first will consume the slot.
         from app.services.visit_selection_ortools import VisitSelectionResult
-        return VisitSelectionResult([v1, v2], [], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0})
+
+        return VisitSelectionResult(
+            [v1, v2], [], {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0}
+        )
 
     availability_rows = [
         SimpleNamespace(
@@ -283,7 +295,6 @@ async def test_simulate_week_capacity_shares_user_capacity_across_families(
         "app.services.visit_planning_selection._load_all_users",
         fake_load_users,
     )
-
 
     result = await simulate_week_capacity(fake_db, week_monday)  # type: ignore[arg-type]
 
@@ -327,7 +338,8 @@ async def test_simulate_capacity_horizon_normalizes_start_to_monday(
     # Pick a Wednesday; implementation should roll back to Monday of that week.
     some_day = date(2025, 6, 4)
     response: CapacitySimulationResponse = await simulate_capacity_horizon(
-        fake_db, some_day  # type: ignore[arg-type]
+        fake_db,
+        some_day,  # type: ignore[arg-type]
     )
 
     assert isinstance(response, CapacitySimulationResponse)

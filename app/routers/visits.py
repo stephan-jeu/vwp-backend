@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
+from app.models.function import Function
 from app.models.project import Project
 from app.models.protocol import Protocol
 from app.models.protocol_visit_window import ProtocolVisitWindow
@@ -75,10 +76,9 @@ async def list_available_weeks(
     """
     from app.models.visit import visit_researchers
     from app.models.availability import AvailabilityWeek
-    from sqlalchemy import func
-    
+
     stmt = select(Visit.planned_week, Visit.from_date)
-    
+
     if mine:
         stmt = stmt.join(visit_researchers).where(
             visit_researchers.c.user_id == current_user.id
@@ -87,11 +87,11 @@ async def list_available_weeks(
     stmt = stmt.where(
         (Visit.planned_week.is_not(None)) | (Visit.from_date.is_not(None))
     )
-    
+
     rows = await db.execute(stmt)
     weeks = set()
-    
-    for (p_week, f_date) in rows:
+
+    for p_week, f_date in rows:
         if p_week is not None and 1 <= p_week <= 53:
             weeks.add(p_week)
         elif f_date is not None:
@@ -118,6 +118,51 @@ async def list_available_weeks(
     return sorted(list(weeks))
 
 
+@router.get("/options/functions", response_model=list[FunctionCompactRead])
+async def list_function_options(
+    current_user: UserDep,
+    db: DbDep,
+) -> list[FunctionCompactRead]:
+    """List all functions for selection menus.
+
+    Args:
+        current_user: Ensures the caller is authenticated.
+        db: Async SQLAlchemy session.
+
+    Returns:
+        List of compact function objects.
+    """
+
+    _ = current_user
+    stmt = select(Function).order_by(Function.name)
+    functions = list((await db.execute(stmt)).scalars().all())
+    return [FunctionCompactRead(id=f.id, name=f.name) for f in functions]
+
+
+@router.get("/options/species", response_model=list[SpeciesCompactRead])
+async def list_species_options(
+    current_user: UserDep,
+    db: DbDep,
+) -> list[SpeciesCompactRead]:
+    """List all species for selection menus.
+
+    Args:
+        current_user: Ensures the caller is authenticated.
+        db: Async SQLAlchemy session.
+
+    Returns:
+        List of compact species objects.
+    """
+
+    _ = current_user
+    stmt = select(Species).order_by(Species.name)
+    species = list((await db.execute(stmt)).scalars().all())
+    return [
+        SpeciesCompactRead(id=s.id, name=s.name, abbreviation=s.abbreviation)
+        for s in species
+    ]
+
+
 @router.get("", response_model=VisitListResponse)
 async def list_visits(
     current_user: UserDep,
@@ -127,6 +172,9 @@ async def list_visits(
     search: Annotated[str | None, Query()] = None,
     statuses: Annotated[list[VisitStatusCode] | None, Query()] = None,
     week: Annotated[int | None, Query(ge=1, le=53)] = None,
+    cluster_number: Annotated[int | None, Query(ge=1)] = None,
+    function_ids: Annotated[list[int] | None, Query()] = None,
+    species_ids: Annotated[list[int] | None, Query()] = None,
     simulated_today: Annotated[date | None, Query()] = None,
 ) -> VisitListResponse:
     """Return a paginated list of visits for the overview table.
@@ -168,6 +216,7 @@ async def list_visits(
     # --- Week Filtering ---
     # We filter early if week is provided, to narrow down dataset before other filters
     if week is not None:
+
         def _get_iso_week(d: date) -> int:
             return d.isocalendar()[1]
 
@@ -179,9 +228,27 @@ async def list_visits(
             if v.planned_week is None and v.from_date:
                 return _get_iso_week(v.from_date) == target_week
             return False
-            
+
         visits = [v for v in visits if _is_in_week(v, week)]
 
+    if cluster_number is not None:
+        visits = [
+            v
+            for v in visits
+            if v.cluster is not None and v.cluster.cluster_number == cluster_number
+        ]
+
+    if function_ids:
+        allowed_function_ids = set(function_ids)
+        visits = [
+            v for v in visits if any(f.id in allowed_function_ids for f in v.functions)
+        ]
+
+    if species_ids:
+        allowed_species_ids = set(species_ids)
+        visits = [
+            v for v in visits if any(s.id in allowed_species_ids for s in v.species)
+        ]
 
     # Optional text search across project, cluster and related names
     if search:
@@ -209,6 +276,12 @@ async def list_visits(
                     or term in (s.abbreviation or "").lower()
                 ):
                     return True
+
+            if term in (v.custom_function_name or "").lower():
+                return True
+
+            if term in (v.custom_species_name or "").lower():
+                return True
             for r in v.researchers:
                 if term in (r.full_name or "").lower():
                     return True

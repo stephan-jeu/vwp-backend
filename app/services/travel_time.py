@@ -52,7 +52,7 @@ async def get_travel_minutes(origin: str, destination: str) -> Optional[int]:
 
 
 async def get_travel_minutes_batch(
-    pairs: list[tuple[str, str]]
+    pairs: list[tuple[str, str]],
 ) -> dict[tuple[str, str], int]:
     """Fetch travel times for multiple origin-destination pairs in parallel.
 

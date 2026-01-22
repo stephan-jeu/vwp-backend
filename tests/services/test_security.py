@@ -28,4 +28,3 @@ async def test_assert_admin_denies_non_admin(mocker):
     # Act
     with pytest.raises(Exception):
         await assert_admin(db, "user@example.com")
-

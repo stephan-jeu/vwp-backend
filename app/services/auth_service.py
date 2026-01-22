@@ -75,4 +75,3 @@ def decode_token(token: str) -> Dict[str, Any]:
         algorithms=[settings.jwt_algorithm],
         options={"require": ["exp", "sub"]},
     )
-

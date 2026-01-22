@@ -19,6 +19,7 @@ from .visit_generation_ortools import generate_visits_cp_sat
 _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
 _logger = logging.getLogger("uvicorn.error")
 
+
 async def generate_visits_for_cluster(
     db: AsyncSession,
     cluster: Cluster,
@@ -51,8 +52,8 @@ async def generate_visits_for_cluster(
     # Resolve protocols if not provided
     if protocols is None:
         if not function_ids or not species_ids:
-             return [], []
-             
+            return [], []
+
         stmt = (
             select(Protocol)
             .where(
@@ -66,7 +67,7 @@ async def generate_visits_for_cluster(
             )
         )
         protocols = (await db.execute(stmt)).scalars().unique().all()
-    
+
     # Delegate to CP-SAT solver implementation.
     return await generate_visits_cp_sat(
         db,

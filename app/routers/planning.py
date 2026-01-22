@@ -60,8 +60,8 @@ async def get_planning(
         planned = [
             v
             for v in planned
-            if (getattr(v, "planned_week", None) == week) or
-            (
+            if (getattr(v, "planned_week", None) == week)
+            or (
                 (getattr(v, "from_date", None) and getattr(v, "to_date", None))
                 and (v.from_date <= week_end and v.to_date >= week_start)
             )
@@ -127,18 +127,14 @@ async def generate_planning(
     # Use dynamic timeout (None) which defaults to max(5s, min(60s, complexity))
     # Include travel time optimization
     result = await select_visits_for_week(
-        db,
-        week_monday,
-        timeout_seconds=None,
-        include_travel_time=True
+        db, week_monday, timeout_seconds=None, include_travel_time=True
     )
 
     # Post-planning Sanitization: Check for future conflicts
     from app.services.visit_sanitization import sanitize_future_planning
+
     sanitized = await sanitize_future_planning(
-        db, 
-        week_monday, 
-        result.get("selected_visit_ids", [])
+        db, week_monday, result.get("selected_visit_ids", [])
     )
     if sanitized:
         result["sanitized_future_visit_ids"] = sanitized
@@ -185,8 +181,8 @@ async def clear_planned_researchers(
             # So targets:
             # 1. planned_week == week
             # 2. OR date overlap (fallback for legacy/implicit)
-            (Visit.planned_week == week) |
-            and_(
+            (Visit.planned_week == week)
+            | and_(
                 Visit.from_date <= week_end,
                 Visit.to_date >= week_start,
             )
