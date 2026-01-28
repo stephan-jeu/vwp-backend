@@ -4,7 +4,8 @@ from typing import Annotated
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import delete, insert, select
+from sqlalchemy import and_, cast, delete, func, insert, or_, select
+from sqlalchemy.types import String
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +51,7 @@ from app.services.visit_status_service import (
     VisitStatusCode,
     resolve_visit_status,
     resolve_visit_status_by_id,
+    resolve_visit_statuses,
 )
 from app.services.visit_execution_updates import update_subsequent_visits
 from core.settings import get_settings
@@ -61,6 +63,70 @@ router = APIRouter()
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 AdminDep = Annotated[User, Depends(require_admin)]
 UserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def _resolve_pvw_ids_for_visit(
+    db: AsyncSession,
+    *,
+    cluster_id: int,
+    visit_nr: int,
+    function_ids: list[int],
+    species_ids: list[int],
+    visit_id: int | None = None,
+) -> list[int]:
+    """Resolve PVW ids based on protocol-specific visit ordering.
+
+    Args:
+        db: Async SQLAlchemy session.
+        cluster_id: Cluster ID for the visit.
+        visit_nr: Visit ordering number within the cluster.
+        function_ids: Function IDs linked to the visit.
+        species_ids: Species IDs linked to the visit.
+
+    Returns:
+        List of protocol visit window IDs for the visit.
+    """
+
+    stmt_protocols = select(Protocol).where(
+        Protocol.function_id.in_(function_ids),
+        Protocol.species_id.in_(species_ids),
+    )
+    protocols = (await db.execute(stmt_protocols)).scalars().all()
+    if not protocols:
+        return []
+
+    pvw_ids: list[int] = []
+    for protocol in protocols:
+        if protocol.function_id is None or protocol.species_id is None:
+            continue
+
+        count_stmt = (
+            select(func.count(func.distinct(Visit.id)))
+            .select_from(Visit)
+            .join(visit_functions, visit_functions.c.visit_id == Visit.id)
+            .join(visit_species, visit_species.c.visit_id == Visit.id)
+            .where(
+                Visit.cluster_id == cluster_id,
+                Visit.visit_nr.is_not(None),
+                Visit.visit_nr < visit_nr,
+                visit_functions.c.function_id == protocol.function_id,
+                visit_species.c.species_id == protocol.species_id,
+            )
+        )
+        if visit_id is not None:
+            count_stmt = count_stmt.where(Visit.id != visit_id)
+        previous_count = (await db.execute(count_stmt)).scalar_one()
+        visit_index = previous_count + 1
+
+        pvw_stmt = select(ProtocolVisitWindow.id).where(
+            ProtocolVisitWindow.protocol_id == protocol.id,
+            ProtocolVisitWindow.visit_index == visit_index,
+        )
+        pvw_id = (await db.execute(pvw_stmt)).scalar_one_or_none()
+        if pvw_id is not None:
+            pvw_ids.append(pvw_id)
+
+    return pvw_ids
 
 
 @router.get("/weeks", response_model=list[int])
@@ -155,12 +221,9 @@ async def list_species_options(
     """
 
     _ = current_user
-    stmt = select(Species).order_by(Species.name)
+    stmt = select(Species).options(selectinload(Species.family)).order_by(Species.name)
     species = list((await db.execute(stmt)).scalars().all())
-    return [
-        SpeciesCompactRead(id=s.id, name=s.name, abbreviation=s.abbreviation)
-        for s in species
-    ]
+    return [SpeciesCompactRead.model_validate(s) for s in species]
 
 
 @router.get("", response_model=VisitListResponse)
@@ -176,6 +239,7 @@ async def list_visits(
     function_ids: Annotated[list[int] | None, Query()] = None,
     species_ids: Annotated[list[int] | None, Query()] = None,
     simulated_today: Annotated[date | None, Query()] = None,
+    unplanned_only: Annotated[bool, Query()] = False,
 ) -> VisitListResponse:
     """Return a paginated list of visits for the overview table.
 
@@ -194,6 +258,7 @@ async def list_visits(
             and researcher names.
         statuses: Optional list of lifecycle status codes to filter by.
         week: Optional ISO week number to filter by.
+        unplanned_only: When true, only visits without provisional/planned weeks are returned.
 
     Returns:
         Paginated :class:`VisitListResponse` with flattened rows.
@@ -204,96 +269,114 @@ async def list_visits(
     if settings.test_mode_enabled and getattr(current_user, "admin", False):
         effective_today = simulated_today
 
-    stmt = select(Visit).options(
-        selectinload(Visit.cluster).selectinload(Cluster.project),
-        selectinload(Visit.functions),
-        selectinload(Visit.species),
-        selectinload(Visit.researchers),
-        selectinload(Visit.preferred_researcher),
+    stmt = (
+        select(Visit.id)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id, isouter=True)
     )
-    visits = (await db.execute(stmt)).scalars().all()
+    stmt = stmt.where(or_(Project.quote.is_(False), Project.quote.is_(None)))
 
     # --- Week Filtering ---
     # We filter early if week is provided, to narrow down dataset before other filters
     if week is not None:
 
-        def _get_iso_week(d: date) -> int:
-            return d.isocalendar()[1]
+        stmt = stmt.where(
+            or_(
+                Visit.planned_week == week,
+                Visit.provisional_week == week,
+                and_(
+                    Visit.planned_week.is_(None),
+                    Visit.provisional_week.is_(None),
+                    func.extract("week", Visit.from_date) == week,
+                ),
+            )
+        )
 
-        def _is_in_week(v: Visit, target_week: int) -> bool:
-            # 1. Matches planned_week explicit field
-            if v.planned_week == target_week:
-                return True
-            # 2. If planned_week not set, check from_date ISO week
-            if v.planned_week is None and v.from_date:
-                return _get_iso_week(v.from_date) == target_week
-            return False
-
-        visits = [v for v in visits if _is_in_week(v, week)]
+    if unplanned_only:
+        stmt = stmt.where(
+            Visit.provisional_week.is_(None), Visit.planned_week.is_(None)
+        )
 
     if cluster_number is not None:
-        visits = [
-            v
-            for v in visits
-            if v.cluster is not None and v.cluster.cluster_number == cluster_number
-        ]
+        stmt = stmt.where(Cluster.cluster_number == cluster_number)
 
     if function_ids:
-        allowed_function_ids = set(function_ids)
-        visits = [
-            v for v in visits if any(f.id in allowed_function_ids for f in v.functions)
-        ]
+        stmt = stmt.join(visit_functions, Visit.id == visit_functions.c.visit_id)
+        stmt = stmt.where(visit_functions.c.function_id.in_(function_ids))
 
     if species_ids:
-        allowed_species_ids = set(species_ids)
-        visits = [
-            v for v in visits if any(s.id in allowed_species_ids for s in v.species)
-        ]
+        stmt = stmt.join(visit_species, Visit.id == visit_species.c.visit_id)
+        stmt = stmt.where(visit_species.c.species_id.in_(species_ids))
 
     # Optional text search across project, cluster and related names
     if search:
         term = search.strip().lower()
+        like = f"%{term}%"
+        stmt = stmt.outerjoin(visit_functions, Visit.id == visit_functions.c.visit_id)
+        stmt = stmt.outerjoin(Function, Function.id == visit_functions.c.function_id)
+        stmt = stmt.outerjoin(visit_species, Visit.id == visit_species.c.visit_id)
+        stmt = stmt.outerjoin(Species, Species.id == visit_species.c.species_id)
+        stmt = stmt.outerjoin(
+            visit_researchers, Visit.id == visit_researchers.c.visit_id
+        )
+        stmt = stmt.outerjoin(User, User.id == visit_researchers.c.user_id)
 
-        def _matches(v: Visit) -> bool:
-            cluster = v.cluster
-            project: Project | None = getattr(cluster, "project", None)
-            if project and (
-                term in project.code.lower() or term in project.location.lower()
-            ):
-                return True
+        stmt = stmt.where(
+            or_(
+                func.lower(Project.code).like(like),
+                func.lower(Project.location).like(like),
+                func.lower(Cluster.address).like(like),
+                cast(Cluster.cluster_number, String).like(like),
+                func.lower(Function.name).like(like),
+                func.lower(Species.name).like(like),
+                func.lower(Species.abbreviation).like(like),
+                func.lower(User.full_name).like(like),
+                func.lower(Visit.custom_function_name).like(like),
+                func.lower(Visit.custom_species_name).like(like),
+            )
+        )
 
-            if cluster and (
-                term in cluster.address.lower() or term in str(cluster.cluster_number)
-            ):
-                return True
+    stmt = stmt.distinct(Visit.id)
 
-            for f in v.functions:
-                if term in (f.name or "").lower():
-                    return True
-            for s in v.species:
-                if (
-                    term in (s.name or "").lower()
-                    or term in (s.abbreviation or "").lower()
-                ):
-                    return True
+    order_from = func.coalesce(Visit.from_date, date(9999, 12, 31))
+    stmt = stmt.order_by(
+        Visit.id,
+        order_from,
+        Project.code,
+        Cluster.cluster_number,
+        Visit.visit_nr,
+    )
 
-            if term in (v.custom_function_name or "").lower():
-                return True
+    if statuses:
+        visit_ids = (await db.execute(stmt)).scalars().all()
+        total = len(visit_ids)
+    else:
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = int((await db.execute(count_stmt)).scalar_one())
+        visit_ids = (
+            (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size)))
+            .scalars()
+            .all()
+        )
 
-            if term in (v.custom_species_name or "").lower():
-                return True
-            for r in v.researchers:
-                if term in (r.full_name or "").lower():
-                    return True
+    if not visit_ids:
+        return VisitListResponse(items=[], total=total, page=page, page_size=page_size)
 
-            return False
-
-        visits = [v for v in visits if _matches(v)]
+    visit_stmt = (
+        select(Visit)
+        .where(Visit.id.in_(visit_ids))
+        .options(
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.functions),
+            selectinload(Visit.species).selectinload(Species.family),
+            selectinload(Visit.researchers),
+            selectinload(Visit.preferred_researcher),
+        )
+    )
+    visits = (await db.execute(visit_stmt)).scalars().all()
 
     # Derive lifecycle status for each visit once, then filter by status
-    status_map: dict[int, VisitStatusCode] = {}
-    for v in visits:
-        status_map[v.id] = await resolve_visit_status(db, v, today=effective_today)
+    status_map = await resolve_visit_statuses(db, visits, today=effective_today)
 
     if statuses:
         allowed = set(statuses)
@@ -311,10 +394,13 @@ async def list_visits(
 
     visits.sort(key=_sort_key)
 
-    total = len(visits)
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_items = visits[start:end]
+    if statuses:
+        total = len(visits)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = visits[start:end]
+    else:
+        page_items = visits
 
     items = []
     for v in page_items:
@@ -341,12 +427,7 @@ async def list_visits(
                 "functions": [
                     FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
                 ],
-                "species": [
-                    SpeciesCompactRead(
-                        id=s.id, name=s.name, abbreviation=s.abbreviation
-                    )
-                    for s in v.species
-                ],
+                "species": [SpeciesCompactRead.model_validate(s) for s in v.species],
                 "custom_function_name": v.custom_function_name,
                 "custom_species_name": v.custom_species_name,
                 "required_researchers": v.required_researchers,
@@ -383,6 +464,8 @@ async def list_visits(
                 ],
                 "advertized": v.advertized,
                 "quote": v.quote,
+                "provisional_week": v.provisional_week,
+                "provisional_locked": v.provisional_locked,
             }
         )
 
@@ -413,7 +496,7 @@ async def get_visit_detail(
         .options(
             selectinload(Visit.cluster).selectinload(Cluster.project),
             selectinload(Visit.functions),
-            selectinload(Visit.species),
+            selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
             selectinload(Visit.preferred_researcher),
         )
@@ -443,14 +526,7 @@ async def get_visit_detail(
         function_ids=[f.id for f in visit.functions],
         species_ids=[s.id for s in visit.species],
         functions=[FunctionCompactRead(id=f.id, name=f.name) for f in visit.functions],
-        species=[
-            SpeciesCompactRead(
-                id=s.id,
-                name=s.name,
-                abbreviation=s.abbreviation,
-            )
-            for s in visit.species
-        ],
+        species=[SpeciesCompactRead.model_validate(s) for s in visit.species],
         custom_function_name=visit.custom_function_name,
         custom_species_name=visit.custom_species_name,
         required_researchers=visit.required_researchers,
@@ -486,6 +562,8 @@ async def get_visit_detail(
         ],
         advertized=visit.advertized,
         quote=visit.quote,
+        provisional_week=visit.provisional_week,
+        provisional_locked=visit.provisional_locked,
     )
 
 
@@ -525,6 +603,30 @@ async def create_visit(
             [{"visit_id": visit.id, "user_id": rid} for rid in payload.researcher_ids],
         )
 
+    if (
+        visit.visit_nr is not None
+        and payload.function_ids
+        and payload.species_ids
+        and not payload.custom_function_name
+        and not payload.custom_species_name
+    ):
+        pvw_ids = await _resolve_pvw_ids_for_visit(
+            db,
+            cluster_id=visit.cluster_id,
+            visit_nr=visit.visit_nr,
+            function_ids=payload.function_ids,
+            species_ids=payload.species_ids,
+            visit_id=visit.id,
+        )
+        if pvw_ids:
+            await db.execute(
+                insert(visit_protocol_visit_windows),
+                [
+                    {"visit_id": visit.id, "protocol_visit_window_id": pid}
+                    for pid in pvw_ids
+                ],
+            )
+
     await db.commit()
 
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
@@ -533,7 +635,7 @@ async def create_visit(
         .where(Visit.id == visit.id)
         .options(
             selectinload(Visit.functions),
-            selectinload(Visit.species),
+            selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
         )
     )
@@ -648,14 +750,7 @@ async def list_advertised_visits(
                 functions=[
                     FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
                 ],
-                species=[
-                    SpeciesCompactRead(
-                        id=s.id,
-                        name=s.name,
-                        abbreviation=s.abbreviation,
-                    )
-                    for s in v.species
-                ],
+                species=[SpeciesCompactRead.model_validate(s) for s in v.species],
                 custom_function_name=v.custom_function_name,
                 custom_species_name=v.custom_species_name,
                 required_researchers=v.required_researchers,
@@ -864,21 +959,14 @@ async def update_visit(
             and current_species_ids
             and current_function_ids
         ):
-            # 3. Find matching ProtocolVisitWindows
-            # We look for Protocols that match any (Species, Function) combination
-            # present on the visit.
-            # AND the ProtocolVisitWindow must match the visit's number index.
-            stmt_pvw = (
-                select(ProtocolVisitWindow.id)
-                .join(Protocol, ProtocolVisitWindow.protocol_id == Protocol.id)
-                .where(
-                    Protocol.species_id.in_(current_species_ids),
-                    Protocol.function_id.in_(current_function_ids),
-                    ProtocolVisitWindow.visit_index == current_visit_nr,
-                )
+            pvw_ids = await _resolve_pvw_ids_for_visit(
+                db,
+                cluster_id=visit.cluster_id,
+                visit_nr=current_visit_nr,
+                function_ids=current_function_ids,
+                species_ids=current_species_ids,
+                visit_id=visit.id,
             )
-            pvw_ids = (await db.execute(stmt_pvw)).scalars().all()
-
             if pvw_ids:
                 await db.execute(
                     insert(visit_protocol_visit_windows),
@@ -895,7 +983,7 @@ async def update_visit(
         .where(Visit.id == visit.id)
         .options(
             selectinload(Visit.functions),
-            selectinload(Visit.species),
+            selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
         )
     )
@@ -1144,7 +1232,7 @@ async def list_visits_for_audit(
     stmt = select(Visit).options(
         selectinload(Visit.cluster).selectinload(Cluster.project),
         selectinload(Visit.functions),
-        selectinload(Visit.species),
+        selectinload(Visit.species).selectinload(Species.family),
         selectinload(Visit.researchers),
         selectinload(Visit.preferred_researcher),
     )
@@ -1228,14 +1316,7 @@ async def list_visits_for_audit(
                 functions=[
                     FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
                 ],
-                species=[
-                    SpeciesCompactRead(
-                        id=s.id,
-                        name=s.name,
-                        abbreviation=s.abbreviation,
-                    )
-                    for s in v.species
-                ],
+                species=[SpeciesCompactRead.model_validate(s) for s in v.species],
                 custom_function_name=v.custom_function_name,
                 custom_species_name=v.custom_species_name,
                 required_researchers=v.required_researchers,

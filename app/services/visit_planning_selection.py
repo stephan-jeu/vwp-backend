@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from typing import Iterable
 import logging
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,6 +25,15 @@ from app.services.visit_status_service import (
 
 _logger = logging.getLogger("uvicorn.error")
 _DEBUG_PLANNING = os.getenv("PLANNING_DEBUG", "").lower() in ("true", "1", "yes")
+_DEBUG_PLANNING_VISIT_IDS_RAW = os.getenv("PLANNING_DEBUG_VISIT_IDS", "")
+try:
+    _DEBUG_PLANNING_VISIT_IDS = {
+        int(val.strip())
+        for val in _DEBUG_PLANNING_VISIT_IDS_RAW.split(",")
+        if val.strip()
+    }
+except ValueError:
+    _DEBUG_PLANNING_VISIT_IDS = set()
 
 
 DAYPART_TO_AVAIL_FIELD = {
@@ -81,6 +90,53 @@ def _any_function_contains(v: Visit, needles: Iterable[str]) -> bool:
     return any(any(needle.lower() in n for n in names) for needle in needles)
 
 
+def _vleermuis_expertise_requirement(visit: Visit) -> str | None:
+    """Return required expertise level for Vleermuis visits, if applicable.
+
+    Args:
+        visit: Visit candidate being evaluated.
+
+    Returns:
+        Normalized expertise level (lowercase) when the visit requires
+        Vleermuis expertise, otherwise ``None``.
+    """
+
+    required = (getattr(visit, "expertise_level", None) or "").strip().lower()
+    if not required:
+        return None
+    for sp in visit.species or []:
+        fam_name = (
+            getattr(getattr(sp, "family", None), "name", None)
+            or getattr(sp, "name", None)
+            or ""
+        )
+        if fam_name.strip().lower() == "vleermuis":
+            return required
+    return None
+
+
+def _meets_vleermuis_expertise(user: User, visit: Visit) -> bool:
+    """Return True if the user meets the Vleermuis expertise requirement.
+
+    Args:
+        user: Candidate researcher.
+        visit: Visit being evaluated.
+
+    Returns:
+        ``True`` when no Vleermuis expertise level is required or the user's
+        bat experience meets/exceeds the requirement.
+    """
+
+    required_expertise = _vleermuis_expertise_requirement(visit)
+    if required_expertise is None:
+        return True
+    user_expertise = (getattr(user, "experience_bat", None) or "").strip().lower()
+    expertise_rank = {"junior": 1, "medior": 2, "senior": 3}
+    required_rank = expertise_rank.get(required_expertise, 0)
+    user_rank = expertise_rank.get(user_expertise, 0)
+    return required_rank == 0 or user_rank >= required_rank
+
+
 def _family_priority_from_first_species(v: Visit) -> int | None:
     try:
         sp: Species = v.species[0]
@@ -111,9 +167,17 @@ def _priority_key(week_monday: date, v: Visit) -> tuple:
         or getattr(v, "wbc", False)
     )
 
-    # Weight: tier1 most significant down to tier8 least; use bit shifts
+    # Weight: tier0 (Season Plan) most significant.
+    # tier0: Is this visit specifically provisionally planned for THIS week?
+    # (Matches Architect's precise slot).
+    # We need to access current week number. `week_monday` is passed.
+    current_week = week_monday.isocalendar().week
+    tier0 = bool(v.provisional_week == current_week)
+
+    # Re-weight
     weight = (
-        (int(tier1) << 7)
+        (int(tier0) << 8)
+        | (int(tier1) << 7)
         | (int(tier2) << 6)
         | (int(tier3) << 5)
         | (int(tier4) << 4)
@@ -278,17 +342,48 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             and_(
                 Visit.from_date <= week_friday,
                 Visit.to_date >= week_monday,
+                Visit.from_date <= week_friday,
+                Visit.to_date >= week_monday,
                 Project.quote.is_(False),
-                # Exclude visits that are already planned in a way we want to preserve.
-                # User requirement (2026-01-16):
-                # "only ignore visits that have planned_week AND researcher(s) assigned"
-                # This prevents poaching visits from other weeks if they are fully planned.
-                ~and_(
-                    Visit.planned_week.isnot(None),
-                    Visit.researchers.any(),
+                # Season Planning Integration:
+                # We ONLY consider visits that:
+                # 1. Are Provisionally Planned for this week (or past weeks/overdue)
+                # 2. OR Are Manually Locked (Priority)
+                # 3. OR Are already Planned (Execution) but maybe we are re-optimizing?
+                #
+                # Wait! User said "Inbox" should also show "Possible" visits if searched.
+                # But for the default "Auto-Select" or "Inbox List", we should focus on the Plan.
+                # Actually, the function `_eligible_visits_for_week` is used by the Solver to PICK visits.
+                # So we should RESTRICT it to what the Season Planner authorized + what is strictly necessary.
+                # Logic:
+                # - Match strictly feasible (Window intersection) -> Already handled by from_date/to_date above.
+                # - Filter by Provisional Week logic:
+                #   - If provisional_week IS SET: Allow if provisional_week <= current_week?
+                #   - What if it's set to NEXT week? Then we should HIDE it (it's for future).
+                #   - What if it's NOT set (Unplannable)? We generally ignore it unless forced?
+                #     (User said unplannable go to capacity page).
+                # Current Logic Implementation:
+                # We relax the strict filter to allow the "Search" case, OR we stick to the Plan.
+                # Given "Candidate / Pull List" requirement, we probably shouldn't HARD filter in the DB query
+                # if this function powers the "Inbox" list too.
+                # BUT this function is named `_eligible_visits_for_week` and powers the CP-SAT Weekly Solver.
+                # The Weekly Solver should ONLY optimize what is on the menu.
+                # So:
+                or_(
+                    # A. Authorized by Season Planner (Current or Past Overdue)
+                    Visit.provisional_week <= week_num,
+                    # B. Manually Pinned (Locked) - even if provisional_week is future? (Contradiction? No, manual sets provisional).
+                    # If manual/locked, provisional_week will be set.
+                    # C. Allow "No Provisional" visits if they are explicitly pinned/legacy?
+                    # If we enforce provisional strictly, new un-simulated visits won't show up.
+                    # Safety: Allow if provisional_week IS NULL (Backwards compatibility / new visits not yet simulated)
+                    Visit.provisional_week.is_(None),
                 ),
+                # Exclude visits that are already planned with assigned researchers.
+                or_(Visit.planned_week.is_(None), ~Visit.researchers.any()),
                 # Exclude custom visits (manual planning only)
                 Visit.custom_function_name.is_(None),
+                Visit.custom_species_name.is_(None),
                 Visit.custom_species_name.is_(None),
             )
         )
@@ -303,6 +398,57 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
     )
 
     candidates = (await db.execute(stmt)).scalars().unique().all()
+
+    if _DEBUG_PLANNING and _DEBUG_PLANNING_VISIT_IDS:
+        debug_stmt = (
+            select(Visit)
+            .where(Visit.id.in_(_DEBUG_PLANNING_VISIT_IDS))
+            .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+        )
+        debug_visits = (await db.execute(debug_stmt)).scalars().unique().all()
+        candidate_ids = {v.id for v in candidates}
+        for v in debug_visits:
+            vid = getattr(v, "id", None)
+            if vid in candidate_ids:
+                _logger.debug(
+                    "planning_debug visit_id=%s eligible_stage=pre_blocked",
+                    vid,
+                )
+                continue
+
+            reasons: list[str] = []
+            project = getattr(v.cluster, "project", None) if v.cluster else None
+            if project and getattr(project, "quote", False):
+                reasons.append("project_quote")
+            if getattr(v, "custom_function_name", None) or getattr(
+                v, "custom_species_name", None
+            ):
+                reasons.append("custom_visit")
+
+            date_ok = bool(
+                (getattr(v, "from_date", None) and getattr(v, "to_date", None))
+                and v.from_date <= week_friday
+                and v.to_date >= week_monday
+            )
+            if not date_ok:
+                reasons.append("outside_week_window")
+
+            week_num = week_monday.isocalendar().week
+            prov_week = getattr(v, "provisional_week", None)
+            planned_week = getattr(v, "planned_week", None)
+            provisional_ok = (
+                (prov_week is not None and prov_week <= week_num)
+                or planned_week is not None
+                or prov_week is None
+            )
+            if not provisional_ok:
+                reasons.append("provisional_week_future")
+
+            _logger.debug(
+                "planning_debug visit_id=%s excluded_stage=base_filters reasons=%s",
+                vid,
+                reasons,
+            )
 
     if not blocked_pairs:
         return candidates
@@ -321,6 +467,11 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 break
 
         if is_blocked:
+            if _DEBUG_PLANNING and v.id in _DEBUG_PLANNING_VISIT_IDS:
+                _logger.debug(
+                    "planning_debug visit_id=%s excluded_stage=blocked_pairs",
+                    v.id,
+                )
             continue
 
         filtered.append(v)
@@ -463,6 +614,18 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
                         attr,
                     )
                 return False
+
+    # Vleermuis expertise rule
+    if not _meets_vleermuis_expertise(user, visit):
+        if _DEBUG_PLANNING:
+            _logger.debug(
+                "planning: user_id=%s unqualified_for_visit_id=%s reason=expertise_level_missing required=%s actual=%s",
+                getattr(user, "id", None),
+                getattr(visit, "id", None),
+                _vleermuis_expertise_requirement(visit),
+                (getattr(user, "experience_bat", None) or "").strip().lower() or None,
+            )
+        return False
 
     # VRFG function rule
     if _any_function_contains(visit, ("Vliegroute", "Foerageergebied")):

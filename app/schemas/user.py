@@ -18,7 +18,6 @@ class UserBase(BaseModel):
         ZZP = "ZZP"
 
     class ExperienceBat(StrEnum):
-        NIEUW = "Nieuw"
         JUNIOR = "Junior"
         MEDIOR = "Medior"
         SENIOR = "Senior"

@@ -133,3 +133,12 @@ class Visit(TimestampMixin, SoftDeleteMixin, Base):
     # Custom text fields for ad-hoc visits
     custom_function_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     custom_species_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    # Season Planning (Global Solver) provisional plan
+    provisional_week: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    # If True, the solver treats provisional_week as a Hard Constraint (Manual Anchor)
+    provisional_locked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )

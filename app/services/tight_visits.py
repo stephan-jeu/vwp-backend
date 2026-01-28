@@ -9,6 +9,7 @@ from app.models.visit import Visit
 from app.models.cluster import Cluster
 from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.protocol import Protocol
+from app.models.species import Species
 from app.services.visit_execution_updates import _unit_to_days
 from app.schemas.visit import VisitListRow
 from app.schemas.function import FunctionCompactRead
@@ -44,7 +45,7 @@ async def get_tight_visit_chains(
                 ProtocolVisitWindow.protocol
             ),
             selectinload(Visit.cluster).selectinload(Cluster.project),
-            selectinload(Visit.species),
+            selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.functions),
             selectinload(Visit.researchers),
         )

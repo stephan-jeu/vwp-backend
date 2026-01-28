@@ -150,7 +150,11 @@ async def duplicate_cluster_with_visits(
             await db.execute(
                 select(Visit)
                 .where(Visit.cluster_id == source_cluster.id)
-                .options(selectinload(Visit.functions), selectinload(Visit.species))
+                .options(
+                    selectinload(Visit.functions),
+                    selectinload(Visit.species),
+                    selectinload(Visit.protocol_visit_windows),
+                )
                 .order_by(Visit.visit_nr)
             )
         )
@@ -210,6 +214,7 @@ async def duplicate_cluster_with_visits(
             .all()
         )
         clone.researchers = []
+        clone.protocol_visit_windows = list(v.protocol_visit_windows or [])
         db.add(clone)
 
     return new_cluster

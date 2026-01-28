@@ -15,6 +15,14 @@ from app.routers.planning import router as planning_router
 from app.routers.projects import router as projects_router
 from app.routers.admin import router as admin_router
 from app.routers.admin_availability import router as admin_availability_router
+from app.services.season_planner_scheduler import (
+    shutdown_season_planner_scheduler,
+    start_season_planner_scheduler,
+)
+from app.services.pvw_backfill_scheduler import (
+    shutdown_pvw_backfill_scheduler,
+    start_pvw_backfill_scheduler,
+)
 
 import logging
 
@@ -24,8 +32,12 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic could be added here (e.g., warm caches)
+    start_season_planner_scheduler()
+    start_pvw_backfill_scheduler()
     yield
     # Ensure DB connections are cleanly closed on shutdown
+    shutdown_season_planner_scheduler()
+    shutdown_pvw_backfill_scheduler()
     await engine.dispose()
 
 

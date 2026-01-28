@@ -16,6 +16,7 @@ class SpeciesCreate(SpeciesBase):
 
 class SpeciesRead(SpeciesBase):
     id: int
+    family_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -27,6 +28,7 @@ class SpeciesCompactRead(BaseModel):
         id: Unique identifier of the species.
         name: Common name.
         abbreviation: Optional short code.
+        family_name: Optional family name.
 
     Returns:
         Serialized compact species object.
@@ -35,5 +37,6 @@ class SpeciesCompactRead(BaseModel):
     id: int
     name: str
     abbreviation: str | None = None
+    family_name: str | None = None
 
     model_config = {"from_attributes": True}

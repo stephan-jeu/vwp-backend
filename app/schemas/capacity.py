@@ -26,6 +26,7 @@ class FamilyDaypartCapacity(BaseModel):
 class WeekResultCell(BaseModel):
     spare: int
     planned: int
+    shortage: int = 0
 
 
 class WeekView(BaseModel):

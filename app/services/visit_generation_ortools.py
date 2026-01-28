@@ -523,6 +523,9 @@ async def generate_visits_cp_sat(
     # Reconstruct Visits
     visits: list[Visit] = []
     inv_part_map = {0: "Ochtend", 1: "Dag", 2: "Avond"}
+    pvw_by_id = {
+        w.id: w for p in protocols for w in (p.visit_windows or []) if w.id is not None
+    }
 
     for v in range(max_visits):
         if not solver.BooleanValue(visit_active[v]):
@@ -564,13 +567,19 @@ async def generate_visits_cp_sat(
         unique_protos = list(
             {r.protocol.id: r.protocol for r in assigned_reqs}.values()
         )
-        new_visit.protocols = unique_protos
         new_visit.functions = list(
             {p.function.id: p.function for p in unique_protos if p.function}.values()
         )
         new_visit.species = list(
             {p.species.id: p.species for p in unique_protos if p.species}.values()
         )
+        visit_pvws = [
+            pvw_by_id[r.pvw_id] for r in assigned_reqs if r.pvw_id in pvw_by_id
+        ]
+        if visit_pvws:
+            new_visit.protocol_visit_windows = list(
+                {pvw.id: pvw for pvw in visit_pvws}.values()
+            )
 
         # Calculate duration/text
         try:
@@ -719,7 +728,8 @@ async def generate_visits_cp_sat(
                 break
 
         if has_smp_zwaluw:
-            remarks_lines.append("""Minimum temperatuur:
+            remarks_lines.append(
+                """Minimum temperatuur:
 25 Mei - 31 Mei: 17
 1 Jun - 7 Jun: 18
 8 Jun - 14 Jun: 19
@@ -727,7 +737,8 @@ async def generate_visits_cp_sat(
 22 Jun - 28 Jun: 20
 29 Jun - 5 Jul: 20
 6 Jul - 12 Jul: 20
-13 Jul - 19 Jul: 20""")
+13 Jul - 19 Jul: 20"""
+            )
 
         if remarks_lines:
             new_visit.remarks_field = "\n".join(remarks_lines)

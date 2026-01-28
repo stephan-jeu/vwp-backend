@@ -12,6 +12,34 @@ class Settings(BaseModel):
     app_name: str = Field(default="Veldwerkplanning API")
     debug: bool = Field(default=False)
 
+    # Seasonal planner scheduler
+    season_planner_scheduler_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "SEASON_PLANNER_SCHEDULER_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+    season_planner_cron: str = Field(
+        default_factory=lambda: os.getenv("SEASON_PLANNER_CRON", "0 2 * * *")
+    )
+    season_planner_timezone: str = Field(
+        default_factory=lambda: os.getenv("SEASON_PLANNER_TIMEZONE", "Europe/Amsterdam")
+    )
+
+    # PVW backfill scheduler
+    pvw_backfill_scheduler_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "PVW_BACKFILL_SCHEDULER_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+    pvw_backfill_cron: str = Field(
+        default_factory=lambda: os.getenv("PVW_BACKFILL_CRON", "30 2 * * *")
+    )
+    pvw_backfill_timezone: str = Field(
+        default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
+    )
+
     # Test mode
     test_mode_enabled: bool = Field(
         default_factory=lambda: os.getenv("TEST_MODE_ENABLED", "true").lower()
@@ -29,7 +57,7 @@ class Settings(BaseModel):
     db_port: int = Field(
         default_factory=lambda: int(os.getenv("POSTGRES_PORT", "5432"))
     )
-    db_name: str = Field(default_factory=lambda: os.getenv("POSTGRES_DB", "vwp"))
+    db_name: str = Field(default_factory=lambda: os.getenv("POSTGRES_DB", "habitus"))
     db_echo: bool = Field(
         default_factory=lambda: os.getenv("DB_ECHO", "false").lower()
         in {"1", "true", "yes"}

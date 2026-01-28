@@ -56,6 +56,8 @@ def make_visit(
         sleutel=sleutel,
         functions=functions,
         species=species,
+        provisional_week=None,
+        provisional_locked=False
     )
 
 

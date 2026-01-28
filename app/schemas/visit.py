@@ -42,6 +42,8 @@ class VisitBase(BaseModel):
     preferred_researcher_id: int | None = None
     advertized: bool = False
     quote: bool = False
+    provisional_week: int | None = None
+    provisional_locked: bool = False
     # Derived planning helpers (not persisted)
     part_of_day: str | None = None
     # Human-readable Dutch representation of the start time
@@ -100,6 +102,8 @@ class VisitUpdate(BaseModel):
     preferred_researcher_id: int | None = None
     advertized: bool | None = None
     quote: bool | None = None
+    provisional_week: int | None = None
+    provisional_locked: bool | None = None
     # Allow manual override of derived planning helpers
     part_of_day: str | None = None
     start_time_text: str | None = None
@@ -312,6 +316,8 @@ class VisitListRow(BaseModel):
     researchers: list[UserNameRead] = []
     advertized: bool
     quote: bool
+    provisional_week: int | None = None
+    provisional_locked: bool = False
     advertized_by: UserNameRead | None = None
     can_accept: bool | None = None
 

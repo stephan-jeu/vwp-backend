@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 from enum import StrEnum
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -239,3 +239,62 @@ async def resolve_visit_status_by_id(
 
     last_log = await _latest_status_log_for_visit(db, visit_id)
     return derive_visit_status(visit, last_log, today=today)
+
+
+async def resolve_visit_statuses(
+    db: AsyncSession,
+    visits: list[Visit],
+    *,
+    today: date | None = None,
+) -> dict[int, VisitStatusCode]:
+    """Resolve lifecycle statuses for multiple visits efficiently.
+
+    Args:
+        db: Async SQLAlchemy session.
+        visits: Visit ORM instances with ids and relationships loaded.
+        today: Optional override for the current date.
+
+    Returns:
+        Mapping of visit id to derived status code.
+    """
+
+    visit_ids = [v.id for v in visits if v.id is not None]
+    if not visit_ids:
+        return {}
+
+    latest_log_subq = (
+        select(
+            ActivityLog.target_id.label("visit_id"),
+            func.max(ActivityLog.created_at).label("latest_at"),
+        )
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.target_id.in_(visit_ids),
+            ActivityLog.action.in_(_STATUS_ACTIONS),
+        )
+        .group_by(ActivityLog.target_id)
+        .subquery()
+    )
+
+    stmt: Select[tuple[ActivityLog]] = (
+        select(ActivityLog)
+        .join(
+            latest_log_subq,
+            (ActivityLog.target_id == latest_log_subq.c.visit_id)
+            & (ActivityLog.created_at == latest_log_subq.c.latest_at),
+        )
+        .where(ActivityLog.target_type == "visit")
+    )
+
+    logs = (await db.execute(stmt)).scalars().all()
+    log_map = {log.target_id: log for log in logs if log.target_id is not None}
+
+    status_map: dict[int, VisitStatusCode] = {}
+    for visit in visits:
+        if visit.id is None:
+            continue
+        status_map[visit.id] = derive_visit_status(
+            visit, log_map.get(visit.id), today=today
+        )
+
+    return status_map

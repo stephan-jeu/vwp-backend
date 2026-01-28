@@ -37,6 +37,7 @@ def _generate_greedy_planning_solution(
     """
     from app.services.visit_planning_selection import (
         _allowed_day_indices_for_visit,
+        _meets_vleermuis_expertise,
         _qualifies_user_for_visit,
     )
 
@@ -114,7 +115,10 @@ def _generate_greedy_planning_solution(
 
                 # Check 4: Qualification / Preference
                 is_preferred = pref_uid is not None and uid == pref_uid
-                if not (is_preferred or _qualifies_user_for_visit(u, v)):
+                if is_preferred:
+                    if not _meets_vleermuis_expertise(u, v):
+                        continue
+                elif not _qualifies_user_for_visit(u, v):
                     continue
 
                 # Valid candidate
@@ -179,12 +183,13 @@ async def select_visits_cp_sat(
     - Visit valid day indices.
     """
     from app.services.visit_planning_selection import (
-        _priority_key,
-        _qualifies_user_for_visit,
-        _eligible_visits_for_week,
         _allowed_day_indices_for_visit,
+        _eligible_visits_for_week,
         _load_user_capacities,
         _load_user_daypart_capacities,
+        _meets_vleermuis_expertise,
+        _priority_key,
+        _qualifies_user_for_visit,
         _load_all_users,
         _apply_existing_assignments_to_capacities,
         DAYPART_TO_AVAIL_FIELD,
@@ -371,7 +376,8 @@ async def select_visits_cp_sat(
             is_preferred = pref_uid is not None and uid is not None and uid == pref_uid
 
             qualified = _qualifies_user_for_visit(u, v)
-            if is_preferred or qualified:
+            meets_expertise = _meets_vleermuis_expertise(u, v)
+            if qualified or (is_preferred and meets_expertise):
                 x[i, j] = model.NewBoolVar(f"x_{i}_{j}")
                 assigned_vars.append(x[i, j])
 
@@ -447,15 +453,17 @@ async def select_visits_cp_sat(
     obj_terms = []
 
     # Scale bonus relative to rank step (10)
-    # 5 points bonus: prefers preferred researcher but not over a higher rank item?
-    PREFERRED_BONUS = 5
+    # Keep modest so preferred does not block scheduling.
+    PREFERRED_BONUS = 25
 
     # Load Balancing Weight
-    # Weight * (Delta Load^2) ~= Minutes of Travel
-    # Weight=30 means:
-    # 0->1 load (Delta 1^2 - 0^2 = 1) costs 30 points (equivalent to 30 mins travel)
-    # 1->2 load (Delta 2^2 - 1^2 = 3) costs 90 points (marginal cost 60, +30 vs fresh user)
-    LOAD_BALANCE_WEIGHT = 30
+    # Keep this the least important soft constraint.
+    LOAD_BALANCE_WEIGHT = 1
+
+    # Travel time penalties (minutes) and hard cutoff.
+    # Weight=2 means a 30-minute trip costs 60 points (slightly more than large-team penalty).
+    TRAVEL_TIME_WEIGHT = 2
+    TRAVEL_TIME_HARD_LIMIT = 75
 
     # Optimization: Check if we have travel_time service available (might be missing in tests if not mocked global?)
     # We imported it locally to be safe
@@ -495,7 +503,9 @@ async def select_visits_cp_sat(
                 is_preferred = (
                     pref_uid is not None and uid is not None and uid == pref_uid
                 )
-                if is_preferred or _qualifies_user_for_visit(u, v):
+                if _qualifies_user_for_visit(u, v) or (
+                    is_preferred and _meets_vleermuis_expertise(u, v)
+                ):
                     origin = getattr(u, "address", None)
                     if origin:
                         key = (origin, dest)
@@ -531,7 +541,10 @@ async def select_visits_cp_sat(
                 # Penalty for Travel Time
                 cost = travel_costs.get((i, j), 0)
                 if cost > 0:
-                    obj_terms.append(x[i, j] * -cost)
+                    if cost > TRAVEL_TIME_HARD_LIMIT:
+                        model.Add(x[i, j] == 0)
+                        continue
+                    obj_terms.append(x[i, j] * -(cost * TRAVEL_TIME_WEIGHT))
 
     # Load Balancing Penalty (Quadratic)
     # For each user, sum of assignments^2
@@ -592,12 +605,24 @@ async def select_visits_cp_sat(
             obj_terms.append(excess_large * -LARGE_TEAM_PENALTY)
 
     # 5. Coupling Preference (Supervision)
-    # Rule: If visit has (Experience=Nieuw OR Contract=Flex) -> Must have (Experience=Senior OR (Contract=Intern AND Experience!=Nieuw))
+    # Rule: If visit has (Experience=Junior OR Contract=Flex) -> Must have (Experience=Senior OR (Contract=Intern AND Experience!=Junior))
     # Penalty if not satisfied. Only applies to multi-person visits.
     COUPLING_PENALTY = 30
 
     for i, v in v_map.items():
         if (getattr(v, "required_researchers", 1) or 1) <= 1:
+            continue
+
+        fam_name = (
+            str(
+                getattr(getattr(v, "species", [None])[0], "family", None)
+                and getattr(getattr(v.species[0], "family", None), "name", "")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if fam_name != "vleermuis":
             continue
 
         # Identify assignments for visit i
@@ -606,7 +631,7 @@ async def select_visits_cp_sat(
         if not assigned_user_indices:
             continue
 
-        # Is Supervised (Nieuw or Flex)?
+        # Is Supervised (Junior or Flex)?
         supervised_vars = []
         supervisor_vars = []
 
@@ -615,9 +640,11 @@ async def select_visits_cp_sat(
             contract = str(getattr(u, "contract", "") or "")
             exp = str(getattr(u, "experience_bat", "") or "")
 
-            is_supervised = exp == "Nieuw" or contract == "Flex"
-            # Supervisor: Senior OR (Intern AND Not Nieuw)
-            is_supervisor = exp == "Senior" or (contract == "Intern" and exp != "Nieuw")
+            is_supervised = exp == "Junior" or contract == "Flex"
+            # Supervisor: Senior OR (Intern AND Not Junior)
+            is_supervisor = exp in {"Senior", "Medior"} or (
+                contract == "Intern" and exp != "Junior"
+            )
 
             if is_supervised:
                 supervised_vars.append(x[i, j])

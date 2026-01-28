@@ -26,7 +26,6 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
         ZZP = "ZZP"
 
     class ExperienceBat(StrEnum):
-        NIEUW = "Nieuw"
         JUNIOR = "Junior"
         MEDIOR = "Medior"
         SENIOR = "Senior"

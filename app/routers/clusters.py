@@ -71,7 +71,7 @@ async def list_clusters(
             .where(Visit.cluster_id == cluster.id)
             .options(
                 selectinload(Visit.functions),
-                selectinload(Visit.species),
+                selectinload(Visit.species).selectinload(Species.family),
                 selectinload(Visit.preferred_researcher),
             )
             .order_by(Visit.visit_nr)
@@ -94,10 +94,7 @@ async def list_clusters(
                             for f in v.functions
                         ],
                         species=[
-                            SpeciesCompactRead(
-                                id=s.id, name=s.name, abbreviation=s.abbreviation
-                            )
-                            for s in v.species
+                            SpeciesCompactRead.model_validate(s) for s in v.species
                         ],
                         part_of_day=v.part_of_day,
                         start_time_text=(
@@ -165,7 +162,10 @@ async def list_clusters_flat(
         visits_stmt: Select[tuple[Visit]] = (
             select(Visit)
             .where(Visit.cluster_id == cluster.id)
-            .options(selectinload(Visit.functions), selectinload(Visit.species))
+            .options(
+                selectinload(Visit.functions),
+                selectinload(Visit.species).selectinload(Species.family),
+            )
             .order_by(Visit.visit_nr)
         )
         visits = (await db.execute(visits_stmt)).scalars().all()
@@ -187,12 +187,7 @@ async def list_clusters_flat(
                         FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
                     ],
                     species_ids=[s.id for s in v.species],
-                    species=[
-                        SpeciesCompactRead(
-                            id=s.id, name=s.name, abbreviation=s.abbreviation
-                        )
-                        for s in v.species
-                    ],
+                    species=[SpeciesCompactRead.model_validate(s) for s in v.species],
                     required_researchers=v.required_researchers,
                     visit_nr=v.visit_nr,
                     from_date=v.from_date,
@@ -283,7 +278,7 @@ async def create_cluster(
         .where(Visit.cluster_id == cluster.id)
         .options(
             selectinload(Visit.functions),
-            selectinload(Visit.species),
+            selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.preferred_researcher),
         )
     )
@@ -302,12 +297,7 @@ async def create_cluster(
                 functions=[
                     FunctionCompactRead(id=f.id, name=f.name) for f in v.functions
                 ],
-                species=[
-                    SpeciesCompactRead(
-                        id=s.id, name=s.name, abbreviation=s.abbreviation
-                    )
-                    for s in v.species
-                ],
+                species=[SpeciesCompactRead.model_validate(s) for s in v.species],
                 part_of_day=v.part_of_day,
                 start_time_text=(
                     v.start_time_text
@@ -425,7 +415,10 @@ async def duplicate_cluster(
     visits_stmt: Select[tuple[Visit]] = (
         select(Visit)
         .where(Visit.cluster_id == new_cluster.id)
-        .options(selectinload(Visit.functions), selectinload(Visit.species))
+        .options(
+            selectinload(Visit.functions),
+            selectinload(Visit.species).selectinload(Species.family),
+        )
     )
     new_visits = (await db.execute(visits_stmt)).scalars().all()
 

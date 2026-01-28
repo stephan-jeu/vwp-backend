@@ -35,6 +35,8 @@ def make_visit(
         researchers=[],
         fiets=fiets,
         cluster=cluster,
+        provisional_week=None,
+        provisional_locked=False,
     )
 
 
@@ -306,7 +308,7 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     )
 
     # Users A, B, C (local, 0 travel)
-    # Users D, E, F (remote, 70 travel)
+    # Users D, E, F (remote, 20 travel)
     # Capacity: plenty.
 
     users = []
@@ -317,7 +319,7 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
         if origin in ["A", "B", "C"]:
             return 0
         if origin in ["D", "E", "F"]:
-            return 70
+            return 20
         return 0
 
     async def fake_eligible(db, wm):
@@ -362,10 +364,10 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     )
 
     # Run
-    # With FIX (Load Weight 30, Travel 70, Large Penalty 60):
+    # With FIX (Load Weight 30, Travel 20, Large Penalty 60):
     # Reuse A: Marginal Load 90 + Large Penalty 60 = 150.
-    # New D: Marginal Load 30 + Travel 70 = 100.
-    # Logic prefers New D (150 > 100).
+    # New D: Marginal Load 30 + Travel 40 = 70.
+    # Logic prefers New D (150 > 70).
     # So we expect NO overlap.
 
     await select_visits_for_week(DummyDB(), week_monday)
@@ -374,9 +376,9 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     assigned_ids_v2 = [r.id for r in v2.researchers]
 
     intersection = set(assigned_ids_v1) & set(assigned_ids_v2)
-    assert len(intersection) == 0, (
-        "Should avoid multiple large visits if travel cost is reasonable (70 < 90+60)"
-    )
+    assert (
+        len(intersection) == 0
+    ), "Should avoid multiple large visits if travel cost is reasonable (40 < 90+60)"
 
     # Part 2: Verify it is a SOFT constraint.
     # If travel is very high (e.g. 200), we should accept the penalty and reuse.
@@ -406,6 +408,6 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     assigned_ids_v2_high = [r.id for r in v2.researchers]
 
     intersection_high = set(assigned_ids_v1_high) & set(assigned_ids_v2_high)
-    assert len(intersection_high) == 3, (
-        "Should reuse researchers if travel cost is prohibitive (230 > 150)"
-    )
+    assert (
+        len(intersection_high) == 3
+    ), "Should reuse researchers if travel cost is prohibitive (230 > 150)"

@@ -13,18 +13,14 @@ from app.models.function import Function
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.activity_log import ActivityLogListResponse
+from app.schemas.planning import SeasonPlannerStatusRead
+from app.schemas.capacity import CapacitySimulationResponse
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
 from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
 from app.schemas.trash import TrashItem, TrashKind
-from app.schemas.capacity import (
-    CapacitySimulationResponse,
-    FamilyDaypartCapacity,
-    WeekView,
-)
 from app.services.activity_log_service import log_activity
-from app.services.capacity_simulation_service import generate_and_store_simulation
-from app.models.simulation_result import SimulationResult
+from app.services.season_planning_service import SeasonPlanningService
 from app.services.security import require_admin
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
@@ -60,6 +56,31 @@ async def list_tight_visits(
 async def admin_status() -> dict[str, str]:
     """Return admin status placeholder."""
     return {"status": "admin-ok"}
+
+
+@router.get("/season-planner/status", response_model=SeasonPlannerStatusRead)
+async def get_season_planner_status(
+    _: AdminDep,
+    db: DbDep,
+) -> SeasonPlannerStatusRead:
+    """Return last run metadata for the season planner.
+
+    Args:
+        _: Ensures the caller is an admin user.
+        db: Async SQLAlchemy session.
+
+    Returns:
+        Timestamp of the most recent season planner run, if available.
+    """
+
+    stmt: Select[tuple[ActivityLog]] = (
+        select(ActivityLog)
+        .where(ActivityLog.action == "seasonal_planner_run")
+        .order_by(ActivityLog.created_at.desc())
+        .limit(1)
+    )
+    entry = (await db.execute(stmt)).scalars().first()
+    return SeasonPlannerStatusRead(last_run_at=entry.created_at if entry else None)
 
 
 @router.get("/activity", response_model=ActivityLogListResponse)
@@ -104,78 +125,65 @@ async def list_activity_logs(
     )
 
 
-async def _sim_result_to_response(res: SimulationResult) -> CapacitySimulationResponse:
-    # Hydrate JSON to Pydantic
-    grid_raw = res.grid_data.get("deadline_view", {})
-    week_raw = res.grid_data.get("week_view", {})
-
-    # Grid
-    final_grid = {}
-    for fam, parts in grid_raw.items():
-        final_grid[fam] = {}
-        for part, deadlines in parts.items():
-            final_grid[fam][part] = {}
-            for deadline, cell_data in deadlines.items():
-                final_grid[fam][part][deadline] = FamilyDaypartCapacity(**cell_data)
-
-    # Week View
-    week_view = None
-    if week_raw:
-        # Pydantic automatic parsing from dict structure?
-        # WeekView.rows is dict[str, dict[str, WeekResultCell]]
-        # WeekResultCell is simple.
-        # Let's try direct instantiation or allow pydantic validation
-        week_view = WeekView(
-            weeks=week_raw.get("weeks", []), rows=week_raw.get("rows", {})
-        )
-
-    return CapacitySimulationResponse(
-        horizon_start=res.horizon_start,
-        horizon_end=res.horizon_end,
-        created_at=res.created_at,
-        updated_at=res.updated_at,
-        grid=final_grid,
-        week_view=week_view,
-    )
+# Helper _sim_result_to_response is no longer needed as SeasonPlanningService returns the schema directly
 
 
 @router.get("/capacity/visits/families", response_model=CapacitySimulationResponse)
 async def get_family_capacity(
     _: AdminDep,
     db: DbDep,
+    include_quotes: Annotated[bool, Query()] = False,
+    simulate: Annotated[bool, Query()] = False,
 ) -> CapacitySimulationResponse:
-    """Get persisted capacity simulation result. Generates if missing."""
-
-    # Fetch latest
-    stmt = (
-        select(SimulationResult).order_by(SimulationResult.created_at.desc()).limit(1)
+    """
+    Get persisted Season Planning result.
+    This replaces the legacy simulation. It reads validation weeks from visits.
+    """
+    # Simply read the grid. Start date defaults to today or start of year?
+    # Simulation usually defaults to today.
+    if simulate:
+        return await SeasonPlanningService.simulate_capacity_grid(
+            db, date.today(), include_quotes=include_quotes
+        )
+    return await SeasonPlanningService.get_capacity_grid(
+        db, date.today(), include_quotes=include_quotes
     )
-    res = (await db.execute(stmt)).scalar_one_or_none()
-
-    if not res:
-        res = await generate_and_store_simulation(db)
-
-    return await _sim_result_to_response(res)
 
 
 @router.post("/capacity/visits/families", response_model=CapacitySimulationResponse)
 async def regenerate_family_capacity(
     admin: AdminDep,
     db: DbDep,
+    include_quotes: Annotated[bool, Query()] = False,
+    simulate: Annotated[bool, Query()] = False,
 ) -> CapacitySimulationResponse:
-    """Force regenerate simulation."""
-    res = await generate_and_store_simulation(db)
+    """Run the Season Solver (Global Planning)."""
+
+    if simulate:
+        return await SeasonPlanningService.simulate_capacity_grid(
+            db, date.today(), include_quotes=include_quotes
+        )
+
+    # Run Solver
+    await SeasonPlanningService.run_season_solver(
+        db, date.today(), include_quotes=False, persist=True
+    )
+
+    # Return new state
+    res = await SeasonPlanningService.get_capacity_grid(
+        db, date.today(), include_quotes=False
+    )
 
     await log_activity(
         db,
         actor_id=admin.id,
-        action="simulation_regenerated",
+        action="seasonal_planner_run",
         target_type="system",
-        target_id=res.id,
-        details={},
+        target_id=0,  # No ID
+        details={"method": "season_solver"},
     )
 
-    return await _sim_result_to_response(res)
+    return res
 
 
 @router.get("/functions", response_model=list[FunctionRead])
@@ -188,7 +196,9 @@ async def list_functions(_: AdminDep, db: DbDep) -> list[Function]:
 @router.get("/species", response_model=list[SpeciesRead])
 async def list_species(_: AdminDep, db: DbDep) -> list[Species]:
     """List all species (admin only)."""
-    stmt: Select[tuple[Species]] = select(Species).order_by(Species.name)
+    stmt: Select[tuple[Species]] = (
+        select(Species).options(selectinload(Species.family)).order_by(Species.name)
+    )
     return list((await db.execute(stmt)).scalars().all())
 
 

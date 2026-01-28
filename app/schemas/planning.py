@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pydantic import BaseModel
 
 
@@ -38,3 +38,13 @@ class PlanningGenerateRequest(BaseModel):
     """
 
     week: int
+
+
+class SeasonPlannerStatusRead(BaseModel):
+    """Season planner status metadata for admin UI.
+
+    Args:
+        last_run_at: Timestamp of the most recent season planner run.
+    """
+
+    last_run_at: datetime | None = None

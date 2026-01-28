@@ -30,3 +30,14 @@ class Species(TimestampMixin, Base):
     abbreviation: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
+
+    @property
+    def family_name(self) -> str | None:
+        """Return the family name for schema serialization.
+
+        Returns:
+            Family name when the relationship is available.
+        """
+
+        family = getattr(self, "family", None)
+        return getattr(family, "name", None) if family is not None else None
