@@ -300,21 +300,29 @@ async def list_visits(
     if cluster_number is not None:
         stmt = stmt.where(Cluster.cluster_number == cluster_number)
 
+    joined_functions = False
+    joined_species = False
     if function_ids:
         stmt = stmt.join(visit_functions, Visit.id == visit_functions.c.visit_id)
         stmt = stmt.where(visit_functions.c.function_id.in_(function_ids))
+        joined_functions = True
 
     if species_ids:
         stmt = stmt.join(visit_species, Visit.id == visit_species.c.visit_id)
         stmt = stmt.where(visit_species.c.species_id.in_(species_ids))
+        joined_species = True
 
     # Optional text search across project, cluster and related names
     if search:
         term = search.strip().lower()
         like = f"%{term}%"
-        stmt = stmt.outerjoin(visit_functions, Visit.id == visit_functions.c.visit_id)
+        if not joined_functions:
+            stmt = stmt.outerjoin(
+                visit_functions, Visit.id == visit_functions.c.visit_id
+            )
         stmt = stmt.outerjoin(Function, Function.id == visit_functions.c.function_id)
-        stmt = stmt.outerjoin(visit_species, Visit.id == visit_species.c.visit_id)
+        if not joined_species:
+            stmt = stmt.outerjoin(visit_species, Visit.id == visit_species.c.visit_id)
         stmt = stmt.outerjoin(Species, Species.id == visit_species.c.species_id)
         stmt = stmt.outerjoin(
             visit_researchers, Visit.id == visit_researchers.c.visit_id
