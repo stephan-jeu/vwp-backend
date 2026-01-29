@@ -8,7 +8,6 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
-from app.services.activity_log_service import log_activity
 from app.services.season_planning_service import SeasonPlanningService
 from core.settings import get_settings
 from db.session import AsyncSessionLocal
@@ -47,7 +46,7 @@ async def _run_season_planner_job() -> None:
 
 
 async def _execute_season_planner(session: AsyncSession) -> None:
-    """Execute the seasonal planner and create an activity log entry.
+    """Execute the seasonal planner.
 
     Args:
         session: Async SQLAlchemy session.
@@ -57,14 +56,6 @@ async def _execute_season_planner(session: AsyncSession) -> None:
     """
 
     await SeasonPlanningService.run_season_solver(session, date.today())
-    await log_activity(
-        session,
-        actor_id=None,
-        action="seasonal_planner_run",
-        target_type="system",
-        target_id=0,
-        details={"method": "scheduler"},
-    )
 
 
 def start_season_planner_scheduler() -> None:

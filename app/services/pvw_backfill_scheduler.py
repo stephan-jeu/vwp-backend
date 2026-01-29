@@ -7,7 +7,6 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
-from app.services.activity_log_service import log_activity
 from app.services.pvw_backfill_service import backfill_visit_protocol_visit_windows
 from core.settings import get_settings
 from db.session import AsyncSessionLocal
@@ -28,7 +27,9 @@ async def _run_pvw_backfill_job() -> None:
     """
 
     if _job_lock.locked():
-        logger.warning("PVW backfill scheduler skipped: previous run still in progress.")
+        logger.warning(
+            "PVW backfill scheduler skipped: previous run still in progress."
+        )
         return
 
     async with _job_lock:
@@ -44,7 +45,7 @@ async def _run_pvw_backfill_job() -> None:
 
 
 async def _execute_pvw_backfill(session: AsyncSession) -> None:
-    """Execute the PVW backfill process and create an activity log entry.
+    """Execute the PVW backfill process.
 
     Args:
         session: Async SQLAlchemy session.
@@ -54,14 +55,6 @@ async def _execute_pvw_backfill(session: AsyncSession) -> None:
     """
 
     await backfill_visit_protocol_visit_windows(session)
-    await log_activity(
-        session,
-        actor_id=None,
-        action="pvw_backfill_run",
-        target_type="system",
-        target_id=0,
-        details={"method": "scheduler"},
-    )
 
 
 def start_pvw_backfill_scheduler() -> None:

@@ -117,6 +117,7 @@ async def get_tight_visit_chains(
     # Process Chains to find Tight Visits
     unique_tight_visits: dict[int, TightVisitResponse] = {}
     check_horizon = today - timedelta(days=8)
+    urgent_horizon = today + timedelta(days=14)
 
     for (cluster_id, protocol_id), chain_items in chains.items():
         # Sort by visit_index
@@ -198,27 +199,20 @@ async def get_tight_visit_chains(
             if slack < min_chain_slack:
                 min_chain_slack = slack
 
-        # Check filter criteria
-        # 1. "min(Slack) < 14 days" AND "Recent Start"
-        # 2. "visits whose to date is within 14 days from now" (and >= today)
-
-        has_urgent_visit = False
-        urgent_horizon = today + timedelta(days=14)
-
-        for v, pvw in chain_items:
-            if v.to_date and today <= v.to_date <= urgent_horizon:
-                has_urgent_visit = True
-                break
-
-        is_tight_chain = (min_chain_slack < 14) and is_recent_start
-
-        if not (is_tight_chain or has_urgent_visit):
+        has_urgent_visit = any(
+            v.to_date is not None and today <= v.to_date <= urgent_horizon
+            for v, _pvw in chain_items
+        )
+        if not has_urgent_visit:
             continue
 
         protocol_name = f"{protocol.species.name} - {protocol.function.name}"
 
         for i, (v, pvw) in enumerate(chain_items):
-            slack = visit_slacks[i]
+            if v.to_date is None or not (today <= v.to_date <= urgent_horizon):
+                continue
+
+            slack = (v.to_date - today).days
             es = es_list[i]
             ls = ls_list[i]
 
@@ -228,9 +222,6 @@ async def get_tight_visit_chains(
 
             if v.id in unique_tight_visits:
                 existing = unique_tight_visits[v.id]
-                # If this new chain offers a tighter slack for this visit, update metrics
-                # Note: Logic is tricky. A visit has ONE real slack in reality? No, it depends on the constraint chain.
-                # Actually, a visit is a node in multiple DAGs. We should report the most constraining one (min slack).
                 if slack < existing.slack:
                     existing.slack = slack
                     existing.min_start = es
