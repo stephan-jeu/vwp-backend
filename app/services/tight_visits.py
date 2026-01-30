@@ -116,7 +116,6 @@ async def get_tight_visit_chains(
 
     # Process Chains to find Tight Visits
     unique_tight_visits: dict[int, TightVisitResponse] = {}
-    check_horizon = today - timedelta(days=8)
     urgent_horizon = today + timedelta(days=14)
 
     for (cluster_id, protocol_id), chain_items in chains.items():
@@ -129,15 +128,6 @@ async def get_tight_visit_chains(
         protocol = protocols_map.get(protocol_id)
         if not protocol:
             continue
-
-        # Filter: Start date of chain > (today - 8 days)
-        # We assume chain starts roughly around first visit's from_date
-        first_visit = chain_items[0][0]
-        start_date_ref = first_visit.from_date
-
-        is_recent_start = False
-        if start_date_ref and start_date_ref > check_horizon:
-            is_recent_start = True
 
         # Slack Calculation
         min_gap_days = _unit_to_days(

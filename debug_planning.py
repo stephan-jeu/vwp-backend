@@ -124,7 +124,7 @@ async def debug_visit(visit_id: int):
                 fam_to_user_attr = {
                     "vleermuis": "vleermuis",
                     "zwaluw": "zwaluw",
-                    "zangvogel": "zangvogel",
+                    "huismus": "zangvogel",
                     "pad": "pad",
                     "langoor": "langoor",
                     "roofvogel": "roofvogel",

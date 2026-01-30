@@ -38,7 +38,9 @@ class ClusterCreate(BaseModel):
     cluster_number: int
     combos: list[SpeciesFunctionCombo] = Field(default_factory=list)
     default_required_researchers: int | None = None
-    default_preferred_researcher_id: int | None = None
+    default_planned_week: int | None = None
+    default_researcher_ids: list[int] | None = None
+    default_planning_locked: bool = False
     default_expertise_level: str | None = None
     default_wbc: bool = False
     default_fiets: bool = False
@@ -99,8 +101,10 @@ class VisitReadCompact(BaseModel):
     remarks_planning: str | None
     remarks_field: str | None
     priority: bool
-    preferred_researcher_id: int | None = None
-    preferred_researcher: UserNameRead | None = None
+    planned_week: int | None = None
+    planning_locked: bool = False
+    researcher_ids: list[int] = []
+    researchers: list[UserNameRead] = []
 
 
 class ClusterRead(BaseModel):

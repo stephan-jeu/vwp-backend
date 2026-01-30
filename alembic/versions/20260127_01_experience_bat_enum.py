@@ -21,9 +21,7 @@ depends_on = None
 
 def upgrade() -> None:
     """Apply the upgrade migrations."""
-    op.execute(
-        "UPDATE users SET experience_bat = NULL WHERE experience_bat = 'Nieuw'"
-    )
+    op.execute("UPDATE users SET experience_bat = NULL WHERE experience_bat = 'Nieuw'")
     op.execute("ALTER TYPE experience_bat_type RENAME TO experience_bat_type_old")
     sa.Enum("Junior", "Medior", "Senior", name="experience_bat_type").create(
         op.get_bind()

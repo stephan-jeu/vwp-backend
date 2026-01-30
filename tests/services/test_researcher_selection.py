@@ -376,9 +376,9 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     assigned_ids_v2 = [r.id for r in v2.researchers]
 
     intersection = set(assigned_ids_v1) & set(assigned_ids_v2)
-    assert (
-        len(intersection) == 0
-    ), "Should avoid multiple large visits if travel cost is reasonable (40 < 90+60)"
+    assert len(intersection) == 0, (
+        "Should avoid multiple large visits if travel cost is reasonable (40 < 90+60)"
+    )
 
     # Part 2: Verify it is a SOFT constraint.
     # If travel is very high (e.g. 200), we should accept the penalty and reuse.
@@ -408,6 +408,6 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     assigned_ids_v2_high = [r.id for r in v2.researchers]
 
     intersection_high = set(assigned_ids_v1_high) & set(assigned_ids_v2_high)
-    assert (
-        len(intersection_high) == 3
-    ), "Should reuse researchers if travel cost is prohibitive (230 > 150)"
+    assert len(intersection_high) == 3, (
+        "Should reuse researchers if travel cost is prohibitive (230 > 150)"
+    )

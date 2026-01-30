@@ -391,7 +391,6 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
-            selectinload(Visit.preferred_researcher),
             selectinload(Visit.cluster).selectinload(Cluster.project),
             selectinload(Visit.protocol_visit_windows),
         )
@@ -538,7 +537,7 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
         "grote vos": "vlinder",
         "iepenpage": "vlinder",
         "teunisbloempijlstaart": "teunisbloempijlstaart",
-        "zangvogel": "zangvogel",
+        "huismus": "zangvogel",
         "zwaluw": "zwaluw",
     }
 
@@ -554,7 +553,7 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
             required_attr = "smp_vleermuis"
         elif fam_name == "zwaluw":
             required_attr = "smp_gierzwaluw"
-        elif fam_name == "zangvogel":
+        elif fam_name == "huismus":
             required_attr = "smp_huismus"
         uid = getattr(user, "id", None)
         if required_attr is not None:

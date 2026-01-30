@@ -46,6 +46,26 @@ DbDep = Annotated[AsyncSession, Depends(get_db)]
 AdminDep = Annotated[User, Depends(require_admin)]
 
 
+def _validate_planning_locked_defaults(
+    *,
+    default_planning_locked: bool,
+    default_planned_week: int | None,
+    default_researcher_ids: list[int] | None,
+) -> None:
+    if not default_planning_locked:
+        return
+    if default_planned_week is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="default_planning_locked requires default_planned_week",
+        )
+    if not default_researcher_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="default_planning_locked requires default_researcher_ids",
+        )
+
+
 @router.get("", response_model=list[ClusterWithVisitsRead])
 async def list_clusters(
     _: AdminDep, db: DbDep, project_id: Annotated[int | None, Query()] = None
@@ -72,7 +92,7 @@ async def list_clusters(
             .options(
                 selectinload(Visit.functions),
                 selectinload(Visit.species).selectinload(Species.family),
-                selectinload(Visit.preferred_researcher),
+                selectinload(Visit.researchers),
             )
             .order_by(Visit.visit_nr)
         )
@@ -119,15 +139,13 @@ async def list_clusters(
                         remarks_planning=v.remarks_planning,
                         remarks_field=v.remarks_field,
                         priority=v.priority,
-                        preferred_researcher_id=v.preferred_researcher_id,
-                        preferred_researcher=(
-                            None
-                            if v.preferred_researcher is None
-                            else UserNameRead(
-                                id=v.preferred_researcher.id,
-                                full_name=v.preferred_researcher.full_name,
-                            )
-                        ),
+                        planned_week=v.planned_week,
+                        planning_locked=v.planning_locked,
+                        researcher_ids=[u.id for u in (v.researchers or [])],
+                        researchers=[
+                            UserNameRead(id=u.id, full_name=u.full_name)
+                            for u in (v.researchers or [])
+                        ],
                     )
                     for v in visits
                 ],
@@ -218,6 +236,12 @@ async def create_cluster(
 ) -> ClusterWithVisitsRead:
     """Create cluster and append generated visits based on selected functions/species."""
 
+    _validate_planning_locked_defaults(
+        default_planning_locked=payload.default_planning_locked,
+        default_planned_week=payload.default_planned_week,
+        default_researcher_ids=payload.default_researcher_ids,
+    )
+
     # If a cluster with the same project and number exists, merge by appending visits
     existing_stmt: Select[tuple[Cluster]] = (
         select(Cluster)
@@ -257,7 +281,9 @@ async def create_cluster(
             species_ids=[],
             protocols=protocols,
             default_required_researchers=payload.default_required_researchers,
-            default_preferred_researcher_id=payload.default_preferred_researcher_id,
+            default_planned_week=payload.default_planned_week,
+            default_researcher_ids=payload.default_researcher_ids,
+            default_planning_locked=payload.default_planning_locked,
             default_expertise_level=payload.default_expertise_level,
             default_wbc=payload.default_wbc,
             default_fiets=payload.default_fiets,
@@ -279,7 +305,7 @@ async def create_cluster(
         .options(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
-            selectinload(Visit.preferred_researcher),
+            selectinload(Visit.researchers),
         )
     )
     visits = (await db.execute(visits_stmt)).scalars().all()
@@ -321,15 +347,13 @@ async def create_cluster(
                 remarks_planning=v.remarks_planning,
                 remarks_field=v.remarks_field,
                 priority=v.priority,
-                preferred_researcher_id=v.preferred_researcher_id,
-                preferred_researcher=(
-                    None
-                    if v.preferred_researcher is None
-                    else UserNameRead(
-                        id=v.preferred_researcher.id,
-                        full_name=v.preferred_researcher.full_name,
-                    )
-                ),
+                planned_week=v.planned_week,
+                planning_locked=v.planning_locked,
+                researcher_ids=[u.id for u in (v.researchers or [])],
+                researchers=[
+                    UserNameRead(id=u.id, full_name=u.full_name)
+                    for u in (v.researchers or [])
+                ],
             )
             for v in visits
         ],

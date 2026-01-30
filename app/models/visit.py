@@ -117,13 +117,12 @@ class Visit(TimestampMixin, SoftDeleteMixin, Base):
     part_of_day: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Human-readable Dutch representation of the start time (derived but persisted)
     start_time_text: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    preferred_researcher_id: Mapped[int | None] = mapped_column(
-        ForeignKey(User.id), nullable=True
-    )
-    preferred_researcher: Mapped[User | None] = relationship(User)
 
     # Optional ISO week number the visit is planned for
     planned_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    planning_locked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     advertized: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

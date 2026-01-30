@@ -34,7 +34,7 @@ Vleermuis -> vleermuis
 Grote vos -> grote_vos
 Iepenpage -> iepenpage
 Teunisbloempijlstaart -> teunisbloempijlstaart
-Zangvogel -> zangvogel
+Huismus -> zangvogel
 Zwaluw -> zwaluw
 
 2 - If first Visit function name starts with SMP user smp must be true

@@ -37,7 +37,7 @@ visit_nr: this is a sequential number of all the visits for this particular clus
 This was the general rule, however there is a complication. A user can select multiple functions and species. In a lot of cases visits of different functions and species should be combined.
 When species are part of the following families, they can be combined into one visit window sequence if the visit period overlaps between the protocols and if the protocol time corresponds, for example  evening (after sunset) or morning (before sunrise). The families that could be combined are:
 Vleermuis en Zwaluw (with some particular rules I'll describe below)
-Zangvogel 
+Huismus 
 Roofvogel
 Vlinder
 Leporidae

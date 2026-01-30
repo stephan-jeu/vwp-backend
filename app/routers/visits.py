@@ -65,6 +65,26 @@ AdminDep = Annotated[User, Depends(require_admin)]
 UserDep = Annotated[User, Depends(get_current_user)]
 
 
+def _validate_planning_locked_payload(
+    *,
+    planning_locked: bool,
+    planned_week: int | None,
+    researcher_ids: list[int] | None,
+) -> None:
+    if not planning_locked:
+        return
+    if planned_week is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="planning_locked requires planned_week",
+        )
+    if not researcher_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="planning_locked requires at least one researcher",
+        )
+
+
 async def _resolve_pvw_ids_for_visit(
     db: AsyncSession,
     *,
@@ -279,7 +299,6 @@ async def list_visits(
     # --- Week Filtering ---
     # We filter early if week is provided, to narrow down dataset before other filters
     if week is not None:
-
         stmt = stmt.where(
             or_(
                 Visit.planned_week == week,
@@ -378,7 +397,6 @@ async def list_visits(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
-            selectinload(Visit.preferred_researcher),
         )
     )
     visits = (await db.execute(visit_stmt)).scalars().all()
@@ -458,15 +476,7 @@ async def list_visits(
                 "priority": v.priority,
                 "part_of_day": v.part_of_day,
                 "start_time_text": v.start_time_text,
-                "preferred_researcher_id": v.preferred_researcher_id,
-                "preferred_researcher": (
-                    None
-                    if v.preferred_researcher is None
-                    else UserNameRead(
-                        id=v.preferred_researcher.id,
-                        full_name=v.preferred_researcher.full_name,
-                    )
-                ),
+                "planning_locked": v.planning_locked,
                 "researchers": [
                     UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
                 ],
@@ -506,7 +516,6 @@ async def get_visit_detail(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
-            selectinload(Visit.preferred_researcher),
         )
     )
     visit = (await db.execute(stmt)).scalars().first()
@@ -539,6 +548,7 @@ async def get_visit_detail(
         custom_species_name=visit.custom_species_name,
         required_researchers=visit.required_researchers,
         visit_nr=visit.visit_nr,
+        planned_week=visit.planned_week,
         from_date=visit.from_date,
         to_date=visit.to_date,
         duration=visit.duration,
@@ -556,15 +566,7 @@ async def get_visit_detail(
         priority=visit.priority,
         part_of_day=visit.part_of_day,
         start_time_text=visit.start_time_text,
-        preferred_researcher_id=visit.preferred_researcher_id,
-        preferred_researcher=(
-            None
-            if visit.preferred_researcher is None
-            else UserNameRead(
-                id=visit.preferred_researcher.id,
-                full_name=visit.preferred_researcher.full_name,
-            )
-        ),
+        planning_locked=visit.planning_locked,
         researchers=[
             UserNameRead(id=r.id, full_name=r.full_name) for r in visit.researchers
         ],
@@ -582,6 +584,12 @@ async def create_visit(
     payload: VisitCreate,
 ) -> Visit:
     """Create a new visit with provided fields."""
+
+    _validate_planning_locked_payload(
+        planning_locked=payload.planning_locked,
+        planned_week=payload.planned_week,
+        researcher_ids=payload.researcher_ids,
+    )
 
     data = payload.dict(
         exclude_unset=True,
@@ -678,7 +686,6 @@ async def list_advertised_visits(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
-            selectinload(Visit.preferred_researcher),
         )
     )
     visits = (await db.execute(stmt)).scalars().all()
@@ -781,15 +788,7 @@ async def list_advertised_visits(
                 priority=v.priority,
                 part_of_day=v.part_of_day,
                 start_time_text=v.start_time_text,
-                preferred_researcher_id=v.preferred_researcher_id,
-                preferred_researcher=(
-                    None
-                    if v.preferred_researcher is None
-                    else UserNameRead(
-                        id=v.preferred_researcher.id,
-                        full_name=v.preferred_researcher.full_name,
-                    )
-                ),
+                planning_locked=v.planning_locked,
                 researchers=[
                     UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
                 ],
@@ -931,6 +930,17 @@ async def update_visit(
                     for rid in payload.researcher_ids
                 ],
             )
+
+    final_planning_locked = bool(getattr(visit, "planning_locked", False))
+    final_planned_week = getattr(visit, "planned_week", None)
+    final_researcher_ids = payload.researcher_ids
+    if final_researcher_ids is None:
+        final_researcher_ids = [r.id for r in (visit.researchers or [])]
+    _validate_planning_locked_payload(
+        planning_locked=final_planning_locked,
+        planned_week=final_planned_week,
+        researcher_ids=final_researcher_ids,
+    )
 
     # Auto-update Protocol Visit Windows if species/functions/visit_nr changed
     # Logic: Find PVWs matching (species, function) pairs of the visit and matching visit_index.
@@ -1242,7 +1252,6 @@ async def list_visits_for_audit(
         selectinload(Visit.functions),
         selectinload(Visit.species).selectinload(Species.family),
         selectinload(Visit.researchers),
-        selectinload(Visit.preferred_researcher),
     )
     visits = (await db.execute(stmt)).scalars().all()
 
@@ -1348,15 +1357,7 @@ async def list_visits_for_audit(
                 priority=v.priority,
                 part_of_day=v.part_of_day,
                 start_time_text=v.start_time_text,
-                preferred_researcher_id=v.preferred_researcher_id,
-                preferred_researcher=(
-                    None
-                    if v.preferred_researcher is None
-                    else UserNameRead(
-                        id=v.preferred_researcher.id,
-                        full_name=v.preferred_researcher.full_name,
-                    )
-                ),
+                planning_locked=v.planning_locked,
                 researchers=[
                     UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
                 ],

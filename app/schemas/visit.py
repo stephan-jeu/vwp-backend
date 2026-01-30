@@ -39,7 +39,7 @@ class VisitBase(BaseModel):
     remarks_planning: str | None = None
     remarks_field: str | None = None
     priority: bool = False
-    preferred_researcher_id: int | None = None
+    planning_locked: bool = False
     advertized: bool = False
     quote: bool = False
     provisional_week: int | None = None
@@ -99,7 +99,7 @@ class VisitUpdate(BaseModel):
     remarks_planning: str | None = None
     remarks_field: str | None = None
     priority: bool | None = None
-    preferred_researcher_id: int | None = None
+    planning_locked: bool | None = None
     advertized: bool | None = None
     quote: bool | None = None
     provisional_week: int | None = None
@@ -269,8 +269,6 @@ class VisitListRow(BaseModel):
         priority: Priority flag.
         part_of_day: Optional part-of-day helper.
         start_time_text: Human-readable start time description.
-        preferred_researcher_id: Optional preferred researcher id.
-        preferred_researcher: Compact preferred researcher representation.
         custom_function_name: Optional custom function name.
         custom_species_name: Optional custom species name.
         researchers: Assigned researchers for the visit.
@@ -309,8 +307,7 @@ class VisitListRow(BaseModel):
     priority: bool
     part_of_day: str | None = None
     start_time_text: str | None = None
-    preferred_researcher_id: int | None = None
-    preferred_researcher: UserNameRead | None = None
+    planning_locked: bool = False
     custom_function_name: str | None = None
     custom_species_name: str | None = None
     researchers: list[UserNameRead] = []

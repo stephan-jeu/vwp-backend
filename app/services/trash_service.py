@@ -386,11 +386,6 @@ async def hard_delete_trash_item(
             .values(actor_id=None)
         )
         await db.execute(
-            update(Visit)
-            .where(Visit.preferred_researcher_id == user.id)
-            .values(preferred_researcher_id=None)
-        )
-        await db.execute(
             delete(visit_researchers).where(visit_researchers.c.user_id == user.id)
         )
         await db.execute(

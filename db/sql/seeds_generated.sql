@@ -30,7 +30,7 @@ INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES 
 INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES (8, 'Pad', 3, '2025-11-30 11:45:59.044072+01', '2025-11-30 11:45:59.044072+01');
 INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES (9, 'Vlinder', 3, '2025-11-30 11:45:59.044072+01', '2025-11-30 11:45:59.044072+01');
 INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES (11, 'Teunisbloempijlstaart', 3, '2025-11-30 11:45:59.044072+01', '2025-11-30 11:45:59.044072+01');
-INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES (12, 'Zangvogel', 5, '2025-11-30 11:45:59.044072+01', '2025-11-30 11:45:59.044072+01');
+INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES (12, 'Huismus', 5, '2025-11-30 11:45:59.044072+01', '2025-11-30 11:45:59.044072+01');
 INSERT INTO public.families (id, name, priority, created_at, updated_at) VALUES (7, 'Roofvogel', 3, '2025-11-30 11:45:59.044072+01', '2025-11-30 11:45:59.044072+01');
 
 

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import logger
+from app.models.protocol import Protocol
 from app.models.visit import Visit
 from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.cluster import Cluster
@@ -101,7 +102,7 @@ class SeasonPlanningService:
                 return "SMP Vleermuis"
             elif fam_name == "zwaluw":
                 return "SMP Gierzwaluw"
-            elif fam_name == "zangvogel":
+            elif fam_name == "huismus":
                 return "SMP Huismus"
             else:
                 return f"SMP {fam_name.capitalize()}"
@@ -171,7 +172,7 @@ class SeasonPlanningService:
         if u.vleermuis:
             skills.add("Vleermuis")
         if u.zangvogel:
-            skills.add("Zangvogel")
+            skills.add("Huismus")
         if u.roofvogel:
             skills.add("Roofvogel")
         if u.pad:
@@ -688,7 +689,7 @@ class SeasonPlanningService:
                     continue
                 start = getattr(pvw, "window_from", None)
                 end = getattr(pvw, "window_to", None)
-                if start and end:
+                if isinstance(start, date) and isinstance(end, date):
                     return math.ceil(((end - start).days + 1) / 7)
             if v.from_date and v.to_date:
                 return math.ceil(((v.to_date - v.from_date).days + 1) / 7)
@@ -1582,7 +1583,7 @@ class SeasonPlanningService:
                 is_planned = (v.provisional_week or v.planned_week) is not None
             else:
                 skill = SeasonPlanningService._get_required_user_flag(v)
-                is_planned = v.provisional_week is not None
+                is_planned = (v.provisional_week or v.planned_week) is not None
             part = (v.part_of_day or "Onbekend").strip()
 
             # Deadline View Logic (Unchanged mostly)

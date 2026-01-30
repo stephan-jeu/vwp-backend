@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import asyncio
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
 from app.services.pvw_backfill_service import backfill_visit_protocol_visit_windows
 from core.settings import get_settings
 from db.session import AsyncSessionLocal
+
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+except ModuleNotFoundError:  # pragma: no cover
+    AsyncIOScheduler = None  # type: ignore[assignment]
+    CronTrigger = None  # type: ignore[assignment]
 
 _settings = get_settings()
 _scheduler: AsyncIOScheduler | None = None
@@ -66,6 +71,10 @@ def start_pvw_backfill_scheduler() -> None:
 
     global _scheduler
     if _scheduler is not None:
+        return
+
+    if AsyncIOScheduler is None or CronTrigger is None:
+        logger.info("PVW backfill scheduler disabled: apscheduler is not installed.")
         return
 
     if not _settings.pvw_backfill_scheduler_enabled:

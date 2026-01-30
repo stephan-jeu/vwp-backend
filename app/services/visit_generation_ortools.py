@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
 from app.models.protocol import Protocol
+from app.models.user import User
 from app.models.visit import Visit
 from app.services.visit_generation_common import (
     _generate_visit_requests,
@@ -138,7 +139,9 @@ async def generate_visits_cp_sat(
     protocols: list[Protocol],
     *,
     default_required_researchers: int | None = None,
-    default_preferred_researcher_id: int | None = None,
+    default_planned_week: int | None = None,
+    default_researcher_ids: list[int] | None = None,
+    default_planning_locked: bool = False,
     default_expertise_level: str | None = None,
     default_wbc: bool = False,
     default_fiets: bool = False,
@@ -555,13 +558,20 @@ async def generate_visits_cp_sat(
 
         # Apply defaults
         new_visit.required_researchers = default_required_researchers
-        new_visit.preferred_researcher_id = default_preferred_researcher_id
+        new_visit.planned_week = default_planned_week
+        new_visit.planning_locked = default_planning_locked
         new_visit.expertise_level = default_expertise_level
         new_visit.wbc = default_wbc
         new_visit.fiets = default_fiets
         new_visit.hub = default_hub
         new_visit.dvp = default_dvp
         new_visit.sleutel = default_sleutel
+
+        if default_researcher_ids:
+            stmt_users = select(User).where(User.id.in_(default_researcher_ids))
+            new_visit.researchers = (
+                (await db.execute(stmt_users)).scalars().unique().all()
+            )
 
         # Attach protocols and related entities
         unique_protos = list(
@@ -634,38 +644,70 @@ async def generate_visits_cp_sat(
 
         # Generate Remarks Field
         remarks_lines = []
-        fn_map = defaultdict(lambda: defaultdict(set))
 
-        active_pairs = set()
-        visit_indices = set()
+        def _is_vleermuis(proto: Protocol) -> bool:
+            fam_name = getattr(
+                getattr(getattr(proto, "species", None), "family", None), "name", ""
+            )
+            return fam_name == "Vleermuis"
 
-        for r in assigned_reqs:
-            p = r.protocol
-            fn_name = getattr(getattr(p, "function", None), "name", None)
-            sp_abbr = getattr(
-                getattr(p, "species", None), "abbreviation", None
-            ) or getattr(getattr(p, "species", None), "name", None)
-            if fn_name and sp_abbr:
-                active_pairs.add((fn_name, sp_abbr))
-                fn_map[fn_name][sp_abbr].add(r.visit_index)
-                visit_indices.add(r.visit_index)
+        def _species_label(proto: Protocol) -> str | None:
+            sp = getattr(proto, "species", None)
+            if not sp:
+                return None
+            return getattr(sp, "abbreviation", None) or getattr(sp, "name", None)
 
-        all_fns = {f for f, s in active_pairs}
-        all_sps = {s for f, s in active_pairs}
-        cartesian_product = {(f, s) for f in all_fns for s in all_sps}
+        def _format_species_list(items: list[str]) -> str:
+            if len(items) == 1:
+                return items[0]
+            if len(items) == 2:
+                return f"{items[0]} en {items[1]}"
+            return ", ".join(items[:-1]) + f", en {items[-1]}"
 
-        # Optimize remarks: suppress if all combinations are present and indices are uniform
-        is_full_product = active_pairs == cartesian_product
-        is_uniform_indices = len(visit_indices) == 1
+        visit_species = {_species_label(p) for p in unique_protos}
+        visit_species.discard(None)
+        visit_species_set = {str(x) for x in visit_species}
 
-        if not (is_full_product and is_uniform_indices):
-            for fn in sorted(fn_map.keys()):
-                entries = []
-                for sp, idxs in sorted(fn_map[fn].items()):
-                    idx_str = "/".join(str(i) for i in sorted(idxs))
-                    entries.append(f"{sp} ({idx_str})")
-                if entries:
-                    remarks_lines.append(f"{fn}: {', '.join(entries)}")
+        lv_protocols = [
+            p
+            for p in unique_protos
+            if _is_vleermuis(p)
+            and getattr(getattr(p, "species", None), "abbreviation", None) == "LV"
+        ]
+        lv_function_ids = {
+            p.function_id for p in lv_protocols if p.function_id is not None
+        }
+        lv_evening_only = any(
+            getattr(p, "end_time_relative_minutes", None) is None for p in lv_protocols
+        )
+
+        morning_required_function_names = {"Kraamverblijfplaats", "Zomerverblijfplaats"}
+        if part_str == "Avond" and lv_protocols and lv_evening_only and lv_function_ids:
+            candidate_species: set[str] = set()
+            for p in protocols:
+                if not _is_vleermuis(p):
+                    continue
+                if p.function_id not in lv_function_ids:
+                    continue
+                if getattr(getattr(p, "species", None), "abbreviation", None) == "LV":
+                    continue
+
+                func_name = getattr(getattr(p, "function", None), "name", "") or ""
+                requires_morning = bool(getattr(p, "requires_morning_visit", False))
+                if not (
+                    requires_morning or func_name in morning_required_function_names
+                ):
+                    continue
+
+                label = _species_label(p)
+                if label:
+                    candidate_species.add(label)
+
+            missing = sorted(candidate_species.difference(visit_species_set))
+            if missing:
+                remarks_lines.append(
+                    f"Ook graag soorten {_format_species_list(missing)} onderzoeken"
+                )
 
         # Special Case: Rugstreeppad using specific function
         has_rugstreeppad_platen = False

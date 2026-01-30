@@ -64,10 +64,10 @@ def _get_effective_timing(
         eff.start_timing_reference = "SUNSET"
         eff.start_time_relative_minutes = 0
 
-    # EXCEPTION: RD Paarverblijf Visit 1 -> Force Absolute 00:00
+    # EXCEPTION: RD Paarverblijf Visit 1 -> Force Absolute 23:00
     if is_paarverblijf and is_rd and visit_index == 1:
         eff.start_timing_reference = "ABSOLUTE_TIME"
-        eff.start_time_absolute_from = time(0, 0)
+        eff.start_time_absolute_from = time(23, 0)
 
     return eff
 
@@ -436,83 +436,176 @@ def calculate_visit_props(
         for p in protocols
     )
 
-    if has_massawinter and not has_mv_paarverblijf:
+    if has_massawinter and not has_mv_paarverblijf and len(protocols) == 1:
         return duration_min, "00:00", None
 
-    # Logic for Evening/Absolute scenarios
-    use_improved_logic = False
-    all_absolute = all(
-        t.start_timing_reference == "ABSOLUTE_TIME" for t in effective_timings
-    )
-    mixed_absolute_sunset = False
+    def _wrap_night_minutes(value: int) -> int:
+        if value < 600:
+            return value + 1440
+        return value
 
-    if not all_absolute and part_of_day == "Avond" and reference_date:
-        refs = {t.start_timing_reference for t in effective_timings}
-        if refs <= {"ABSOLUTE_TIME", "SUNSET"}:
-            mixed_absolute_sunset = True
+    def _estimate_sunset_minutes(ref_date: date | None) -> int:
+        if not ref_date:
+            return 20 * 60
+        m = ref_date.month
+        if m == 7:
+            return 22 * 60
+        if m == 8:
+            return 21 * 60
+        if m == 9:
+            return 20 * 60
+        return 20 * 60
 
-    remarks_suffix: str | None = None
-    if all_absolute or mixed_absolute_sunset:
-        use_improved_logic = True
+    def _format_time_from_minutes(value: int) -> str:
+        base = value % 1440
+        h = base // 60
+        m = base % 60
+        return f"{h:02d}:{m:02d}"
 
-        starts = []
-        ends = []
+    def _format_relative_to_sunset(rel_minutes: int) -> str:
+        if rel_minutes == 0:
+            return "Zonsondergang"
+        if rel_minutes > 0:
+            h_str = f"{rel_minutes / 60.0:g}".replace(".", ",")
+            return f"{h_str} uur na zonsondergang"
+        h_str = f"{abs(rel_minutes) / 60.0:g}".replace(".", ",")
+        return f"{h_str} uur voor zonsondergang"
 
-        for t in effective_timings:
-            p_start_min = None
+    if part_of_day == "Avond" and protocols:
+        has_any_absolute = has_massawinter or any(
+            (
+                eff.start_timing_reference == "ABSOLUTE_TIME"
+                and eff.start_time_absolute_from is not None
+            )
+            for eff in effective_timings
+        )
+
+        abs_anchor_candidates = {
+            _wrap_night_minutes(22 * 60),
+            _wrap_night_minutes(23 * 60),
+            _wrap_night_minutes(0),
+        }
+
+        per_protocol_starts: list[list[int]] = []
+        per_protocol_durations: list[int] = []
+        per_protocol_is_sunset_fixed: list[bool] = []
+
+        for p, eff in zip(protocols, effective_timings, strict=True):
+            fn = getattr(p, "function", None)
+            sp = getattr(p, "species", None)
+            fn_name = getattr(fn, "name", "") or ""
+            sp_abbr = getattr(sp, "abbreviation", "") or ""
+            sp_name = getattr(sp, "name", "") or ""
+
+            is_paarverblijf = fn_name == "Paarverblijf"
+            is_mv = sp_abbr == "MV" or sp_name == "MV"
+            is_massawinter = fn_name == "Massawinterverblijfplaats"
+
+            dur = int((eff.visit_duration_hours or 0) * 60)
+            per_protocol_durations.append(dur)
+
+            is_sunset_fixed = (
+                is_paarverblijf
+                and is_mv
+                and eff.start_timing_reference == "SUNSET"
+                and eff.start_time_relative_minutes == 0
+            )
+            per_protocol_is_sunset_fixed.append(is_sunset_fixed)
+
+            starts: list[int] = []
+
+            if is_massawinter:
+                starts.append(_wrap_night_minutes(0))
+                per_protocol_starts.append(starts)
+                continue
+
             if (
-                t.start_timing_reference == "ABSOLUTE_TIME"
-                and t.start_time_absolute_from
+                eff.start_timing_reference == "ABSOLUTE_TIME"
+                and eff.start_time_absolute_from
             ):
-                tm = t.start_time_absolute_from
-                hours = tm.hour if hasattr(tm, "hour") else 0
-                minutes = tm.minute if hasattr(tm, "minute") else 0
-                minutes_total = hours * 60 + minutes
+                tm = eff.start_time_absolute_from
+                minutes_total = (tm.hour * 60) + tm.minute
+                minutes_total = _wrap_night_minutes(minutes_total)
 
-                # Check for remarks triggers (mixed scenario)
-                if mixed_absolute_sunset:
-                    if minutes_total == 0:  # 00:00
-                        remarks_suffix = "Tot minimaal 2:00 onderzoeken"
-                    elif minutes_total == 1320:  # 22:00 (22*60)
-                        remarks_suffix = "Tot minimaal 0:00 onderzoeken."
+                if is_paarverblijf and minutes_total == _wrap_night_minutes(22 * 60):
+                    starts.extend(
+                        [
+                            _wrap_night_minutes(22 * 60),
+                            _wrap_night_minutes(23 * 60),
+                        ]
+                    )
+                else:
+                    starts.append(minutes_total)
 
-                if minutes_total < 600:
-                    minutes_total += 1440
-                p_start_min = minutes_total
+            elif eff.start_timing_reference == "SUNSET":
+                sunset_min = _estimate_sunset_minutes(reference_date)
+                rel = eff.start_time_relative_minutes or 0
+                starts.append(_wrap_night_minutes(sunset_min + rel))
 
-            elif (
-                mixed_absolute_sunset
-                and t.start_timing_reference == "SUNSET"
-                and reference_date
-            ):
-                m = reference_date.month
-                sunset_min = 20 * 60
-                if m == 7:
-                    sunset_min = 22 * 60
-                elif m == 8:
-                    sunset_min = 21 * 60
-                elif m == 9:
-                    sunset_min = 20 * 60
+                if is_paarverblijf and not is_mv and has_any_absolute:
+                    starts.extend(sorted(abs_anchor_candidates))
 
-                rel = t.start_time_relative_minutes or 0
-                p_start_min = sunset_min + rel
+            if not starts:
+                per_protocol_starts = []
+                break
 
-                if p_start_min < 600:
-                    p_start_min += 1440
+            per_protocol_starts.append(sorted(set(starts)))
 
-            if p_start_min is not None:
-                starts.append(p_start_min)
-                dur = (t.visit_duration_hours or 0) * 60
-                ends.append(p_start_min + dur)
+        if per_protocol_starts:
+            best_span: int | None = None
+            best_min_start: int | None = None
 
-        if starts and ends:
-            min_start = min(starts)
-            max_end = max(ends)
-            span = int(max_end - min_start)
-            if duration_min is not None:
-                duration_min = max(duration_min, span)
-            else:
-                duration_min = span
+            def _search(idx: int, chosen: list[int]) -> None:
+                nonlocal best_span, best_min_start
+                if idx >= len(per_protocol_starts):
+                    min_start = min(chosen)
+                    max_end = max(
+                        start + dur
+                        for start, dur in zip(
+                            chosen, per_protocol_durations, strict=True
+                        )
+                    )
+                    span = int(max_end - min_start)
+                    if best_span is None or span < best_span:
+                        best_span = span
+                        best_min_start = min_start
+                        return
+                    if (
+                        span == best_span
+                        and best_min_start is not None
+                        and min_start < best_min_start
+                    ):
+                        best_min_start = min_start
+                    return
+
+                for s in per_protocol_starts[idx]:
+                    chosen.append(s)
+                    _search(idx + 1, chosen)
+                    chosen.pop()
+
+            _search(0, [])
+
+            if best_span is not None and best_min_start is not None:
+                duration_min = best_span
+
+                sunset_min_wrapped = _wrap_night_minutes(
+                    _estimate_sunset_minutes(reference_date)
+                )
+
+                if has_any_absolute:
+                    if (
+                        any(per_protocol_is_sunset_fixed)
+                        and best_min_start == sunset_min_wrapped
+                    ):
+                        start_text = "Zonsondergang"
+                    else:
+                        start_text = _format_time_from_minutes(best_min_start)
+                else:
+                    start_text = _format_relative_to_sunset(
+                        best_min_start - sunset_min_wrapped
+                    )
+
+                return duration_min, start_text, None
 
     def derive_end_time_minutes(p: Protocol) -> int | None:
         ref = p.end_timing_reference or ""
@@ -565,7 +658,7 @@ def calculate_visit_props(
         hours_before = abs(min_to_sunrise) / 60.0
         h_str = f"{hours_before:g}".replace(".", ",")
         start_text = f"{h_str} uur voor zonsopkomst"
-        return duration_min, start_text, remarks_suffix
+        return duration_min, start_text, None
 
     # Default fallback text logic (ported)
     # Store candidates as tuples: (sort_key_minutes, text_str)
@@ -654,4 +747,4 @@ def calculate_visit_props(
         text_candidates.sort(key=lambda x: x[0])
         start_text = text_candidates[0][1]
 
-    return duration_min, start_text, locals().get("remarks_suffix", None)
+    return duration_min, start_text, None

@@ -427,7 +427,9 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
         function_ids=[10],
         species_ids=[101],
         default_required_researchers=5,
-        default_preferred_researcher_id=99,
+        default_planned_week=12,
+        default_researcher_ids=[99],
+        default_planning_locked=True,
         default_expertise_level="Senior",
         default_wbc=True,
         default_fiets=True,
@@ -441,7 +443,8 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
     assert len(visits) > 0
     v = visits[0]
     assert v.required_researchers == 5
-    assert v.preferred_researcher_id == 99
+    assert v.planned_week == 12
+    assert v.planning_locked is True
     assert v.expertise_level == "Senior"
     assert v.wbc is True
     assert v.fiets is True

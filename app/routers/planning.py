@@ -195,6 +195,7 @@ async def clear_planned_researchers(
         and_(
             Visit.custom_function_name.is_(None),
             Visit.custom_species_name.is_(None),
+            Visit.planning_locked.is_(False),
         )
     )
 

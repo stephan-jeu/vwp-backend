@@ -37,7 +37,6 @@ def _generate_greedy_planning_solution(
     """
     from app.services.visit_planning_selection import (
         _allowed_day_indices_for_visit,
-        _meets_vleermuis_expertise,
         _qualifies_user_for_visit,
     )
 
@@ -79,8 +78,6 @@ def _generate_greedy_planning_solution(
         if not allowed_days:
             continue
 
-        pref_uid = getattr(v, "preferred_researcher_id", None)
-
         # Try finding a valid day and team
         # Greedy strategy: First valid day that can host the full team
 
@@ -114,11 +111,7 @@ def _generate_greedy_planning_solution(
                     continue
 
                 # Check 4: Qualification / Preference
-                is_preferred = pref_uid is not None and uid == pref_uid
-                if is_preferred:
-                    if not _meets_vleermuis_expertise(u, v):
-                        continue
-                elif not _qualifies_user_for_visit(u, v):
+                if not _qualifies_user_for_visit(u, v):
                     continue
 
                 # Valid candidate
@@ -171,9 +164,8 @@ async def select_visits_cp_sat(
     """
     Select visits and assign researchers using OR-Tools (CP-SAT).
 
-    Optimizes for:
-    1. Maximizing total priority weight of scheduled visits.
-    2. Preferring "Preferred Researchers".
+    Optimizes for maximizing total priority weight of scheduled visits.
+
 
     Constraints:
     - Weekly capacity per user.
@@ -187,7 +179,6 @@ async def select_visits_cp_sat(
         _eligible_visits_for_week,
         _load_user_capacities,
         _load_user_daypart_capacities,
-        _meets_vleermuis_expertise,
         _priority_key,
         _qualifies_user_for_visit,
         _load_all_users,
@@ -367,17 +358,11 @@ async def select_visits_cp_sat(
 
         # 2b. Researcher Assignment
         req = getattr(v, "required_researchers", 1) or 1
-        pref_uid = getattr(v, "preferred_researcher_id", None)
 
         assigned_vars = []
         for j, u in u_map.items():
-            # Check qualifications OR if user is preferred (bypass qualification)
-            uid = getattr(u, "id", None)
-            is_preferred = pref_uid is not None and uid is not None and uid == pref_uid
-
             qualified = _qualifies_user_for_visit(u, v)
-            meets_expertise = _meets_vleermuis_expertise(u, v)
-            if qualified or (is_preferred and meets_expertise):
+            if qualified:
                 x[i, j] = model.NewBoolVar(f"x_{i}_{j}")
                 assigned_vars.append(x[i, j])
 
@@ -452,10 +437,6 @@ async def select_visits_cp_sat(
     # --- Objective ---
     obj_terms = []
 
-    # Scale bonus relative to rank step (10)
-    # Keep modest so preferred does not block scheduling.
-    PREFERRED_BONUS = 25
-
     # Load Balancing Weight
     # Keep this the least important soft constraint.
     LOAD_BALANCE_WEIGHT = 1
@@ -478,7 +459,6 @@ async def select_visits_cp_sat(
         pair_to_indices: dict[tuple[str, str], list[tuple[int, int]]] = {}
 
         for i, v in v_map.items():
-            pref_uid = getattr(v, "preferred_researcher_id", None)
             cluster = getattr(v, "cluster", None)
             dest = getattr(cluster, "address", None)
             if not dest:
@@ -499,13 +479,7 @@ async def select_visits_cp_sat(
                     dest = f"{dest}, {loc}"
 
             for j, u in u_map.items():
-                uid = getattr(u, "id", None)
-                is_preferred = (
-                    pref_uid is not None and uid is not None and uid == pref_uid
-                )
-                if _qualifies_user_for_visit(u, v) or (
-                    is_preferred and _meets_vleermuis_expertise(u, v)
-                ):
+                if _qualifies_user_for_visit(u, v):
                     origin = getattr(u, "address", None)
                     if origin:
                         key = (origin, dest)
@@ -526,18 +500,8 @@ async def select_visits_cp_sat(
     for i, v in v_map.items():
         base_val = visit_weights[i]
         obj_terms.append(scheduled[i] * base_val)
-
-        pref_uid = getattr(v, "preferred_researcher_id", None)
         for j, u in u_map.items():
             if (i, j) in x:
-                # Bonus for preferred
-                uid = getattr(u, "id", None)
-                is_preferred = (
-                    pref_uid is not None and uid is not None and uid == pref_uid
-                )
-                if is_preferred:
-                    obj_terms.append(x[i, j] * PREFERRED_BONUS)
-
                 # Penalty for Travel Time
                 cost = travel_costs.get((i, j), 0)
                 if cost > 0:

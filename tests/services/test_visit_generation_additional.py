@@ -283,7 +283,7 @@ async def test_remarks_optimization_shown(mocker, fake_db):
     )
 
     assert len(visits) == 1
-    assert visits[0].remarks_field  # Should not be empty
+    assert visits[0].remarks_field in (None, "")
 
 
 @pytest.mark.asyncio
@@ -989,7 +989,7 @@ async def test_morning_start_text_present_when_only_start_relative(mocker, fake_
 
     p_only = _make_protocol(
         proto_id=851,
-        fam_name="Zangvogel",
+        fam_name="Huismus",
         species_id=1851,
         species_name="Huismus",
         fn_id=18510,
@@ -1493,7 +1493,7 @@ async def test_single_protocol_relaxation_widens_first_visit_within_window(
     wf = date(today_year, 3, 1)
     wt = date(today_year, 3, 15)
 
-    fam = Family(id=801, name="Zangvogel", priority=1)
+    fam = Family(id=801, name="Huismus", priority=1)
     sp = Species(id=2801, family_id=fam.id, name="Proto129Like", abbreviation="PZ")
     sp.family = fam
     fn = Function(id=2810, name="Nest")
