@@ -34,10 +34,13 @@ from app.services.trash_service import (
     hard_delete_trash_item as svc_hard_delete_trash_item,
 )
 from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
+from core.settings import get_settings
 from db.session import get_db
 
 
 router = APIRouter()
+
+_settings = get_settings()
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
@@ -166,7 +169,11 @@ async def regenerate_family_capacity(
 
     # Run Solver
     await SeasonPlanningService.run_season_solver(
-        db, date.today(), include_quotes=False, persist=True
+        db,
+        date.today(),
+        include_quotes=False,
+        persist=True,
+        timeout_seconds=_settings.season_planner_timeout_quick_seconds,
     )
 
     # Return new state

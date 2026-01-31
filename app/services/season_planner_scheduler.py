@@ -60,7 +60,11 @@ async def _execute_season_planner(session: AsyncSession) -> None:
         None.
     """
 
-    await SeasonPlanningService.run_season_solver(session, date.today())
+    await SeasonPlanningService.run_season_solver(
+        session,
+        date.today(),
+        timeout_seconds=_settings.season_planner_timeout_thorough_seconds,
+    )
 
 
 def start_season_planner_scheduler() -> None:

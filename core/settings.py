@@ -25,6 +25,16 @@ class Settings(BaseModel):
     season_planner_timezone: str = Field(
         default_factory=lambda: os.getenv("SEASON_PLANNER_TIMEZONE", "Europe/Amsterdam")
     )
+    season_planner_timeout_quick_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("SEASON_PLANNER_TIMEOUT_QUICK_SECONDS", "60")
+        )
+    )
+    season_planner_timeout_thorough_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("SEASON_PLANNER_TIMEOUT_THOROUGH_SECONDS", "180")
+        )
+    )
 
     # PVW backfill scheduler
     pvw_backfill_scheduler_enabled: bool = Field(

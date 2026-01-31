@@ -193,6 +193,7 @@ class SeasonPlanningService:
         *,
         include_quotes: bool = False,
         persist: bool = True,
+        timeout_seconds: float | None = None,
     ) -> None:
         """Run the seasonal planner to assign provisional weeks.
 
@@ -201,6 +202,7 @@ class SeasonPlanningService:
             start_date: Start date for the planning horizon.
             include_quotes: When True, include quote projects in the solver input.
             persist: When True, commit provisional week updates to the database.
+            timeout_seconds: Optional time limit for CP-SAT in seconds.
 
         Returns:
             None.
@@ -217,7 +219,13 @@ class SeasonPlanningService:
         )
 
         # 2. Run Logic
-        SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
+        SeasonPlanningService.solve_season(
+            start_date,
+            visits,
+            users,
+            avail_map,
+            timeout_seconds=timeout_seconds,
+        )
 
         # 3. Commit
         if persist:
@@ -229,6 +237,8 @@ class SeasonPlanningService:
         visits: list[Visit],
         users: list[User],
         avail_map: dict[tuple[int, int], AvailabilityWeek],
+        *,
+        timeout_seconds: float | None = None,
     ) -> None:
         """
         Pure logic solver for Season Planning.
@@ -1432,7 +1442,17 @@ class SeasonPlanningService:
         )
 
         solver = cp_model.CpSolver()
-        time_limit = max(30.0, min(300.0, len(visits) * 0.12))
+        if timeout_seconds is not None:
+            time_limit = float(timeout_seconds)
+            time_limit_source = "override"
+        else:
+            time_limit = max(30.0, min(300.0, len(visits) * 0.12))
+            time_limit_source = "dynamic"
+        logger.info(
+            "SeasonPlanning CP-SAT: time_limit=%.1fs source=%s",
+            time_limit,
+            time_limit_source,
+        )
         solver.parameters.max_time_in_seconds = time_limit  # Reasonable limit
         solver.parameters.num_search_workers = 2
 
