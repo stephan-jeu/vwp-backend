@@ -723,8 +723,8 @@ async def select_visits_cp_sat(
         # Scale: N_visits * N_researchers * 0.005s
         # Max: 60s (was 120s).
         complexity = len(visits) * len(users)
-        dynamic = complexity * 0.005
-        timeout_seconds = max(15.0, min(60.0, dynamic))
+        dynamic = complexity * 0.008
+        timeout_seconds = max(5.0, min(45.0, dynamic))
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug(
                 "Computed solver timeout: %.2fs (Complexity=%d)",
@@ -733,7 +733,60 @@ async def select_visits_cp_sat(
             )
 
     solver.parameters.max_time_in_seconds = timeout_seconds
+    solver.parameters.num_search_workers = 2
     status = solver.Solve(model)
+
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        scheduled_count = sum(1 for i in v_map if solver.Value(scheduled[i]))
+        obj = solver.ObjectiveValue()
+        bound = solver.BestObjectiveBound()
+        denom = max(1.0, abs(bound))
+        gap = max(0.0, (bound - obj) / denom)
+
+        if status == cp_model.OPTIMAL:
+            quality = "OPTIMAL"
+        elif gap <= 0.01:
+            quality = "EXCELLENT"
+        elif gap <= 0.05:
+            quality = "GOOD"
+        elif gap <= 0.15:
+            quality = "OK"
+        else:
+            quality = "WEAK"
+
+        time_limit_reached = solver.WallTime() >= (timeout_seconds * 0.99)
+        _logger.info(
+            "WeeklyPlanning CP-SAT: status=%s time=%.2fs limit=%.1fs visits=%d users=%d scheduled=%d obj=%.2f bound=%.2f gap=%.4f conflicts=%d branches=%d",
+            solver.StatusName(status),
+            solver.WallTime(),
+            timeout_seconds,
+            len(visits),
+            len(users),
+            scheduled_count,
+            obj,
+            bound,
+            gap,
+            solver.NumConflicts(),
+            solver.NumBranches(),
+        )
+        _logger.info(
+            "WeeklyPlanning CP-SAT summary: quality=%s gap=%.4f time_limit_reached=%s",
+            quality,
+            gap,
+            time_limit_reached,
+        )
+    else:
+        _logger.info(
+            "WeeklyPlanning CP-SAT: status=%s time=%.2fs limit=%.1fs visits=%d users=%d conflicts=%d branches=%d",
+            solver.StatusName(status),
+            solver.WallTime(),
+            timeout_seconds,
+            len(visits),
+            len(users),
+            solver.NumConflicts(),
+            solver.NumBranches(),
+        )
+        _logger.info("WeeklyPlanning CP-SAT summary: quality=FAILED")
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         msg = f"CP-SAT Visit Selection failed. Status={solver.StatusName(status)}"

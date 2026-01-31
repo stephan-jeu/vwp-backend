@@ -384,6 +384,8 @@ class SeasonPlanningService:
         visit_week_vars = {}  # v.id -> IntVar
         visit_active_vars = {}  # v.id -> BoolVar
 
+        visit_candidates: dict[int, list[tuple[int, int]]] = {}
+
         debug_visit_candidate_weeks: dict[int, list[int]] = {}
 
         # To optimize the "Cumulative Capacity" constraint, we need to group visits by allowed weeks.
@@ -527,6 +529,7 @@ class SeasonPlanningService:
                         )
                     valid_weeks.append(w)
                     domain_list.append(w)
+                    visit_candidates.setdefault(v.id, []).append((w, days))
 
                     if debug_this_visit:
                         debug_visit_candidate_weeks[v.id] = (
@@ -1240,9 +1243,260 @@ class SeasonPlanningService:
         )
         model.Maximize(total_obj)
 
+        remaining_total_supply: dict[str, dict[int, int]] = {
+            skill: {w: sum(vals.values()) for w, vals in by_week.items()}
+            for skill, by_week in supply.items()
+        }
+        remaining_daypart_supply: dict[str, dict[int, dict[str, int]]] = {
+            skill: {
+                w: {
+                    part: (vals.get(part, 0) + vals.get("f", 0))
+                    for part in ("m", "d", "n")
+                }
+                for w, vals in by_week.items()
+            }
+            for skill, by_week in supply.items()
+        }
+
+        global_supply: dict[int, int] = {}
+        for w in horizon_weeks:
+            total = 0
+            for u in users:
+                aw = avail_map.get((u.id, w))
+                if not aw:
+                    continue
+                total += (
+                    (aw.morning_days or 0)
+                    + (aw.daytime_days or 0)
+                    + (aw.nighttime_days or 0)
+                    + (aw.flex_days or 0)
+                )
+            global_supply[w] = total
+
+        def _visit_cost(v: Visit) -> int:
+            researchers = getattr(v, "researchers", None)
+            if researchers:
+                return len(researchers)
+            req = getattr(v, "required_researchers", None) or 1
+            try:
+                return int(req)
+            except (TypeError, ValueError):
+                return 1
+
+        greedy_active = 0
+        greedy_locked = 0
+        greedy_existing = 0
+        candidate_visits = [v for v in visits if v.id in visit_week_vars]
+        candidate_visits.sort(
+            key=lambda v: (
+                getattr(v, "to_date", None) or date.max,
+                getattr(v, "from_date", None) or start_date,
+                getattr(v, "id", 0) or 0,
+            )
+        )
+
+        for v in candidate_visits:
+            v_id = getattr(v, "id", None)
+            if v_id is None:
+                continue
+            if v_id not in visit_active_vars:
+                continue
+
+            vw = visit_week_vars[v_id]
+            va = visit_active_vars[v_id]
+
+            if getattr(v, "planned_week", None):
+                model.AddHint(va, 1)
+                model.AddHint(vw, int(v.planned_week))
+                greedy_active += 1
+                greedy_locked += 1
+                continue
+
+            if getattr(v, "provisional_locked", False) and getattr(
+                v, "provisional_week", None
+            ):
+                model.AddHint(va, 1)
+                model.AddHint(vw, int(v.provisional_week))
+                greedy_active += 1
+                greedy_locked += 1
+                continue
+
+            part_of_day = (getattr(v, "part_of_day", None) or "").strip()
+            part_key = {"Ochtend": "m", "Dag": "d", "Avond": "n"}.get(part_of_day)
+            skill = SeasonPlanningService._get_required_user_flag(v)
+
+            chosen_week: int | None = None
+            chosen_days: int | None = None
+
+            existing_week = getattr(v, "provisional_week", None)
+            if existing_week is not None:
+                try:
+                    existing_week_int = int(existing_week)
+                except (TypeError, ValueError):
+                    existing_week_int = None
+
+                if existing_week_int is not None:
+                    existing_candidates = visit_candidates.get(v_id, [])
+                    existing_days = next(
+                        (
+                            days
+                            for w, days in existing_candidates
+                            if w == existing_week_int
+                        ),
+                        None,
+                    )
+                    if existing_days is not None:
+                        cost = _visit_cost(v)
+                        window_weight = math.ceil(5 / existing_days)
+                        demand = cost * window_weight
+
+                        if (
+                            global_supply.get(existing_week_int, 0) >= demand
+                            and remaining_total_supply.get(skill, {}).get(
+                                existing_week_int, 0
+                            )
+                            >= demand
+                        ):
+                            if (
+                                part_key is None
+                                or remaining_daypart_supply.get(skill, {})
+                                .get(existing_week_int, {})
+                                .get(part_key, 0)
+                                >= demand
+                            ):
+                                chosen_week = existing_week_int
+                                chosen_days = existing_days
+                                greedy_existing += 1
+
+            for w, days in sorted(visit_candidates.get(v_id, []), key=lambda x: x[0]):
+                if chosen_week is not None:
+                    break
+                cost = _visit_cost(v)
+                window_weight = math.ceil(5 / days)
+                demand = cost * window_weight
+
+                if global_supply.get(w, 0) < demand:
+                    continue
+
+                if remaining_total_supply.get(skill, {}).get(w, 0) < demand:
+                    continue
+
+                if part_key is not None:
+                    if (
+                        remaining_daypart_supply.get(skill, {})
+                        .get(w, {})
+                        .get(part_key, 0)
+                        < demand
+                    ):
+                        continue
+
+                chosen_week = w
+                chosen_days = days
+                break
+
+            if chosen_week is None:
+                model.AddHint(va, 0)
+                model.AddHint(vw, 0)
+                continue
+
+            cost = _visit_cost(v)
+            window_weight = math.ceil(5 / (chosen_days or 1))
+            demand = cost * window_weight
+
+            global_supply[chosen_week] = max(
+                0, global_supply.get(chosen_week, 0) - demand
+            )
+            remaining_total_supply.setdefault(skill, {})
+            remaining_total_supply[skill][chosen_week] = max(
+                0, remaining_total_supply[skill].get(chosen_week, 0) - demand
+            )
+            if part_key is not None:
+                remaining_daypart_supply.setdefault(skill, {})
+                remaining_daypart_supply[skill].setdefault(chosen_week, {})
+                remaining_daypart_supply[skill][chosen_week][part_key] = max(
+                    0,
+                    remaining_daypart_supply[skill][chosen_week].get(part_key, 0)
+                    - demand,
+                )
+
+            model.AddHint(va, 1)
+            model.AddHint(vw, chosen_week)
+            greedy_active += 1
+
+        logger.info(
+            "SeasonPlanning greedy hint: active=%d/%d locked=%d existing=%d",
+            greedy_active,
+            len(candidate_visits),
+            greedy_locked,
+            greedy_existing,
+        )
+
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 30.0  # Reasonable limit
+        time_limit = max(30.0, min(300.0, len(visits) * 0.12))
+        solver.parameters.max_time_in_seconds = time_limit  # Reasonable limit
+        solver.parameters.num_search_workers = 2
+
+        try:
+            solver.parameters.relative_gap_limit = 0.001
+        except AttributeError:
+            pass
         status = solver.Solve(model)
+
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            active_count = sum(
+                1
+                for v in visits
+                if v.id in visit_active_vars and solver.Value(visit_active_vars[v.id])
+            )
+            obj = solver.ObjectiveValue()
+            bound = solver.BestObjectiveBound()
+            denom = max(1.0, abs(bound))
+            gap = max(0.0, (bound - obj) / denom)
+
+            if status == cp_model.OPTIMAL:
+                quality = "OPTIMAL"
+            elif gap <= 0.01:
+                quality = "EXCELLENT"
+            elif gap <= 0.05:
+                quality = "GOOD"
+            elif gap <= 0.15:
+                quality = "OK"
+            else:
+                quality = "WEAK"
+
+            time_limit = solver.parameters.max_time_in_seconds
+            time_limit_reached = solver.WallTime() >= (time_limit * 0.99)
+            logger.info(
+                "SeasonPlanning CP-SAT: status=%s time=%.2fs limit=%.1fs visits=%d active=%d obj=%.2f bound=%.2f gap=%.4f conflicts=%d branches=%d",
+                solver.StatusName(status),
+                solver.WallTime(),
+                time_limit,
+                len(visits),
+                active_count,
+                obj,
+                bound,
+                gap,
+                solver.NumConflicts(),
+                solver.NumBranches(),
+            )
+            logger.info(
+                "SeasonPlanning CP-SAT summary: quality=%s gap=%.4f time_limit_reached=%s",
+                quality,
+                gap,
+                time_limit_reached,
+            )
+        else:
+            time_limit = solver.parameters.max_time_in_seconds
+            logger.info(
+                "SeasonPlanning CP-SAT: status=%s time=%.2fs limit=%.1fs visits=%d conflicts=%d branches=%d",
+                solver.StatusName(status),
+                solver.WallTime(),
+                time_limit,
+                len(visits),
+                solver.NumConflicts(),
+                solver.NumBranches(),
+            )
+            logger.info("SeasonPlanning CP-SAT summary: quality=FAILED")
 
         if _DEBUG_SEASON_PLANNING:
             logger.debug("SeasonPlanning: solver_status=%s", solver.StatusName(status))

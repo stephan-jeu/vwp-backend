@@ -471,12 +471,17 @@ async def generate_visits_cp_sat(
     # Dynamic Time Limit: Scale with complexity (number of requests)
     # Base 30s + 0.5s per request. For 75 requests -> ~50s. For 500 -> 250s.
     # We can be more aggressive now that we have the Greedy Hint to prevent disaster cases.
-    time_limit = max(30.0, len(requests) * 0.5)
+    time_limit = max(15.0, min(60.0, len(requests) * 0.6))
     solver.parameters.max_time_in_seconds = time_limit
 
     # Disable parallelism to prevent OOM on single-core/low-memory servers
     # The heuristic hint is sufficient to guide the search without needing portfolio search.
-    solver.parameters.num_search_workers = 1
+    solver.parameters.num_search_workers = 2
+
+    try:
+        solver.parameters.relative_gap_limit = 0.001
+    except AttributeError:
+        pass
 
     if _DEBUG_VISIT_GEN:
         used_visits = len(set(greedy_assignment.values()))
@@ -510,6 +515,58 @@ async def generate_visits_cp_sat(
         )
 
     status = solver.Solve(model)
+
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        active_count = sum(
+            1 for v in range(max_visits) if solver.BooleanValue(visit_active[v])
+        )
+        obj = solver.ObjectiveValue()
+        bound = solver.BestObjectiveBound()
+        denom = max(1.0, abs(obj))
+        gap = max(0.0, (obj - bound) / denom)
+
+        if status == cp_model.OPTIMAL:
+            quality = "OPTIMAL"
+        elif gap <= 0.01:
+            quality = "EXCELLENT"
+        elif gap <= 0.05:
+            quality = "GOOD"
+        elif gap <= 0.15:
+            quality = "OK"
+        else:
+            quality = "WEAK"
+
+        time_limit_reached = solver.WallTime() >= (time_limit * 0.99)
+        _logger.info(
+            "VisitGen CP-SAT: status=%s time=%.2fs limit=%.1fs requests=%d active_visits=%d obj=%.2f bound=%.2f gap=%.4f conflicts=%d branches=%d",
+            solver.StatusName(status),
+            solver.WallTime(),
+            time_limit,
+            len(requests),
+            active_count,
+            obj,
+            bound,
+            gap,
+            solver.NumConflicts(),
+            solver.NumBranches(),
+        )
+        _logger.info(
+            "VisitGen CP-SAT summary: quality=%s gap=%.4f time_limit_reached=%s",
+            quality,
+            gap,
+            time_limit_reached,
+        )
+    else:
+        _logger.info(
+            "VisitGen CP-SAT: status=%s time=%.2fs limit=%.1fs requests=%d conflicts=%d branches=%d",
+            solver.StatusName(status),
+            solver.WallTime(),
+            time_limit,
+            len(requests),
+            solver.NumConflicts(),
+            solver.NumBranches(),
+        )
+        _logger.info("VisitGen CP-SAT summary: quality=FAILED")
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         msg = f"CP-SAT Infeasible. Status={solver.StatusName(status)}"
