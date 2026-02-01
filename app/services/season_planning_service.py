@@ -403,6 +403,19 @@ class SeasonPlanningService:
         # We will collect: allowed_visits_per_week[week][skill] -> list[ (v_id, overlap_days) ]
         visits_per_week_candidate = {}  # Week -> Skill -> list of (v, overlap)
 
+        def _safe_week_int(value: object) -> int | None:
+            """Return a validated ISO week number in [1, 53], or None."""
+
+            if value is None:
+                return None
+            try:
+                week_int = int(value)
+            except (TypeError, ValueError):
+                return None
+            if 1 <= week_int <= 53:
+                return week_int
+            return None
+
         for v in visits:
             v_skill = SeasonPlanningService._get_required_user_flag(v)
 
@@ -554,6 +567,55 @@ class SeasonPlanningService:
 
                     visits_per_week_candidate[w][v_skill].append((v, days, is_active))
 
+            planned_week = _safe_week_int(getattr(v, "planned_week", None))
+            locked_week = (
+                _safe_week_int(getattr(v, "provisional_week", None))
+                if getattr(v, "provisional_locked", False)
+                else None
+            )
+            fixed_week = planned_week or locked_week
+            if fixed_week is not None and fixed_week not in domain_list:
+                try:
+                    w_mon = date.fromisocalendar(year, fixed_week, 1)
+                    w_fri = w_mon + timedelta(days=4)
+                except ValueError:
+                    logger.warning(
+                        "SeasonPlanning: visit=%s has fixed_week=%s not valid for year=%s; ignoring fixed anchor.",
+                        getattr(v, "id", None),
+                        fixed_week,
+                        year,
+                    )
+                    fixed_week = None
+                    planned_week = None
+                    locked_week = None
+                else:
+                    overlap_start = max(eff_start, w_mon)
+                    overlap_end = min(eff_end, w_fri)
+                    fixed_days = (overlap_end - overlap_start).days + 1
+                    if fixed_days < 1:
+                        logger.warning(
+                            "SeasonPlanning: visit=%s fixed_week=%s outside date window (from=%s to=%s); forcing candidate days=1.",
+                            getattr(v, "id", None),
+                            fixed_week,
+                            getattr(v, "from_date", None),
+                            getattr(v, "to_date", None),
+                        )
+                        fixed_days = 1
+
+                    valid_weeks.append(fixed_week)
+                    domain_list.append(fixed_week)
+                    visit_candidates.setdefault(v.id, []).append(
+                        (fixed_week, fixed_days)
+                    )
+
+                    if fixed_week not in visits_per_week_candidate:
+                        visits_per_week_candidate[fixed_week] = {}
+                    if v_skill not in visits_per_week_candidate[fixed_week]:
+                        visits_per_week_candidate[fixed_week][v_skill] = []
+                    visits_per_week_candidate[fixed_week][v_skill].append(
+                        (v, fixed_days, is_active)
+                    )
+
             if len(domain_list) <= 1:  # Only [0]
                 model.Add(is_active == 0)
                 # Assign dummy 0
@@ -571,16 +633,15 @@ class SeasonPlanningService:
 
             # HARD CONSTRAINTS (Anchors)
             # 1. Already Planned
-            if v.planned_week:
-                # If planned_week in domain?
-                model.Add(vw == v.planned_week).OnlyEnforceIf(is_active)
+            if planned_week is not None:
+                model.Add(vw == planned_week).OnlyEnforceIf(is_active)
                 # Should we force active?
                 # Yes, if it's planned, it IS active.
                 model.Add(is_active == 1)
 
             # 2. Manual Lock
-            elif v.provisional_locked and v.provisional_week:
-                model.Add(vw == v.provisional_week).OnlyEnforceIf(is_active)
+            elif locked_week is not None:
+                model.Add(vw == locked_week).OnlyEnforceIf(is_active)
                 model.Add(is_active == 1)
 
         # 3b. Sequence & Gap Constraints
