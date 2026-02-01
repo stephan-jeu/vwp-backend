@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from datetime import date
 
-from fastapi import APIRouter, Depends, Path, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,6 +21,7 @@ from app.schemas.user import UserNameRead, UserRead, UserCreate, UserUpdate
 from app.schemas.trash import TrashItem, TrashKind
 from app.services.activity_log_service import log_activity
 from app.services.season_planning_service import SeasonPlanningService
+from app.services.planning_run_errors import PlanningRunError
 from app.services.security import require_admin
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
@@ -168,13 +169,32 @@ async def regenerate_family_capacity(
         )
 
     # Run Solver
-    await SeasonPlanningService.run_season_solver(
-        db,
-        date.today(),
-        include_quotes=False,
-        persist=True,
-        timeout_seconds=_settings.season_planner_timeout_quick_seconds,
-    )
+    try:
+        await SeasonPlanningService.run_season_solver(
+            db,
+            date.today(),
+            include_quotes=False,
+            persist=True,
+            timeout_seconds=_settings.season_planner_timeout_quick_seconds,
+        )
+    except PlanningRunError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Het is niet gelukt om een goede capaciteitsplanning te maken. "
+                "Probeer het later nog een keer."
+            ),
+        ) from exc
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Het is niet gelukt om een goede capaciteitsplanning te maken. "
+                "Probeer het later nog een keer."
+            ),
+        ) from exc
 
     # Return new state
     res = await SeasonPlanningService.get_capacity_grid(

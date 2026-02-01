@@ -21,6 +21,7 @@ from app.services.visit_status_service import (
     derive_visit_status,
     resolve_visit_status,
 )
+from app.services.planning_run_errors import PlanningRunError
 
 
 _logger = logging.getLogger("uvicorn.error")
@@ -1007,9 +1008,17 @@ async def select_visits_for_week(
             "capacity_remaining": caps,
         }
 
-    result = await select_visits_cp_sat(
-        db, week_monday, timeout_seconds=timeout_seconds
-    )
+    try:
+        result = await select_visits_cp_sat(
+            db,
+            week_monday,
+            timeout_seconds=timeout_seconds,
+            include_travel_time=include_travel_time,
+        )
+    except PlanningRunError:
+        if db:
+            await db.rollback()
+        raise
 
     effective_selected = result.selected
     effective_skipped = result.skipped

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
+from app.services.admin_email_service import send_admin_alert_email
 from app.services.season_planning_service import SeasonPlanningService
 from core.settings import get_settings
 from db.session import AsyncSessionLocal
@@ -44,6 +46,17 @@ async def _run_season_planner_job() -> None:
             try:
                 await _execute_season_planner(session)
             except Exception:
+                detail = traceback.format_exc()
+                try:
+                    await send_admin_alert_email(
+                        subject="Veldwerkplanning: seizoenplanner mislukt",
+                        body=detail,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Season planner scheduler failed to send admin alert email.",
+                        exc_info=True,
+                    )
                 logger.warning(
                     "Season planner scheduler failed to complete.", exc_info=True
                 )

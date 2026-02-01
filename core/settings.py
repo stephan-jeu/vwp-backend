@@ -113,6 +113,14 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("GOOGLE_MAPS_API_KEY", "")
     )
 
+    smtp_host: str = Field(default_factory=lambda: os.getenv("SMTP_HOST", ""))
+    smtp_port: int = Field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))
+    smtp_user: str = Field(default_factory=lambda: os.getenv("SMTP_USER", ""))
+    smtp_password: SecretStr = Field(
+        default_factory=lambda: SecretStr(os.getenv("SMTP_PASSWORD", ""))
+    )
+    admin_email: str = Field(default_factory=lambda: os.getenv("ADMIN_EMAIL", ""))
+
     @property
     def sqlalchemy_database_uri_async(self) -> str:
         # postgresql+asyncpg://user:pass@host:port/db

@@ -35,6 +35,7 @@ from app.services.visit_generation import (
     derive_start_time_text_for_visit,
 )
 from app.services.activity_log_service import log_activity
+from app.services.planning_run_errors import PlanningRunError
 from app.services.soft_delete import soft_delete_entity
 from db.session import get_db
 
@@ -265,38 +266,55 @@ async def create_cluster(
         db.add(cluster)
         await db.flush()
 
-    # Generate visits (append-only) from distinct union of protocols resolved from combos
     warnings: list[str] = []
     _visits_created_ids: list[int] = []
-    if payload.combos:
-        combos_dicts = [
-            {"function_ids": c.function_ids, "species_ids": c.species_ids}
-            for c in payload.combos
-        ]
-        protocols = await resolve_protocols_for_combos(db=db, combos=combos_dicts)
-        visits_created, warnings = await generate_visits_for_cluster(
-            db=db,
-            cluster=cluster,
-            function_ids=[],
-            species_ids=[],
-            protocols=protocols,
-            default_required_researchers=payload.default_required_researchers,
-            default_planned_week=payload.default_planned_week,
-            default_researcher_ids=payload.default_researcher_ids,
-            default_planning_locked=payload.default_planning_locked,
-            default_expertise_level=payload.default_expertise_level,
-            default_wbc=payload.default_wbc,
-            default_fiets=payload.default_fiets,
-            default_hub=payload.default_hub,
-            default_dvp=payload.default_dvp,
-            default_sleutel=payload.default_sleutel,
-            default_remarks_field=payload.default_remarks_field,
-        )
-        # IDs will be assigned on commit; collect after commit below
-        _visits_created_ids = [v.id for v in visits_created]
+    try:
+        if payload.combos:
+            combos_dicts = [
+                {"function_ids": c.function_ids, "species_ids": c.species_ids}
+                for c in payload.combos
+            ]
+            protocols = await resolve_protocols_for_combos(db=db, combos=combos_dicts)
+            visits_created, warnings = await generate_visits_for_cluster(
+                db=db,
+                cluster=cluster,
+                function_ids=[],
+                species_ids=[],
+                protocols=protocols,
+                default_required_researchers=payload.default_required_researchers,
+                default_planned_week=payload.default_planned_week,
+                default_researcher_ids=payload.default_researcher_ids,
+                default_planning_locked=payload.default_planning_locked,
+                default_expertise_level=payload.default_expertise_level,
+                default_wbc=payload.default_wbc,
+                default_fiets=payload.default_fiets,
+                default_hub=payload.default_hub,
+                default_dvp=payload.default_dvp,
+                default_sleutel=payload.default_sleutel,
+                default_remarks_field=payload.default_remarks_field,
+            )
+            _visits_created_ids = [v.id for v in visits_created]
 
-    await db.commit()
-    await db.refresh(cluster)
+        await db.commit()
+        await db.refresh(cluster)
+    except PlanningRunError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Het is niet gelukt om de SFC's goed te combineren. "
+                "Probeer het nog een keer of pas de bezoeken handmatig aan."
+            ),
+        ) from exc
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Het is niet gelukt om de SFC's goed te combineren. "
+                "Probeer het nog een keer of pas de bezoeken handmatig aan."
+            ),
+        ) from exc
 
     # Re-query visits for response
     visits_stmt: Select[tuple[Visit]] = (

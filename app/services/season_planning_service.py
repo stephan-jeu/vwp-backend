@@ -22,6 +22,7 @@ from app.services.visit_planning_selection import (
     _first_function_name,
     _any_function_contains,
 )
+from app.services.planning_run_errors import PlanningRunError
 from app.schemas.capacity import CapacitySimulationResponse
 from ortools.sat.python import cp_model
 
@@ -207,7 +208,6 @@ class SeasonPlanningService:
         Returns:
             None.
         """
-        # 1. Load Data
         visits = await SeasonPlanningService._load_all_active_visits(
             db, start_date, include_quotes=include_quotes
         )
@@ -218,16 +218,18 @@ class SeasonPlanningService:
             db, start_date.year
         )
 
-        # 2. Run Logic
-        SeasonPlanningService.solve_season(
-            start_date,
-            visits,
-            users,
-            avail_map,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            SeasonPlanningService.solve_season(
+                start_date,
+                visits,
+                users,
+                avail_map,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception:
+            await db.rollback()
+            raise
 
-        # 3. Commit
         if persist:
             await db.commit()
 
@@ -1616,6 +1618,22 @@ class SeasonPlanningService:
             logger.debug("SeasonPlanning: solver_status=%s", solver.StatusName(status))
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 logger.debug("SeasonPlanning: objective=%s", solver.ObjectiveValue())
+
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            msg = (
+                "SeasonPlanning CP-SAT produced no feasible solution. "
+                f"Status={solver.StatusName(status)}"
+            )
+            logger.warning(msg)
+            raise PlanningRunError(msg, technical_detail=msg)
+
+        if quality == "WEAK" and time_limit_reached:
+            msg = (
+                "SeasonPlanning CP-SAT solution rejected: quality=WEAK and time limit reached "
+                f"(status={solver.StatusName(status)} gap={gap:.4f} limit={time_limit:.1f}s time={solver.WallTime():.2f}s)"
+            )
+            logger.warning(msg)
+            raise PlanningRunError(msg, technical_detail=msg)
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             if _DEBUG_SEASON_PLANNING and _DEBUG_SEASON_PLANNING_VISIT_ID is not None:

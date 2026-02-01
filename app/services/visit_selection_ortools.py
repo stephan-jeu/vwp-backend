@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.visit import Visit
 from app.models.user import User
+from app.services.planning_run_errors import PlanningRunError
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -789,11 +790,20 @@ async def select_visits_cp_sat(
         _logger.info("WeeklyPlanning CP-SAT summary: quality=FAILED")
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        msg = f"CP-SAT Visit Selection failed. Status={solver.StatusName(status)}"
-        _logger.warning(msg)
-        return VisitSelectionResult(
-            selected=[], skipped=visits + skipped_visits, remaining_caps={}
+        msg = (
+            "WeeklyPlanning CP-SAT produced no feasible solution. "
+            f"Status={solver.StatusName(status)}"
         )
+        _logger.warning(msg)
+        raise PlanningRunError(msg, technical_detail=msg)
+
+    if quality == "WEAK" and time_limit_reached:
+        msg = (
+            "WeeklyPlanning CP-SAT solution rejected: quality=WEAK and time limit reached "
+            f"(status={solver.StatusName(status)} gap={gap:.4f} limit={timeout_seconds:.1f}s time={solver.WallTime():.2f}s)"
+        )
+        _logger.warning(msg)
+        raise PlanningRunError(msg, technical_detail=msg)
 
     # 4. Extract Result
     selected_result = []

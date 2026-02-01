@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
 from app.models.protocol import Protocol
-from app.models.user import User
 from app.models.visit import Visit
+from app.models.user import User
+from app.services.planning_run_errors import PlanningRunError
 from app.services.visit_generation_common import (
     _generate_visit_requests,
     _build_compatibility_graph,
@@ -569,9 +570,17 @@ async def generate_visits_cp_sat(
         _logger.info("VisitGen CP-SAT summary: quality=FAILED")
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        msg = f"CP-SAT Infeasible. Status={solver.StatusName(status)}"
+        msg = f"VisitGen CP-SAT produced no feasible solution. Status={solver.StatusName(status)}"
         _logger.warning(msg)
-        return [], [msg]
+        raise PlanningRunError(msg, technical_detail=msg)
+
+    if quality == "WEAK" and time_limit_reached:
+        msg = (
+            "VisitGen CP-SAT solution rejected: quality=WEAK and time limit reached "
+            f"(status={solver.StatusName(status)} gap={gap:.4f} limit={time_limit:.1f}s time={solver.WallTime():.2f}s)"
+        )
+        _logger.warning(msg)
+        raise PlanningRunError(msg, technical_detail=msg)
 
     if _DEBUG_VISIT_GEN:
         _logger.info(

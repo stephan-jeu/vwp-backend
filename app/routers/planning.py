@@ -15,6 +15,7 @@ from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
 from app.services.activity_log_service import log_activity
 from app.services.security import require_admin
 from app.services.visit_planning_selection import select_visits_for_week
+from app.services.planning_run_errors import PlanningRunError
 from db.session import get_db
 
 
@@ -126,9 +127,28 @@ async def generate_planning(
     week_monday = date.fromisocalendar(current_year, week, 1)
     # Use dynamic timeout (None) which defaults to max(5s, min(60s, complexity))
     # Include travel time optimization
-    result = await select_visits_for_week(
-        db, week_monday, timeout_seconds=None, include_travel_time=True
-    )
+    try:
+        result = await select_visits_for_week(
+            db, week_monday, timeout_seconds=None, include_travel_time=True
+        )
+    except PlanningRunError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Het is niet gelukt om een goede planning te maken. "
+                "Probeer het nog een keer of doe de planning voor deze week handmatig."
+            ),
+        ) from exc
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Het is niet gelukt om een goede planning te maken. "
+                "Probeer het nog een keer of doe de planning voor deze week handmatig."
+            ),
+        ) from exc
 
     # Post-planning Sanitization: Check for future conflicts
     from app.services.visit_sanitization import sanitize_future_planning
