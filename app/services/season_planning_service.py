@@ -568,23 +568,27 @@ class SeasonPlanningService:
                     visits_per_week_candidate[w][v_skill].append((v, days, is_active))
 
             planned_week = _safe_week_int(getattr(v, "planned_week", None))
-            locked_week = (
-                _safe_week_int(getattr(v, "provisional_week", None))
-                if getattr(v, "provisional_locked", False)
-                else None
-            )
+            locked_week = None
+            if getattr(v, "provisional_locked", False):
+                locked_week = _safe_week_int(getattr(v, "provisional_week", None))
+
             fixed_week = planned_week or locked_week
             if fixed_week is not None and fixed_week not in domain_list:
+                fixed_source = "planned" if planned_week is not None else "locked"
                 try:
                     w_mon = date.fromisocalendar(year, fixed_week, 1)
                     w_fri = w_mon + timedelta(days=4)
                 except ValueError:
                     logger.warning(
-                        "SeasonPlanning: visit=%s has fixed_week=%s not valid for year=%s; ignoring fixed anchor.",
+                        "SeasonPlanning: visit=%s has fixed_week=%s source=%s not valid for year=%s; ignoring fixed anchor.",
                         getattr(v, "id", None),
                         fixed_week,
+                        fixed_source,
                         year,
                     )
+                    if fixed_source == "locked":
+                        v.provisional_week = None
+                        v.provisional_locked = False
                     fixed_week = None
                     planned_week = None
                     locked_week = None
@@ -594,27 +598,34 @@ class SeasonPlanningService:
                     fixed_days = (overlap_end - overlap_start).days + 1
                     if fixed_days < 1:
                         logger.warning(
-                            "SeasonPlanning: visit=%s fixed_week=%s outside date window (from=%s to=%s); forcing candidate days=1.",
+                            "SeasonPlanning: visit=%s fixed_week=%s source=%s outside date window (from=%s to=%s); ignoring fixed anchor.",
                             getattr(v, "id", None),
                             fixed_week,
+                            fixed_source,
                             getattr(v, "from_date", None),
                             getattr(v, "to_date", None),
                         )
-                        fixed_days = 1
+                        if fixed_source == "locked":
+                            v.provisional_week = None
+                            v.provisional_locked = False
+                        fixed_week = None
+                        planned_week = None
+                        locked_week = None
 
-                    valid_weeks.append(fixed_week)
-                    domain_list.append(fixed_week)
-                    visit_candidates.setdefault(v.id, []).append(
-                        (fixed_week, fixed_days)
-                    )
+                    if fixed_week is not None:
+                        valid_weeks.append(fixed_week)
+                        domain_list.append(fixed_week)
+                        visit_candidates.setdefault(v.id, []).append(
+                            (fixed_week, fixed_days)
+                        )
 
-                    if fixed_week not in visits_per_week_candidate:
-                        visits_per_week_candidate[fixed_week] = {}
-                    if v_skill not in visits_per_week_candidate[fixed_week]:
-                        visits_per_week_candidate[fixed_week][v_skill] = []
-                    visits_per_week_candidate[fixed_week][v_skill].append(
-                        (v, fixed_days, is_active)
-                    )
+                        if fixed_week not in visits_per_week_candidate:
+                            visits_per_week_candidate[fixed_week] = {}
+                        if v_skill not in visits_per_week_candidate[fixed_week]:
+                            visits_per_week_candidate[fixed_week][v_skill] = []
+                        visits_per_week_candidate[fixed_week][v_skill].append(
+                            (v, fixed_days, is_active)
+                        )
 
             if len(domain_list) <= 1:  # Only [0]
                 model.Add(is_active == 0)
