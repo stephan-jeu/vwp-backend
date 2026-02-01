@@ -403,6 +403,8 @@ class SeasonPlanningService:
         # We will collect: allowed_visits_per_week[week][skill] -> list[ (v_id, overlap_days) ]
         visits_per_week_candidate = {}  # Week -> Skill -> list of (v, overlap)
 
+        forced_active_week_by_visit_id: dict[int, int] = {}
+
         def _safe_week_int(value: object) -> int | None:
             """Return a validated ISO week number in [1, 53], or None."""
 
@@ -649,11 +651,13 @@ class SeasonPlanningService:
                 # Should we force active?
                 # Yes, if it's planned, it IS active.
                 model.Add(is_active == 1)
+                forced_active_week_by_visit_id[v.id] = planned_week
 
             # 2. Manual Lock
             elif locked_week is not None:
                 model.Add(vw == locked_week).OnlyEnforceIf(is_active)
                 model.Add(is_active == 1)
+                forced_active_week_by_visit_id[v.id] = locked_week
 
         # 3b. Sequence & Gap Constraints
         # Enforce start-date ordering and min gaps for visits sharing protocols.
@@ -828,6 +832,24 @@ class SeasonPlanningService:
                         w2 = visit_week_vars[later.id]
                         a1 = visit_active_vars[earlier.id]
                         a2 = visit_active_vars[later.id]
+
+                        forced_w1 = forced_active_week_by_visit_id.get(earlier.id)
+                        forced_w2 = forced_active_week_by_visit_id.get(later.id)
+                        if forced_w1 is not None and forced_w2 is not None:
+                            violates = forced_w2 <= forced_w1 or (
+                                gap_weeks > 0 and forced_w2 < forced_w1 + gap_weeks
+                            )
+                            if violates:
+                                logger.warning(
+                                    "SeasonPlanning: protocol order infeasible for fixed visits earlier=%s(w=%s) later=%s(w=%s) protocol=%s gap=%s; skipping hard constraint.",
+                                    earlier.id,
+                                    forced_w1,
+                                    later.id,
+                                    forced_w2,
+                                    pid,
+                                    gap_weeks,
+                                )
+                                continue
                         model.Add(w2 > w1).OnlyEnforceIf([a1, a2])
                         if gap_weeks > 0:
                             model.Add(w2 >= w1 + gap_weeks).OnlyEnforceIf([a1, a2])
