@@ -25,6 +25,14 @@ from app.services.visit_generation_common import (
 _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
 _logger = logging.getLogger("uvicorn.error")
 
+_VISIT_GEN_FLEX_TARGET_WINDOW_DAYS = int(
+    os.getenv("VISIT_GEN_FLEX_TARGET_WINDOW_DAYS", "14")
+)
+_VISIT_GEN_FLEX_DEFICIT_WEIGHT = int(os.getenv("VISIT_GEN_FLEX_DEFICIT_WEIGHT", "200"))
+_VISIT_GEN_EARLY_WEIGHT = int(os.getenv("VISIT_GEN_EARLY_WEIGHT", "0"))
+_VISIT_GEN_RELATIVE_GAP_LIMIT = os.getenv("VISIT_GEN_RELATIVE_GAP_LIMIT")
+_VISIT_GEN_TIME_LIMIT_SECONDS = os.getenv("VISIT_GEN_TIME_LIMIT_SECONDS")
+
 
 def _get_june_ordinals(year: int) -> list[int]:
     """Return ordinals for June 1st to June 30th."""
@@ -75,12 +83,16 @@ def _generate_greedy_solution(
 
     for r_idx in sorted_indices:
         r = requests[r_idx]
-        placed = False
         r_parts = (
             r.part_of_day_options if r.part_of_day_options is not None else all_parts
         )
         r_start = r.window_from.toordinal()
         r_end = r.window_to.toordinal()
+
+        best_v_idx: int | None = None
+        best_overlap_len: int = -1
+        best_parts: set[str] | None = None
+        best_window: tuple[int, int] | None = None
 
         # Try to fit in existing bins
         for v_idx, existing_r_idxs in bins.items():
@@ -116,14 +128,23 @@ def _generate_greedy_solution(
                     break
 
             if compatible_with_all:
-                bins[v_idx].append(r_idx)
-                assignment[r_idx] = v_idx
-                bin_parts[v_idx] = intersection_parts
-                bin_windows[v_idx] = (common_start, common_end)
-                placed = True
-                break
+                overlap_len = int(common_end - common_start)
+                if overlap_len > best_overlap_len:
+                    best_overlap_len = overlap_len
+                    best_v_idx = v_idx
+                    best_parts = intersection_parts
+                    best_window = (common_start, common_end)
 
-        if not placed:
+        if (
+            best_v_idx is not None
+            and best_parts is not None
+            and best_window is not None
+        ):
+            bins[best_v_idx].append(r_idx)
+            assignment[r_idx] = best_v_idx
+            bin_parts[best_v_idx] = best_parts
+            bin_windows[best_v_idx] = best_window
+        else:
             # Create new bin
             new_v_idx = len(bins)
             bins[new_v_idx] = [r_idx]
@@ -409,6 +430,10 @@ async def generate_visits_cp_sat(
         for v in range(max_visits)
     ]
     is_short = [model.NewBoolVar(f"visit_is_short_{v}") for v in range(max_visits)]
+    flex_deficit = [
+        model.NewIntVar(0, _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS, f"flex_deficit_{v}")
+        for v in range(max_visits)
+    ]
 
     infinity_ord = max_date_ord + 100
 
@@ -435,6 +460,14 @@ async def generate_visits_cp_sat(
         model.Add(duration < 7).OnlyEnforceIf([visit_active[v], is_short[v]])
         model.Add(duration >= 7).OnlyEnforceIf([visit_active[v], is_short[v].Not()])
 
+        deficit_raw = model.NewIntVar(
+            -3650,
+            _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS,
+            f"flex_deficit_raw_{v}",
+        )
+        model.Add(deficit_raw == _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS - duration)
+        model.AddMaxEquality(flex_deficit[v], [0, deficit_raw])
+
     # Objective Function
     M = (max_date_ord - min_date_ord) * len(requests) * 2 + 1000
     SHORT_PENALTY = M + 500  # Cost higher than adding a new visit (M)
@@ -449,6 +482,7 @@ async def generate_visits_cp_sat(
     model.Minimize(
         sum(visit_active[v] * M for v in range(max_visits))
         + sum(is_short[v] * SHORT_PENALTY for v in range(max_visits))
+        + (_VISIT_GEN_FLEX_DEFICIT_WEIGHT * sum(flex_deficit))
         +
         # Preference Logic:
         # Default: Prefer Morning (Minimizing rp*2 -> 0 is best)
@@ -462,7 +496,10 @@ async def generate_visits_cp_sat(
             )
             for i in range(len(req_parts))
         )
-        + sum(req_start)
+        + (
+            _VISIT_GEN_EARLY_WEIGHT
+            * sum((req_start[i] - min_date_ord) for i in range(len(req_start)))
+        )
         + sum(visit_part)
     )
 
@@ -473,6 +510,8 @@ async def generate_visits_cp_sat(
     # Base 30s + 0.5s per request. For 75 requests -> ~50s. For 500 -> 250s.
     # We can be more aggressive now that we have the Greedy Hint to prevent disaster cases.
     time_limit = max(15.0, min(60.0, len(requests) * 0.6))
+    if _VISIT_GEN_TIME_LIMIT_SECONDS:
+        time_limit = float(_VISIT_GEN_TIME_LIMIT_SECONDS)
     solver.parameters.max_time_in_seconds = time_limit
 
     # Disable parallelism to prevent OOM on single-core/low-memory servers
@@ -480,7 +519,8 @@ async def generate_visits_cp_sat(
     solver.parameters.num_search_workers = 2
 
     try:
-        solver.parameters.relative_gap_limit = 0.001
+        if _VISIT_GEN_RELATIVE_GAP_LIMIT:
+            solver.parameters.relative_gap_limit = float(_VISIT_GEN_RELATIVE_GAP_LIMIT)
     except AttributeError:
         pass
 
@@ -587,6 +627,49 @@ async def generate_visits_cp_sat(
             "CP-SAT Solved: Status=%s Val=%s",
             solver.StatusName(status),
             solver.ObjectiveValue(),
+        )
+
+        total_deficit = 0
+        total_duration = 0
+        active_visits = 0
+
+        for v in range(max_visits):
+            if not solver.BooleanValue(visit_active[v]):
+                continue
+            active_visits += 1
+
+            start_ord = solver.Value(visit_start[v])
+            end_ord = solver.Value(visit_end[v])
+            dur = int(end_ord - start_ord)
+            deficit = int(max(0, _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS - dur))
+            total_deficit += deficit
+            total_duration += dur
+
+            assigned_req_indices = [
+                i
+                for i in range(len(requests))
+                if solver.BooleanValue(req_to_visit[(i, v)])
+            ]
+            assigned_req_ids = [requests[i].id for i in assigned_req_indices]
+
+            _logger.info(
+                "VisitGen CP-SAT visit v=%d start=%s end=%s duration_days=%d flex_deficit=%d reqs=%s",
+                v,
+                date.fromordinal(start_ord),
+                date.fromordinal(end_ord),
+                dur,
+                deficit,
+                assigned_req_ids,
+            )
+
+        _logger.info(
+            "VisitGen CP-SAT flex summary: active_visits=%d target_days=%d deficit_weight=%d early_weight=%d total_deficit=%d total_duration=%d",
+            active_visits,
+            _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS,
+            _VISIT_GEN_FLEX_DEFICIT_WEIGHT,
+            _VISIT_GEN_EARLY_WEIGHT,
+            total_deficit,
+            total_duration,
         )
 
     # Reconstruct Visits
