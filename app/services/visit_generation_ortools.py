@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Any
 
 from ortools.sat.python import cp_model
 from sqlalchemy import select
@@ -22,21 +24,52 @@ from app.services.visit_generation_common import (
     calculate_visit_props,
 )
 
-_DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
 _logger = logging.getLogger("uvicorn.error")
 
-_VISIT_GEN_FLEX_TARGET_WINDOW_DAYS = int(
-    os.getenv("VISIT_GEN_FLEX_TARGET_WINDOW_DAYS", "14")
-)
-_VISIT_GEN_FLEX_DEFICIT_WEIGHT = int(os.getenv("VISIT_GEN_FLEX_DEFICIT_WEIGHT", "200"))
-_VISIT_GEN_EARLY_WEIGHT = int(os.getenv("VISIT_GEN_EARLY_WEIGHT", "0"))
-_VISIT_GEN_RELATIVE_GAP_LIMIT = os.getenv("VISIT_GEN_RELATIVE_GAP_LIMIT")
-_VISIT_GEN_TIME_LIMIT_SECONDS = os.getenv("VISIT_GEN_TIME_LIMIT_SECONDS")
-_VISIT_GEN_PERIOD_MODE = os.getenv("VISIT_GEN_PERIOD_MODE", "hard").strip().lower()
-_VISIT_GEN_PERIOD_MISS_PENALTY = int(os.getenv("VISIT_GEN_PERIOD_MISS_PENALTY", "500"))
-_VISIT_GEN_SHORT_CROWDING_WEIGHT = int(
-    os.getenv("VISIT_GEN_SHORT_CROWDING_WEIGHT", "50")
-)
+
+@dataclass(frozen=True)
+class _VisitGenConfig:
+    debug: bool
+    debug_max_requests: int
+    flex_target_window_days: int
+    flex_deficit_weight: int
+    early_weight: int
+    relative_gap_limit: str | None
+    time_limit_seconds: str | None
+    period_mode: str
+    period_miss_penalty: int
+    short_crowding_weight: int
+
+
+def _load_visit_gen_config() -> _VisitGenConfig:
+    return _VisitGenConfig(
+        debug=os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"},
+        debug_max_requests=int(os.getenv("VISIT_GEN_DEBUG_MAX_REQUESTS", "50")),
+        flex_target_window_days=int(
+            os.getenv("VISIT_GEN_FLEX_TARGET_WINDOW_DAYS", "14")
+        ),
+        flex_deficit_weight=int(os.getenv("VISIT_GEN_FLEX_DEFICIT_WEIGHT", "200")),
+        early_weight=int(os.getenv("VISIT_GEN_EARLY_WEIGHT", "0")),
+        relative_gap_limit=os.getenv("VISIT_GEN_RELATIVE_GAP_LIMIT"),
+        time_limit_seconds=os.getenv("VISIT_GEN_TIME_LIMIT_SECONDS"),
+        period_mode=os.getenv("VISIT_GEN_PERIOD_MODE", "hard").strip().lower(),
+        period_miss_penalty=int(os.getenv("VISIT_GEN_PERIOD_MISS_PENALTY", "500")),
+        short_crowding_weight=int(os.getenv("VISIT_GEN_SHORT_CROWDING_WEIGHT", "0")),
+    )
+
+
+_CONFIG = _load_visit_gen_config()
+
+_DEBUG_VISIT_GEN = _CONFIG.debug
+
+_VISIT_GEN_FLEX_TARGET_WINDOW_DAYS = _CONFIG.flex_target_window_days
+_VISIT_GEN_FLEX_DEFICIT_WEIGHT = _CONFIG.flex_deficit_weight
+_VISIT_GEN_EARLY_WEIGHT = _CONFIG.early_weight
+_VISIT_GEN_RELATIVE_GAP_LIMIT = _CONFIG.relative_gap_limit
+_VISIT_GEN_TIME_LIMIT_SECONDS = _CONFIG.time_limit_seconds
+_VISIT_GEN_PERIOD_MODE = _CONFIG.period_mode
+_VISIT_GEN_PERIOD_MISS_PENALTY = _CONFIG.period_miss_penalty
+_VISIT_GEN_SHORT_CROWDING_WEIGHT = _CONFIG.short_crowding_weight
 
 
 def _get_june_ordinals(year: int) -> list[int]:
@@ -160,6 +193,287 @@ def _generate_greedy_solution(
     return assignment, bin_windows
 
 
+def _add_assignment_activation_and_symmetry_constraints(
+    *,
+    model: cp_model.CpModel,
+    requests: list[Any],
+    max_visits: int,
+    req_to_visit: dict[tuple[int, int], cp_model.BoolVarT],
+    visit_active: list[cp_model.BoolVarT],
+) -> None:
+    for r_idx, _ in enumerate(requests):
+        model.Add(sum(req_to_visit[(r_idx, v)] for v in range(max_visits)) == 1)
+
+    for v in range(max_visits):
+        model.AddMaxEquality(
+            visit_active[v],
+            [req_to_visit[(r_idx, v)] for r_idx in range(len(requests))],
+        )
+
+    for v in range(max_visits - 1):
+        model.Add(visit_active[v] >= visit_active[v + 1])
+
+
+def _add_per_request_constraints(
+    *,
+    model: cp_model.CpModel,
+    requests: list[Any],
+    max_visits: int,
+    req_to_visit: dict[tuple[int, int], cp_model.BoolVarT],
+    visit_start: list[cp_model.IntVar],
+    visit_part: list[cp_model.IntVar],
+    req_start: list[cp_model.IntVar],
+    req_window_lb: list[cp_model.IntVar],
+    visit_window_start: list[cp_model.IntVar],
+    min_date_ord: int,
+    max_date_ord: int,
+) -> list[cp_model.IntVar]:
+    part_map = {"Ochtend": 0, "Dag": 1, "Avond": 2}
+    req_parts: list[cp_model.IntVar] = []
+
+    for r_idx, req in enumerate(requests):
+        for v in range(max_visits):
+            model.Add(req_start[r_idx] == visit_start[v]).OnlyEnforceIf(
+                req_to_visit[(r_idx, v)]
+            )
+
+        earliest = (
+            req.effective_window_from.toordinal()
+            if getattr(req, "effective_window_from", None) is not None
+            else req.window_from.toordinal()
+        )
+        model.Add(req_start[r_idx] >= earliest)
+        model.Add(req_start[r_idx] <= req.window_to.toordinal())
+
+        if req.predecessor:
+            pred_id, gap_days = req.predecessor
+            pred_idx = next(
+                (i for i, r in enumerate(requests) if r.id == pred_id), None
+            )
+            if pred_idx is not None:
+                pred_group_start = model.NewIntVar(
+                    min_date_ord,
+                    max_date_ord,
+                    f"pred_group_start_r{r_idx}",
+                )
+                for v in range(max_visits):
+                    model.Add(pred_group_start == visit_window_start[v]).OnlyEnforceIf(
+                        req_to_visit[(pred_idx, v)]
+                    )
+
+                pred_plus_gap = model.NewIntVar(
+                    min_date_ord,
+                    max_date_ord + 365,
+                    f"pred_group_start_plus_gap_r{r_idx}",
+                )
+                model.Add(pred_plus_gap == pred_group_start + gap_days)
+                model.AddMaxEquality(req_window_lb[r_idx], [earliest, pred_plus_gap])
+            else:
+                model.Add(req_window_lb[r_idx] == earliest)
+        else:
+            model.Add(req_window_lb[r_idx] == earliest)
+
+        for r2_idx in range(r_idx + 1, len(requests)):
+            r2 = requests[r2_idx]
+            if r2.id not in req.compatible_request_ids:
+                for v in range(max_visits):
+                    model.AddBoolOr(
+                        [
+                            req_to_visit[(r_idx, v)].Not(),
+                            req_to_visit[(r2_idx, v)].Not(),
+                        ]
+                    )
+
+        if req.predecessor:
+            pred_id, gap_days = req.predecessor
+            pred_idx = next(
+                (i for i, r in enumerate(requests) if r.id == pred_id), None
+            )
+            if pred_idx is not None:
+                model.Add(req_start[r_idx] >= req_start[pred_idx] + gap_days)
+
+        allowed_parts = req.part_of_day_options
+        domain_vals: list[int]
+        if allowed_parts:
+            domain_vals = sorted([part_map[p] for p in allowed_parts if p in part_map])
+        else:
+            domain_vals = [0, 1, 2]
+
+        rp = model.NewIntVarFromDomain(
+            cp_model.Domain.FromValues(domain_vals), f"req_part_{r_idx}"
+        )
+        req_parts.append(rp)
+
+        for v in range(max_visits):
+            model.Add(visit_part[v] == rp).OnlyEnforceIf(req_to_visit[(r_idx, v)])
+
+    return req_parts
+
+
+def _add_global_constraints(
+    *,
+    model: cp_model.CpModel,
+    requests: list[Any],
+    req_parts: list[cp_model.IntVar],
+    req_start: list[cp_model.IntVar],
+    min_date_ord: int,
+    period_miss_vars: list[cp_model.IntVar],
+) -> None:
+    requests_by_proto: dict[int, list[int]] = defaultdict(list)
+    for r_idx, req in enumerate(requests):
+        requests_by_proto[req.protocol.id].append(r_idx)
+
+    for p_id, r_idxs in requests_by_proto.items():
+        p = requests[r_idxs[0]].protocol
+
+        req_morning = getattr(p, "requires_morning_visit", False)
+        req_evening = getattr(p, "requires_evening_visit", False)
+
+        if req_morning:
+            bools = []
+            for rx in r_idxs:
+                b = model.NewBoolVar(f"p{p_id}_r{rx}_is_morning")
+                model.Add(req_parts[rx] == 0).OnlyEnforceIf(b)
+                model.Add(req_parts[rx] != 0).OnlyEnforceIf(b.Not())
+                bools.append(b)
+            model.Add(sum(bools) >= 1)
+
+        if req_evening:
+            bools = []
+            for rx in r_idxs:
+                b = model.NewBoolVar(f"p{p_id}_r{rx}_is_evening")
+                model.Add(req_parts[rx] == 2).OnlyEnforceIf(b)
+                model.Add(req_parts[rx] != 2).OnlyEnforceIf(b.Not())
+                bools.append(b)
+            model.Add(sum(bools) >= 1)
+
+        req_june = getattr(p, "requires_june_visit", False)
+        req_july = getattr(p, "requires_july_visit", False)
+        req_maternity = getattr(p, "requires_maternity_period_visit", False)
+
+        if req_june or req_july or req_maternity:
+            year = date.fromordinal(min_date_ord).year
+
+            def _add_period_requirement(
+                *,
+                enabled: bool,
+                label: str,
+                valid_ords: set[int],
+            ) -> None:
+                if not enabled:
+                    return
+
+                domain_obj = cp_model.Domain.FromValues(sorted(list(valid_ords)))
+                bools = []
+                for rx in r_idxs:
+                    b = model.NewBoolVar(f"p{p_id}_r{rx}_{label}")
+                    model.AddLinearExpressionInDomain(
+                        req_start[rx], domain_obj
+                    ).OnlyEnforceIf(b)
+                    bools.append(b)
+
+                if _VISIT_GEN_PERIOD_MODE == "soft":
+                    miss = model.NewBoolVar(f"p{p_id}_{label}_miss")
+                    model.Add(sum(bools) == 0).OnlyEnforceIf(miss)
+                    model.Add(sum(bools) >= 1).OnlyEnforceIf(miss.Not())
+                    period_miss_vars.append(miss)
+                else:
+                    model.Add(sum(bools) >= 1)
+
+            _add_period_requirement(
+                enabled=req_june,
+                label="june",
+                valid_ords=set(_get_june_ordinals(year)),
+            )
+            _add_period_requirement(
+                enabled=req_july,
+                label="july",
+                valid_ords=set(_get_july_ordinals(year)),
+            )
+            _add_period_requirement(
+                enabled=req_maternity,
+                label="maternity",
+                valid_ords=set(_get_maternity_ordinals(year)),
+            )
+
+
+def _add_visit_window_and_shortness_constraints(
+    *,
+    model: cp_model.CpModel,
+    requests: list[Any],
+    max_visits: int,
+    req_to_visit: dict[tuple[int, int], cp_model.BoolVarT],
+    visit_active: list[cp_model.BoolVarT],
+    req_window_lb: list[cp_model.IntVar],
+    visit_end: list[cp_model.IntVar],
+    visit_window_start: list[cp_model.IntVar],
+    min_date_ord: int,
+    max_date_ord: int,
+) -> tuple[list[cp_model.BoolVarT], list[cp_model.IntVar], list[cp_model.IntVar]]:
+    is_short = [model.NewBoolVar(f"visit_is_short_{v}") for v in range(max_visits)]
+    flex_deficit = [
+        model.NewIntVar(0, _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS, f"flex_deficit_{v}")
+        for v in range(max_visits)
+    ]
+
+    short_crowding_terms: list[cp_model.IntVar] = []
+
+    infinity_ord = max_date_ord + 100
+
+    for v in range(max_visits):
+        ends_in_visit = []
+        for r_idx, req in enumerate(requests):
+            eff = model.NewIntVar(min_date_ord, infinity_ord, f"eff_end_r{r_idx}_v{v}")
+            model.Add(eff == req.window_to.toordinal()).OnlyEnforceIf(
+                req_to_visit[(r_idx, v)]
+            )
+            model.Add(eff == infinity_ord).OnlyEnforceIf(req_to_visit[(r_idx, v)].Not())
+            ends_in_visit.append(eff)
+
+        model.AddMinEquality(visit_end[v], ends_in_visit)
+
+        starts_in_visit = []
+        for r_idx, _req in enumerate(requests):
+            eff = model.NewIntVar(
+                min_date_ord,
+                max_date_ord,
+                f"eff_start_r{r_idx}_v{v}",
+            )
+            model.Add(eff == req_window_lb[r_idx]).OnlyEnforceIf(
+                req_to_visit[(r_idx, v)]
+            )
+            model.Add(eff == min_date_ord).OnlyEnforceIf(req_to_visit[(r_idx, v)].Not())
+            starts_in_visit.append(eff)
+
+        model.AddMaxEquality(visit_window_start[v], starts_in_visit)
+
+        model.Add(is_short[v] == 0).OnlyEnforceIf(visit_active[v].Not())
+
+        duration = model.NewIntVar(-365, 3650, f"duration_{v}")
+        model.Add(duration == visit_end[v] - visit_window_start[v])
+
+        model.Add(duration < 7).OnlyEnforceIf([visit_active[v], is_short[v]])
+        model.Add(duration >= 7).OnlyEnforceIf([visit_active[v], is_short[v].Not()])
+
+        if _VISIT_GEN_SHORT_CROWDING_WEIGHT:
+            for r_idx in range(len(requests)):
+                in_short = model.NewBoolVar(f"r{r_idx}_in_short_v{v}")
+                model.Add(in_short <= req_to_visit[(r_idx, v)])
+                model.Add(in_short <= is_short[v])
+                model.Add(in_short >= req_to_visit[(r_idx, v)] + is_short[v] - 1)
+                short_crowding_terms.append(in_short)
+
+        deficit_raw = model.NewIntVar(
+            -3650,
+            _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS,
+            f"flex_deficit_raw_{v}",
+        )
+        model.Add(deficit_raw == _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS - duration)
+        model.AddMaxEquality(flex_deficit[v], [0, deficit_raw])
+
+    return is_short, flex_deficit, short_crowding_terms
+
+
 async def generate_visits_cp_sat(
     db: AsyncSession,
     cluster: Cluster,
@@ -230,28 +544,29 @@ async def generate_visits_cp_sat(
     if _DEBUG_VISIT_GEN:
         _logger.info("GRAPH: Generated %d requests", len(requests))
 
-        for r in requests:
-            earliest = (
-                r.effective_window_from
-                if getattr(r, "effective_window_from", None) is not None
-                else r.window_from
-            )
-            pred_str = (
-                f"{r.predecessor[0]}+{r.predecessor[1]}"
-                if getattr(r, "predecessor", None)
-                else "-"
-            )
-            _logger.info(
-                "REQ: %s proto=%s v_idx=%s win=[%s..%s] eff_from=%s pred=%s parts=%s",
-                r.id,
-                r.protocol.id,
-                getattr(r, "visit_index", None),
-                r.window_from,
-                r.window_to,
-                earliest,
-                pred_str,
-                sorted(list(r.part_of_day_options or [])),
-            )
+        if len(requests) <= _CONFIG.debug_max_requests:
+            for r in requests:
+                earliest = (
+                    r.effective_window_from
+                    if getattr(r, "effective_window_from", None) is not None
+                    else r.window_from
+                )
+                pred_str = (
+                    f"{r.predecessor[0]}+{r.predecessor[1]}"
+                    if getattr(r, "predecessor", None)
+                    else "-"
+                )
+                _logger.info(
+                    "REQ: %s proto=%s v_idx=%s win=[%s..%s] eff_from=%s pred=%s parts=%s",
+                    r.id,
+                    r.protocol.id,
+                    getattr(r, "visit_index", None),
+                    r.window_from,
+                    r.window_to,
+                    earliest,
+                    pred_str,
+                    sorted(list(r.part_of_day_options or [])),
+                )
 
     # 2. Model Construction
     model = cp_model.CpModel()
@@ -339,260 +654,59 @@ async def generate_visits_cp_sat(
     ]
 
     # C1. Every request must be assigned to EXACTLY one visit
-    for r_idx, _ in enumerate(requests):
-        model.Add(sum(req_to_visit[(r_idx, v)] for v in range(max_visits)) == 1)
-
     # C2. Visit Activation: If any request is in visit v, visit v is active
-    for v in range(max_visits):
-        model.AddMaxEquality(
-            visit_active[v],
-            [req_to_visit[(r_idx, v)] for r_idx in range(len(requests))],
-        )
-
     # C3. Symmetry Breaking (Sort visits by active status to push empty visits to end)
-    for v in range(max_visits - 1):
-        model.Add(visit_active[v] >= visit_active[v + 1])
+    _add_assignment_activation_and_symmetry_constraints(
+        model=model,
+        requests=requests,
+        max_visits=max_visits,
+        req_to_visit=req_to_visit,
+        visit_active=visit_active,
+    )
 
     # C4. Validity Constraints per Request
-    part_map = {"Ochtend": 0, "Dag": 1, "Avond": 2}
-    req_parts = []  # Keep track of assigned part for req (for global check)
-
-    for r_idx, req in enumerate(requests):
-        # Channeling: link req_start to visit_start
-        for v in range(max_visits):
-            model.Add(req_start[r_idx] == visit_start[v]).OnlyEnforceIf(
-                req_to_visit[(r_idx, v)]
-            )
-
-        # Window Constraints
-        earliest = (
-            req.effective_window_from.toordinal()
-            if getattr(req, "effective_window_from", None) is not None
-            else req.window_from.toordinal()
-        )
-        model.Add(req_start[r_idx] >= earliest)
-        model.Add(req_start[r_idx] <= req.window_to.toordinal())
-
-        if req.predecessor:
-            pred_id, gap_days = req.predecessor
-            pred_idx = next(
-                (i for i, r in enumerate(requests) if r.id == pred_id), None
-            )
-            if pred_idx is not None:
-                pred_group_start = model.NewIntVar(
-                    min_date_ord,
-                    max_date_ord,
-                    f"pred_group_start_r{r_idx}",
-                )
-                for v in range(max_visits):
-                    model.Add(pred_group_start == visit_window_start[v]).OnlyEnforceIf(
-                        req_to_visit[(pred_idx, v)]
-                    )
-
-                pred_plus_gap = model.NewIntVar(
-                    min_date_ord,
-                    max_date_ord + 365,
-                    f"pred_group_start_plus_gap_r{r_idx}",
-                )
-                model.Add(pred_plus_gap == pred_group_start + gap_days)
-                model.AddMaxEquality(req_window_lb[r_idx], [earliest, pred_plus_gap])
-            else:
-                model.Add(req_window_lb[r_idx] == earliest)
-        else:
-            model.Add(req_window_lb[r_idx] == earliest)
-
-        # Compatibility Constraints
-        for r2_idx in range(r_idx + 1, len(requests)):
-            r2 = requests[r2_idx]
-            if r2.id not in req.compatible_request_ids:
-                for v in range(max_visits):
-                    model.AddBoolOr(
-                        [
-                            req_to_visit[(r_idx, v)].Not(),
-                            req_to_visit[(r2_idx, v)].Not(),
-                        ]
-                    )
-
-        # Predecessor / Gap Constraints
-        if req.predecessor:
-            pred_id, gap_days = req.predecessor
-            pred_idx = next(
-                (i for i, r in enumerate(requests) if r.id == pred_id), None
-            )
-            if pred_idx is not None:
-                model.Add(req_start[r_idx] >= req_start[pred_idx] + gap_days)
-
-        # Part of Day Variable for Request
-        allowed_parts = req.part_of_day_options
-        domain_vals = []
-        if allowed_parts:
-            domain_vals = sorted([part_map[p] for p in allowed_parts if p in part_map])
-        else:
-            domain_vals = [0, 1, 2]  # All
-
-        rp = model.NewIntVarFromDomain(
-            cp_model.Domain.FromValues(domain_vals), f"req_part_{r_idx}"
-        )
-        req_parts.append(rp)
-
-        # Channeling: visit_part must match req_part if assigned
-        for v in range(max_visits):
-            model.Add(visit_part[v] == rp).OnlyEnforceIf(req_to_visit[(r_idx, v)])
+    req_parts = _add_per_request_constraints(
+        model=model,
+        requests=requests,
+        max_visits=max_visits,
+        req_to_visit=req_to_visit,
+        visit_start=visit_start,
+        visit_part=visit_part,
+        req_start=req_start,
+        req_window_lb=req_window_lb,
+        visit_window_start=visit_window_start,
+        min_date_ord=min_date_ord,
+        max_date_ord=max_date_ord,
+    )
 
     # C6. "At Least One" Global Constraints
-    requests_by_proto = defaultdict(list)
-    for r_idx, req in enumerate(requests):
-        requests_by_proto[req.protocol.id].append(r_idx)
-
-    for p_id, r_idxs in requests_by_proto.items():
-        p = requests[r_idxs[0]].protocol
-
-        req_morning = getattr(p, "requires_morning_visit", False)
-        req_evening = getattr(p, "requires_evening_visit", False)
-
-        if req_morning:
-            # At least one visit must be Morning
-            bools = []
-            for rx in r_idxs:
-                b = model.NewBoolVar(f"p{p_id}_r{rx}_is_morning")
-                model.Add(req_parts[rx] == 0).OnlyEnforceIf(b)
-                model.Add(req_parts[rx] != 0).OnlyEnforceIf(b.Not())
-                bools.append(b)
-            model.Add(sum(bools) >= 1)
-
-        if req_evening:
-            # At least one visit must be Evening
-            bools = []
-            for rx in r_idxs:
-                b = model.NewBoolVar(f"p{p_id}_r{rx}_is_evening")
-                model.Add(req_parts[rx] == 2).OnlyEnforceIf(b)
-                model.Add(req_parts[rx] != 2).OnlyEnforceIf(b.Not())
-                bools.append(b)
-            model.Add(sum(bools) >= 1)
-
-        # Month/Period Constraints (June, July, Maternity)
-        # These are modeled against the chosen execution day (req_start).
-        # Important: We persist Visit windows separately (visit_window_start/visit_end), so satisfying
-        # these requirements will no longer anchor/shrink the stored window.
-        req_june = getattr(p, "requires_june_visit", False)
-        req_july = getattr(p, "requires_july_visit", False)
-        req_maternity = getattr(p, "requires_maternity_period_visit", False)
-
-        if req_june or req_july or req_maternity:
-            year = date.fromordinal(min_date_ord).year
-
-            def _add_period_requirement(
-                *,
-                enabled: bool,
-                label: str,
-                valid_ords: set[int],
-            ) -> None:
-                if not enabled:
-                    return
-
-                domain_obj = cp_model.Domain.FromValues(sorted(list(valid_ords)))
-                bools = []
-                for rx in r_idxs:
-                    b = model.NewBoolVar(f"p{p_id}_r{rx}_{label}")
-                    model.AddLinearExpressionInDomain(
-                        req_start[rx], domain_obj
-                    ).OnlyEnforceIf(b)
-                    bools.append(b)
-
-                if _VISIT_GEN_PERIOD_MODE == "soft":
-                    miss = model.NewBoolVar(f"p{p_id}_{label}_miss")
-                    model.Add(sum(bools) == 0).OnlyEnforceIf(miss)
-                    model.Add(sum(bools) >= 1).OnlyEnforceIf(miss.Not())
-                    period_miss_vars.append(miss)
-                else:
-                    model.Add(sum(bools) >= 1)
-
-            _add_period_requirement(
-                enabled=req_june,
-                label="june",
-                valid_ords=set(_get_june_ordinals(year)),
-            )
-            _add_period_requirement(
-                enabled=req_july,
-                label="july",
-                valid_ords=set(_get_july_ordinals(year)),
-            )
-            _add_period_requirement(
-                enabled=req_maternity,
-                label="maternity",
-                valid_ords=set(_get_maternity_ordinals(year)),
-            )
+    _add_global_constraints(
+        model=model,
+        requests=requests,
+        req_parts=req_parts,
+        req_start=req_start,
+        min_date_ord=min_date_ord,
+        period_miss_vars=period_miss_vars,
+    )
 
     # C7. Penalize "Tight" Windows (Short Effective Duration)
     # User discourages planning resulting in effective windows < 7 days.
     # We apply a penalty if (visit_end - visit_start) < 7 days, forcing the solver to prefer
     # adding another visit over squeezing protocols into a tight window.
-
-    is_short = [model.NewBoolVar(f"visit_is_short_{v}") for v in range(max_visits)]
-    flex_deficit = [
-        model.NewIntVar(0, _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS, f"flex_deficit_{v}")
-        for v in range(max_visits)
-    ]
-
-    short_crowding_terms: list[cp_model.IntVar] = []
-
-    infinity_ord = max_date_ord + 100
-
-    for v in range(max_visits):
-        # Determine effective end date of the visit as the minimum of assigned requests' window_to.
-        # If visit is inactive (no requests), the value defaults to infinity_ord.
-        ends_in_visit = []
-        for r_idx, req in enumerate(requests):
-            eff = model.NewIntVar(min_date_ord, infinity_ord, f"eff_end_r{r_idx}_v{v}")
-            model.Add(eff == req.window_to.toordinal()).OnlyEnforceIf(
-                req_to_visit[(r_idx, v)]
-            )
-            model.Add(eff == infinity_ord).OnlyEnforceIf(req_to_visit[(r_idx, v)].Not())
-            ends_in_visit.append(eff)
-
-        model.AddMinEquality(visit_end[v], ends_in_visit)
-
-        # Window start is the latest (most restrictive) effective start among assigned requests.
-        # Requests that are not assigned contribute a low value and therefore do not affect the max.
-        starts_in_visit = []
-        for r_idx, req in enumerate(requests):
-            eff = model.NewIntVar(
-                min_date_ord,
-                max_date_ord,
-                f"eff_start_r{r_idx}_v{v}",
-            )
-            model.Add(eff == req_window_lb[r_idx]).OnlyEnforceIf(
-                req_to_visit[(r_idx, v)]
-            )
-            model.Add(eff == min_date_ord).OnlyEnforceIf(req_to_visit[(r_idx, v)].Not())
-            starts_in_visit.append(eff)
-
-        model.AddMaxEquality(visit_window_start[v], starts_in_visit)
-
-        # Check Shortness: If active AND duration < 7, set is_short=1
-        model.Add(is_short[v] == 0).OnlyEnforceIf(visit_active[v].Not())
-
-        duration = model.NewIntVar(-365, 3650, f"duration_{v}")
-        model.Add(duration == visit_end[v] - visit_window_start[v])
-
-        model.Add(duration < 7).OnlyEnforceIf([visit_active[v], is_short[v]])
-        model.Add(duration >= 7).OnlyEnforceIf([visit_active[v], is_short[v].Not()])
-
-        if _VISIT_GEN_SHORT_CROWDING_WEIGHT:
-            for r_idx in range(len(requests)):
-                in_short = model.NewBoolVar(f"r{r_idx}_in_short_v{v}")
-                model.Add(in_short <= req_to_visit[(r_idx, v)])
-                model.Add(in_short <= is_short[v])
-                model.Add(in_short >= req_to_visit[(r_idx, v)] + is_short[v] - 1)
-                short_crowding_terms.append(in_short)
-
-        deficit_raw = model.NewIntVar(
-            -3650,
-            _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS,
-            f"flex_deficit_raw_{v}",
+    is_short, flex_deficit, short_crowding_terms = (
+        _add_visit_window_and_shortness_constraints(
+            model=model,
+            requests=requests,
+            max_visits=max_visits,
+            req_to_visit=req_to_visit,
+            visit_active=visit_active,
+            req_window_lb=req_window_lb,
+            visit_end=visit_end,
+            visit_window_start=visit_window_start,
+            min_date_ord=min_date_ord,
+            max_date_ord=max_date_ord,
         )
-        model.Add(deficit_raw == _VISIT_GEN_FLEX_TARGET_WINDOW_DAYS - duration)
-        model.AddMaxEquality(flex_deficit[v], [0, deficit_raw])
+    )
 
     # Objective Function
     M = (max_date_ord - min_date_ord) * len(requests) * 2 + 1000
