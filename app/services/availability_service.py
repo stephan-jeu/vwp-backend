@@ -195,3 +195,31 @@ async def upsert_cell(
     await db.refresh(row)
 
     return AvailabilityWeekOut.model_validate(row, from_attributes=True)
+
+
+async def get_user_availability(
+    db: AsyncSession, *, user_id: int, week_start: int, week_end: int
+) -> list[AvailabilityWeek]:
+    """Get availability for a specific user for a week range.
+
+    Args:
+        db: Async SQLAlchemy session.
+        user_id: User ID.
+        week_start: Start week (inclusive).
+        week_end: End week (inclusive).
+
+    Returns:
+        List of AvailabilityWeek rows.
+    """
+    stmt = (
+        select(AvailabilityWeek)
+        .where(
+            and_(
+                AvailabilityWeek.user_id == user_id,
+                AvailabilityWeek.week >= week_start,
+                AvailabilityWeek.week <= week_end,
+            )
+        )
+        .order_by(AvailabilityWeek.week)
+    )
+    return (await db.execute(stmt)).scalars().all()
