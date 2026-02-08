@@ -53,7 +53,18 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
-    logging.getLogger("uvicorn.error").setLevel(logging.DEBUG)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )
+    
+    # Force uvicorn loggers to use the same config by propagating to root
+    for logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
+        logger = logging.getLogger(logger_name)
+        logger.handlers = []
+        logger.propagate = True
 
     app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 

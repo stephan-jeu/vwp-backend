@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from sqlalchemy import Enum, String
+from sqlalchemy import Enum, String, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, TimestampMixin, SoftDeleteMixin
@@ -16,6 +16,15 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(320), index=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_users_email_unique_active",
+            "email",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
     admin: Mapped[bool] = mapped_column(default=False, server_default="false")
     city: Mapped[str | None] = mapped_column(String(255), nullable=True)
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)

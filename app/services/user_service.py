@@ -65,6 +65,16 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
     """
     # Serialize and defensively coerce enums to their DB labels
     data = payload.model_dump(mode="json")
+    
+    # Validation: Check if email already exists
+    existing = await db.execute(
+        select(User).where(User.email == data["email"], User.deleted_at == None)
+    )
+    if existing.scalar_one_or_none():
+         raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email_already_exists"
+        )
+
     data["contract"] = _enum_to_value(data.get("contract"), UserBase.ContractType)
     data["experience_bat"] = _enum_to_value(
         data.get("experience_bat"), UserBase.ExperienceBat
@@ -99,6 +109,17 @@ async def update_user(db: AsyncSession, user_id: int, payload: UserUpdate) -> Us
 
     # Serialize enums to their values and only include provided fields
     data = payload.model_dump(mode="json", exclude_unset=True)
+
+    # Validation: Check if email already exists (if changing)
+    if "email" in data and data["email"] != row.email:
+        existing = await db.execute(
+            select(User).where(User.email == data["email"], User.deleted_at == None)
+        )
+        if existing.scalar_one_or_none():
+             raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="email_already_exists"
+            )
+
     if "contract" in data:
         data["contract"] = _enum_to_value(data.get("contract"), UserBase.ContractType)
     if "experience_bat" in data:
