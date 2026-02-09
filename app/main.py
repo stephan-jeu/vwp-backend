@@ -53,8 +53,12 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
+    import os
+
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
@@ -65,6 +69,11 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
         logger = logging.getLogger(logger_name)
         logger.handlers = []
         logger.propagate = True
+        logger.setLevel(log_level)
+
+    # Silence noisy libraries even in DEBUG mode
+    for logger_name in ["httpx", "httpcore", "hpack"]:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 

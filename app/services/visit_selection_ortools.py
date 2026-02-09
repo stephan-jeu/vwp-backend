@@ -482,6 +482,9 @@ async def select_visits_cp_sat(
             for j, u in u_map.items():
                 if _qualifies_user_for_visit(u, v):
                     origin = getattr(u, "address", None)
+                    if not origin:
+                        origin = getattr(u, "city", None)
+
                     if origin:
                         key = (origin, dest)
                         pairs_to_check.append(key)
@@ -776,6 +779,61 @@ async def select_visits_cp_sat(
             gap,
             time_limit_reached,
         )
+
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug("=== DETAILED CANDIDATE SCORING ===")
+            # Pre-calculate user total loads in this solution
+            user_sol_loads = {}
+            for j in u_map:
+                user_sol_loads[j] = sum(
+                    1 for vi in v_map if (vi, j) in x and solver.Value(x[vi, j])
+                )
+
+            for i, v in v_map.items():
+                is_scheduled = solver.Value(scheduled[i])
+                _logger.debug(
+                    "Visit %s (Id=%s): Scheduled=%s",
+                    i,
+                    getattr(v, "id", "?"),
+                    is_scheduled,
+                )
+                if not is_scheduled:
+                    continue
+
+                # Log candidates
+                for j, u in u_map.items():
+                    if (i, j) not in x:
+                        continue
+
+                    # Basic Stats
+                    is_assigned = solver.Value(x[i, j])
+                    tt = travel_costs.get((i, j), 0)
+                    load = user_sol_loads.get(j, 0)
+
+                    # Check Large Team Contribution (approx)
+                    # We can't easily query the intermediate large_count var per user without more complex map,
+                    # but we can re-calc:
+                    # How many large visits is this user assigned to in this solution?
+                    # "Large" definition matches the constraint logic earlier
+                    large_visits_assigned = 0
+                    for vi in v_map:
+                        if (
+                            (vi, j) in x
+                            and solver.Value(x[vi, j])
+                            and (getattr(v_map[vi], "required_researchers", 1) or 1)
+                            >= 3
+                        ):
+                            large_visits_assigned += 1
+
+                    _logger.debug(
+                        "  -> Cand %s (Id=%s): Assigned=%s | Travel=%d min | TotalLoad=%d | LargeVisits=%d",
+                        getattr(u, "full_name", "Unknown"),
+                        getattr(u, "id", "?"),
+                        "YES" if is_assigned else "no",
+                        tt,
+                        load,
+                        large_visits_assigned,
+                    )
     else:
         _logger.info(
             "WeeklyPlanning CP-SAT: status=%s time=%.2fs limit=%.1fs visits=%d users=%d conflicts=%d branches=%d",
