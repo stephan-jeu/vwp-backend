@@ -12,6 +12,38 @@ class Settings(BaseModel):
     app_name: str = Field(default="Veldwerkplanning API")
     debug: bool = Field(default=False)
 
+    # Multi-tenancy & Feature Flags
+    tenant_name: str = Field(
+        default_factory=lambda: os.getenv("TENANT_NAME", "Habitus")
+    )
+    
+    # Feature: Daily Planning (Granular Day Assignments)
+    feature_daily_planning: bool = Field(
+        default_factory=lambda: os.getenv("FEATURE_DAILY_PLANNING", "false").lower() in {"1", "true", "yes"}
+    )
+    
+    # Feature: Strict Availability (Specific Day Restrictions)
+    feature_strict_availability: bool = Field(
+        default_factory=lambda: os.getenv("FEATURE_STRICT_AVAILABILITY", "false").lower() in {"1", "true", "yes"}
+    )
+    
+    # Feature: Auth Providers (google, azure_ad, email)
+    auth_providers: list[str] = Field(
+        default_factory=lambda: [
+            p.strip() for p in os.getenv("AUTH_PROVIDERS", "google").split(",")
+        ]
+    )
+    
+    # Constraint: Language Matching (Team must share >= 1 language)
+    constraint_language_match: bool = Field(
+        default_factory=lambda: os.getenv("CONSTRAINT_LANGUAGE_MATCH", "false").lower() in {"1", "true", "yes"}
+    )
+    
+    # Constraint: Evening -> Morning Sequence (Eve shift implies Morning shift next day)
+    constraint_eve_morn_sequence: bool = Field(
+        default_factory=lambda: os.getenv("CONSTRAINT_EVE_MORN_SEQUENCE", "false").lower() in {"1", "true", "yes"}
+    )
+
     # Seasonal planner scheduler
     season_planner_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(
