@@ -11,13 +11,14 @@ from app.models.project import Project
 from app.models.cluster import Cluster
 from app.models.visit import Visit
 from app.models.availability import AvailabilityWeek
+from app.models.availability_pattern import AvailabilityPattern 
 from app.models.user import User
 
 # Map parent model -> list of (child model, child FK column referencing parent.id)
 _CASCADE_MAP: Dict[Type[Any], List[Tuple[Type[Any], Any]]] = {
     Project: [(Cluster, Cluster.project_id)],
     Cluster: [(Visit, Visit.cluster_id)],
-    User: [(AvailabilityWeek, AvailabilityWeek.user_id)],
+    User: [(AvailabilityWeek, AvailabilityWeek.user_id), (AvailabilityPattern, AvailabilityPattern.user_id)],
 }
 
 
