@@ -25,6 +25,7 @@ class PlanningVisitRead(BaseModel):
     species: list[str]
     from_date: date | None = None
     to_date: date | None = None
+    planned_date: date | None = None
     researchers: list[str]
 
     model_config = {"from_attributes": True}

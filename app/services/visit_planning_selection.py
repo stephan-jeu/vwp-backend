@@ -1022,6 +1022,7 @@ async def select_visits_for_week(
 
     effective_selected = result.selected
     effective_skipped = result.skipped
+    day_assignments = result.day_assignments or {}
 
     if db:
         await db.commit()
@@ -1034,6 +1035,7 @@ async def select_visits_for_week(
         part = (v.part_of_day or "").strip()
         if part in DAYPART_TO_AVAIL_FIELD:
             required = max(1, v.required_researchers or 1)
+            # Simulate consumption for logging purposes
             _consume_capacity(caps, part, required)
 
     # Log output
@@ -1048,4 +1050,5 @@ async def select_visits_for_week(
         "selected_visit_ids": [v.id for v in effective_selected],
         "skipped_visit_ids": [v.id for v in effective_skipped],
         "capacity_remaining": caps,
+        "day_assignments": day_assignments,
     }

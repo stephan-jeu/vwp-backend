@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.visit import Visit
 from app.models.user import User
 from app.services.planning_run_errors import PlanningRunError
+from core.settings import get_settings
 
 _logger = logging.getLogger("uvicorn.error")
 
@@ -19,6 +20,7 @@ class VisitSelectionResult(NamedTuple):
     selected: list[Visit]
     skipped: list[Visit]
     remaining_caps: dict[str, int]  # Global daypart caps (approximate)
+    day_assignments: dict[int, date] | None = None  # visit_id -> date
 
 
 def _generate_greedy_planning_solution(
@@ -865,9 +867,10 @@ async def select_visits_cp_sat(
 
     # 4. Extract Result
     selected_result = []
-
-    # Calculate global remaining caps (approx) for consistency with return type
-    # Though the caller relies mostly on selected list.
+    
+    # New: Tracking chosen dates
+    day_assignments: dict[int, date] = {}
+    from datetime import timedelta
 
     for i, v in v_map.items():
         if solver.Value(scheduled[i]):
@@ -876,6 +879,23 @@ async def select_visits_cp_sat(
 
             # Clear existing researchers (simulation safety)
             v.researchers = []
+            
+            # --- Extract Day ---
+            chosen_day_idx = -1
+            for d in range(5):
+                if solver.Value(visit_day[i, d]):
+                    chosen_day_idx = d
+                    break
+            
+            if chosen_day_idx != -1:
+                # Calculate actual date: week_monday + days
+                actual_date = week_monday + timedelta(days=chosen_day_idx)
+                if v.id is not None:
+                     day_assignments[v.id] = actual_date
+                
+                # Also set on object for immediate use if needed (legacy compat remains planned_week)
+                if get_settings().feature_daily_planning:
+                    v.planned_date = actual_date
 
             assigned_users = []
             for j, u in u_map.items():
@@ -892,14 +912,9 @@ async def select_visits_cp_sat(
         else:
             skipped_visits.append(v)
 
-    # Calculate global caps remaining?
-    # Legacy `_select_visits_for_week_core` returned reduced caps.
-    # But `select_visits_for_week` re-loads capacities anyway.
-    # The return value `caps` from `_select_visits_for_week_core` was mainly used for logging
-    # or the result tuple. We can return empty or basic calc.
-
     return VisitSelectionResult(
         selected=selected_result,
         skipped=skipped_visits,
         remaining_caps={},  # Caller mostly ignores this for 'effective' logic
+        day_assignments=day_assignments,
     )

@@ -26,6 +26,7 @@ class VisitBase(BaseModel):
     max_wind_force_bft: int | None = None
     max_precipitation: str | None = None
     planned_week: int | None = None
+    planned_date: date | None = None
     expertise_level: str | None = None
     wbc: bool = False
     fiets: bool = False
@@ -90,6 +91,7 @@ class VisitUpdate(BaseModel):
     max_wind_force_bft: int | None = None
     max_precipitation: str | None = None
     planned_week: int | None = None
+    planned_date: date | None = None
     expertise_level: str | None = None
     wbc: bool | None = None
     fiets: bool | None = None
@@ -289,6 +291,7 @@ class VisitListRow(BaseModel):
     required_researchers: int | None
     visit_nr: int | None
     planned_week: int | None = None
+    planned_date: date | None = None
     from_date: date | None
     to_date: date | None
     duration: int | None

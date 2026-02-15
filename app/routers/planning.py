@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Annotated
 
@@ -17,6 +18,9 @@ from app.services.security import require_admin
 from app.services.visit_planning_selection import select_visits_for_week
 from app.services.planning_run_errors import PlanningRunError
 from db.session import get_db
+
+
+_logger = logging.getLogger("uvicorn.error")
 
 
 router = APIRouter()
@@ -90,6 +94,7 @@ async def get_planning(
                 species=sorted(set(species)),
                 from_date=v.from_date,
                 to_date=v.to_date,
+                planned_date=v.planned_date,
                 researchers=[r for r in researchers if r],
             )
         )
@@ -132,6 +137,7 @@ async def generate_planning(
             db, week_monday, timeout_seconds=None, include_travel_time=True
         )
     except PlanningRunError as exc:
+        _logger.exception("PlanningRunError: %s", exc)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -141,6 +147,7 @@ async def generate_planning(
             ),
         ) from exc
     except Exception as exc:
+        _logger.exception("Unexpected error during planning generation: %s", exc)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -152,12 +159,15 @@ async def generate_planning(
 
     # Post-planning Sanitization: Check for future conflicts
     from app.services.visit_sanitization import sanitize_future_planning
+    from core.settings import get_settings
 
     sanitized = await sanitize_future_planning(
         db, week_monday, result.get("selected_visit_ids", [])
     )
     if sanitized:
         result["sanitized_future_visit_ids"] = sanitized
+
+    selected_ids = result.get("selected_visit_ids", [])
 
     await log_activity(
         db,
@@ -168,7 +178,7 @@ async def generate_planning(
         details={
             "week": week,
             "year": current_year,
-            "selected_visit_ids": result.get("selected_visit_ids", []),
+            "selected_visit_ids": selected_ids,
             "skipped_visit_ids": result.get("skipped_visit_ids", []),
             "sanitized_future_visit_ids": sanitized,
             "capacity_remaining": result.get("capacity_remaining", {}),
@@ -223,6 +233,7 @@ async def clear_planned_researchers(
     for v in visits:
         v.researchers.clear()
         v.planned_week = None
+        v.planned_date = None
 
     await db.commit()
 

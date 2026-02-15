@@ -459,6 +459,7 @@ async def list_visits(
                 "required_researchers": v.required_researchers,
                 "visit_nr": v.visit_nr,
                 "planned_week": v.planned_week,
+                "planned_date": v.planned_date,
                 "from_date": v.from_date,
                 "to_date": v.to_date,
                 "duration": v.duration,
@@ -549,6 +550,7 @@ async def get_visit_detail(
         required_researchers=visit.required_researchers,
         visit_nr=visit.visit_nr,
         planned_week=visit.planned_week,
+        planned_date=visit.planned_date,
         from_date=visit.from_date,
         to_date=visit.to_date,
         duration=visit.duration,
@@ -771,6 +773,7 @@ async def list_advertised_visits(
                 required_researchers=v.required_researchers,
                 visit_nr=v.visit_nr,
                 planned_week=v.planned_week,
+                planned_date=v.planned_date,
                 from_date=v.from_date,
                 to_date=v.to_date,
                 duration=v.duration,
@@ -865,6 +868,11 @@ async def update_visit(
         exclude={"function_ids", "species_ids", "researcher_ids"},
     )
 
+    # Consistency check: If planned_week is cleared (set to None), also clear planned_date
+    if "planned_week" in data and data["planned_week"] is None:
+        if "planned_date" not in data:
+            data["planned_date"] = None
+    
     advertized_update = data.pop("advertized", None)
 
     for field, value in data.items():

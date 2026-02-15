@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import math
+import asyncio
 from datetime import date, timedelta
 from typing import NamedTuple
 
@@ -218,13 +219,17 @@ class SeasonPlanningService:
             db, start_date.year
         )
 
+        loop = asyncio.get_running_loop()
         try:
-            SeasonPlanningService.solve_season(
-                start_date,
-                visits,
-                users,
-                avail_map,
-                timeout_seconds=timeout_seconds,
+            await loop.run_in_executor(
+                None,
+                lambda: SeasonPlanningService.solve_season(
+                    start_date,
+                    visits,
+                    users,
+                    avail_map,
+                    timeout_seconds=timeout_seconds,
+                ),
             )
         except Exception:
             await db.rollback()

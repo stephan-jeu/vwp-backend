@@ -171,9 +171,19 @@ def derive_visit_status(
 
     # Planned week + researchers: PLANNED if the window is current/future,
     # MISSED if the window is already in the past.
-    if has_researchers and planned_week is not None:
+    planned_or_week = planned_week is not None or getattr(visit, "planned_date", None) is not None
+    if has_researchers and planned_or_week:
         current_week = today.isocalendar()[1]
-        if planned_week < current_week:
+        
+        # If we have a specific planned_date, verify against that
+        p_date = getattr(visit, "planned_date", None)
+        if p_date is not None:
+             if p_date < today:
+                 return VisitStatusCode.MISSED
+             return VisitStatusCode.PLANNED
+
+        # Fallback to week-based check if only week is present
+        if planned_week is not None and planned_week < current_week:
             return VisitStatusCode.MISSED
         return VisitStatusCode.PLANNED
 
