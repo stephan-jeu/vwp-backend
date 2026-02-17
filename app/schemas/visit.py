@@ -177,6 +177,7 @@ class VisitAdminPlanningStatusRequest(BaseModel):
 
     mode: str
     planned_week: int | None = None
+    planned_date: date | None = None
     researcher_ids: list[int] | None = None
     comment: str | None = None
 

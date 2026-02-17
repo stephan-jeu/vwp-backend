@@ -114,7 +114,7 @@ async def list_activity_logs(
 
     stmt: Select[tuple[ActivityLog]] = (
         select(ActivityLog)
-        .options(selectinload(ActivityLog.actor))
+        .options(selectinload(ActivityLog.actor), selectinload(ActivityLog.actors))
         .order_by(ActivityLog.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)

@@ -40,6 +40,7 @@ class ActivityLogRead(ActivityLogBase):
     id: int
     created_at: datetime
     actor: UserNameRead | None = None
+    actors: list[UserNameRead] = []
 
     model_config = {"from_attributes": True}
 

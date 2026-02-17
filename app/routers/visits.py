@@ -832,7 +832,7 @@ async def list_visit_activity(
             ActivityLog.target_type == "visit",
             ActivityLog.target_id == visit_id,
         )
-        .options(selectinload(ActivityLog.actor))
+        .options(selectinload(ActivityLog.actor), selectinload(ActivityLog.actors))
         .order_by(ActivityLog.created_at.desc())
     )
     result = await db.execute(stmt)
@@ -1055,20 +1055,34 @@ async def execute_visit(
     cluster = visit.cluster
     project: Project | None = getattr(cluster, "project", None)
 
-    await log_activity(
-        db,
-        actor_id=user.id,
-        action="visit_executed",
-        target_type="visit",
-        target_id=visit_id,
-        details={
-            "execution_date": payload.execution_date.isoformat(),
-            "comment": payload.comment,
-            "project_code": project.code if project else None,
-            "cluster_number": cluster.cluster_number if cluster else None,
-            "visit_nr": visit.visit_nr,
-        },
-    )
+    researcher_ids = [r.id for r in visit.researchers] if visit.researchers else []
+    log_details: dict = {
+        "execution_date": payload.execution_date.isoformat(),
+        "comment": payload.comment,
+        "project_code": project.code if project else None,
+        "cluster_number": cluster.cluster_number if cluster else None,
+        "visit_nr": visit.visit_nr,
+    }
+
+    if user.admin and researcher_ids:
+        log_details["admin_id"] = user.id
+        await log_activity(
+            db,
+            actor_ids=researcher_ids,
+            action="visit_executed",
+            target_type="visit",
+            target_id=visit_id,
+            details=log_details,
+        )
+    else:
+        await log_activity(
+            db,
+            actor_id=user.id,
+            action="visit_executed",
+            target_type="visit",
+            target_id=visit_id,
+            details=log_details,
+        )
 
     # Update subsequent visits
     if payload.execution_date:
@@ -1117,22 +1131,31 @@ async def set_admin_planning_status(
 
     if mode == "open":
         visit.planned_week = None
+        visit.planned_date = None
         await db.execute(
             delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
         )
         planned_week = None
         researcher_ids: list[int] | None = None
     else:
-        if payload.planned_week is None or payload.researcher_ids is None:
+        # For planned mode, either planned_date or planned_week must be set,
+        # along with researcher_ids.
+        if payload.researcher_ids is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="researcher_ids is required when mode is 'planned'",
+            )
+        if payload.planned_date is None and payload.planned_week is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "planned_week and researcher_ids are required when "
+                    "planned_date or planned_week is required when "
                     "mode is 'planned'"
                 ),
             )
 
         visit.planned_week = payload.planned_week
+        visit.planned_date = payload.planned_date
         await db.execute(
             delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
         )
@@ -1398,21 +1421,35 @@ async def execute_visit_with_deviation(
     cluster = visit.cluster
     project: Project | None = getattr(cluster, "project", None)
 
-    await log_activity(
-        db,
-        actor_id=user.id,
-        action="visit_executed_with_deviation",
-        target_type="visit",
-        target_id=visit_id,
-        details={
-            "execution_date": payload.execution_date.isoformat(),
-            "reason": payload.reason,
-            "comment": payload.comment,
-            "project_code": project.code if project else None,
-            "cluster_number": cluster.cluster_number if cluster else None,
-            "visit_nr": visit.visit_nr,
-        },
-    )
+    researcher_ids = [r.id for r in visit.researchers] if visit.researchers else []
+    log_details: dict = {
+        "execution_date": payload.execution_date.isoformat(),
+        "reason": payload.reason,
+        "comment": payload.comment,
+        "project_code": project.code if project else None,
+        "cluster_number": cluster.cluster_number if cluster else None,
+        "visit_nr": visit.visit_nr,
+    }
+
+    if user.admin and researcher_ids:
+        log_details["admin_id"] = user.id
+        await log_activity(
+            db,
+            actor_ids=researcher_ids,
+            action="visit_executed_with_deviation",
+            target_type="visit",
+            target_id=visit_id,
+            details=log_details,
+        )
+    else:
+        await log_activity(
+            db,
+            actor_id=user.id,
+            action="visit_executed_with_deviation",
+            target_type="visit",
+            target_id=visit_id,
+            details=log_details,
+        )
 
     # Update subsequent visits
     if payload.execution_date:

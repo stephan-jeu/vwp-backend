@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from sqlalchemy import JSON, ForeignKey, String
+from sqlalchemy import Column, ForeignKey, JSON, String, Table
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models import Base, TimestampMixin
 from app.models.user import User
+
+activity_log_actors = Table(
+    "activity_log_actors",
+    Base.metadata,
+    Column("activity_log_id", ForeignKey("activity_logs.id"), primary_key=True),
+    Column("user_id", ForeignKey("users.id"), primary_key=True),
+)
 
 
 class ActivityLog(TimestampMixin, Base):
@@ -38,7 +45,8 @@ class ActivityLog(TimestampMixin, Base):
     actor_id: Mapped[int | None] = mapped_column(
         ForeignKey(User.id), nullable=True, index=True
     )
-    actor: Mapped[User | None] = relationship(User)
+    actor: Mapped[User | None] = relationship(User, foreign_keys=[actor_id])
+    actors: Mapped[list[User]] = relationship(User, secondary=activity_log_actors)
 
     action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     target_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
