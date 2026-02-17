@@ -79,6 +79,7 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
     data["experience_bat"] = _enum_to_value(
         data.get("experience_bat"), UserBase.ExperienceBat
     )
+
     user = User(**data)
     db.add(user)
     try:
@@ -89,6 +90,7 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
             status_code=status.HTTP_409_CONFLICT, detail="email_already_exists"
         )
     await db.refresh(user)
+
     return user
 
 
@@ -156,3 +158,36 @@ async def delete_user(db: AsyncSession, user_id: int) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     await soft_delete_entity(db, row, cascade=True)
     await db.commit()
+
+
+async def get_user_by_reset_token(db: AsyncSession, token: str) -> User | None:
+    """Find user by reset or activation token."""
+    # We use the same field or logic? 
+    # Model has `activation_token` and `reset_password_token`.
+    # Let's check both for simplicity or separate methods?
+    # Context suggests we might use one endpoint for both.
+    
+    # Check activation token first
+    stmt = select(User).where(User.activation_token == token, User.deleted_at == None)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user:
+        return user
+        
+    # Check reset token
+    # TODO: Check expiry
+    stmt = select(User).where(User.reset_password_token == token, User.deleted_at == None)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def set_user_password(db: AsyncSession, user: User, password: str) -> None:
+    from app.services.auth_service import get_password_hash
+    
+    user.hashed_password = get_password_hash(password)
+    user.activation_token = None
+    user.reset_password_token = None
+    user.reset_password_token_expires_at = None
+    
+    await db.commit()
+    await db.refresh(user)

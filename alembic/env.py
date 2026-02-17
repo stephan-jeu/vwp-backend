@@ -30,6 +30,7 @@ from app.models import (  # noqa: E402,F401
     species,
     user,
     visit,
+    availability_pattern,
 )
 from core.settings import get_settings  # noqa: E402
 

@@ -43,6 +43,21 @@ class Settings(BaseModel):
     constraint_eve_morn_sequence: bool = Field(
         default_factory=lambda: os.getenv("CONSTRAINT_EVE_MORN_SEQUENCE", "false").lower() in {"1", "true", "yes"}
     )
+    
+    # Constraint: English/Dutch Teaming (English speakers need Dutch buddy)
+    constraint_english_dutch_teaming: bool = Field(
+        default_factory=lambda: os.getenv("CONSTRAINT_ENGLISH_DUTCH_TEAMING", "false").lower() in {"1", "true", "yes"}
+    )
+
+    # Constraint: Large Team Penalty (Avoid >2 researchers per visit if possible)
+    constraint_large_team_penalty: bool = Field(
+        default_factory=lambda: os.getenv("CONSTRAINT_LARGE_TEAM_PENALTY", "true").lower() in {"1", "true", "yes"}
+    )
+
+    # Constraint: Max Travel Time (Minutes)
+    constraint_max_travel_time_minutes: int = Field(
+        default_factory=lambda: int(os.getenv("CONSTRAINT_MAX_TRAVEL_TIME_MINUTES", "75"))
+    )
 
     # Seasonal planner scheduler
     season_planner_scheduler_enabled: bool = Field(
@@ -124,6 +139,30 @@ class Settings(BaseModel):
         )
     )
 
+    # OAuth2 - MS365
+    ms365_client_id: str = Field(
+        default_factory=lambda: os.getenv("MS365_CLIENT_ID", "")
+    )
+    ms365_client_secret: SecretStr = Field(
+        default_factory=lambda: SecretStr(os.getenv("MS365_CLIENT_SECRET", ""))
+    )
+    ms365_tenant_id: str = Field(
+        default_factory=lambda: os.getenv("MS365_TENANT_ID", "common")
+    )
+    ms365_redirect_uri: str = Field(
+        default_factory=lambda: os.getenv(
+            "MS365_REDIRECT_URI", "http://localhost:3000/auth/callback-ms365"
+        )
+    )
+
+    # Auth Features
+    enable_email_login: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_EMAIL_LOGIN", "false").lower() in {"1", "true", "yes"}
+    )
+    enable_ms365_login: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_MS365_LOGIN", "false").lower() in {"1", "true", "yes"}
+    )
+    
     # JWT
     jwt_secret: SecretStr = Field(
         default_factory=lambda: SecretStr(

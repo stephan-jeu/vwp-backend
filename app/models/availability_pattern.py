@@ -7,11 +7,11 @@ from sqlalchemy import ForeignKey, Integer, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
-from app.models import Base, TimestampMixin
+from app.models import Base, TimestampMixin, SoftDeleteMixin
 from app.models.user import User
 
 
-class AvailabilityPattern(TimestampMixin, Base):
+class AvailabilityPattern(TimestampMixin, SoftDeleteMixin, Base):
     """Configuration for strict availability patterns.
 
     Defines a period (start_date to end_date) during which a specific

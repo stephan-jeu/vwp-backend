@@ -447,7 +447,8 @@ async def select_visits_cp_sat(
     # Travel time penalties (minutes) and hard cutoff.
     # Weight=2 means a 30-minute trip costs 60 points (slightly more than large-team penalty).
     TRAVEL_TIME_WEIGHT = 2
-    TRAVEL_TIME_HARD_LIMIT = 75
+    settings = get_settings()
+    TRAVEL_TIME_HARD_LIMIT = settings.constraint_max_travel_time_minutes
 
     # Optimization: Check if we have travel_time service available (might be missing in tests if not mocked global?)
     # We imported it locally to be safe
@@ -548,31 +549,32 @@ async def select_visits_cp_sat(
         # 4. Large Team Visit Constraint
         # "Avoid that researchers have multiple visits with 3 or more researchers in one week"
         # Soft constraint: Penalty for each large visit beyond the first one.
-        LARGE_TEAM_THRESHOLD = 3
-        LARGE_TEAM_PENALTY = 60  # ~60 mins travel equivalent
-
-        large_visits_vars = [
-            x[i, j]
-            for i in v_map
-            if (i, j) in x
-            and (getattr(v_map[i], "required_researchers", 1) or 1)
-            >= LARGE_TEAM_THRESHOLD
-        ]
-
-        if large_visits_vars:
-            large_count = model.NewIntVar(0, len(large_visits_vars), f"large_count_{j}")
-            model.Add(large_count == sum(large_visits_vars))
-
-            # Penalize max(0, count - 1)
-            excess_large = model.NewIntVar(
-                0, len(large_visits_vars), f"excess_large_{j}"
-            )
-            model.Add(excess_large >= large_count - 1)
-            # Implicitly excess_large >= 0 from domain
-
-            # Since we maximize negative penalty, the solver will drive excess_large
-            # to be the smallest possible value satisfying constraints, which is max(0, count-1).
-            obj_terms.append(excess_large * -LARGE_TEAM_PENALTY)
+        if settings.constraint_large_team_penalty:
+            LARGE_TEAM_THRESHOLD = 3
+            LARGE_TEAM_PENALTY = 60  # ~60 mins travel equivalent
+    
+            large_visits_vars = [
+                x[i, j]
+                for i in v_map
+                if (i, j) in x
+                and (getattr(v_map[i], "required_researchers", 1) or 1)
+                >= LARGE_TEAM_THRESHOLD
+            ]
+    
+            if large_visits_vars:
+                large_count = model.NewIntVar(0, len(large_visits_vars), f"large_count_{j}")
+                model.Add(large_count == sum(large_visits_vars))
+    
+                # Penalize max(0, count - 1)
+                excess_large = model.NewIntVar(
+                    0, len(large_visits_vars), f"excess_large_{j}"
+                )
+                model.Add(excess_large >= large_count - 1)
+                # Implicitly excess_large >= 0 from domain
+    
+                # Since we maximize negative penalty, the solver will drive excess_large
+                # to be the smallest possible value satisfying constraints, which is max(0, count-1).
+                obj_terms.append(excess_large * -LARGE_TEAM_PENALTY)
 
     # 5. Coupling Preference (Supervision)
     # Rule: If visit has (Experience=Junior OR Contract=Flex) -> Must have (Experience=Senior OR (Contract=Intern AND Experience!=Junior))
@@ -680,6 +682,54 @@ async def select_visits_cp_sat(
             # Implicit p_excess >= 0
 
             obj_terms.append(p_excess * -PROJECT_DIVERSITY_PENALTY)
+
+    # 7. English/Dutch Teaming Constraint (Soft)
+    # Rule: If a team has an English speaker (Language='EN'), it should ideally also have a Dutch speaker (Language='NL').
+    # Penalty if not satisfied: (Has_EN AND NOT Has_NL) -> Penalty.
+    # This applies to any visit. Single EN speaker is also penalized (needs buddy).
+    
+    if settings.constraint_english_dutch_teaming:
+        LANGUAGE_TEAMING_PENALTY = 50
+        
+        for i, v in v_map.items():
+            # Identify relevant user vars
+            assigned_user_indices = [j for j in u_map if (i, j) in x]
+            if not assigned_user_indices:
+                continue
+
+            en_vars = []
+            nl_vars = []
+
+            for j in assigned_user_indices:
+                u = u_map[j]
+                # Default to NL if not specified
+                lang = str(getattr(u, "language", "NL") or "NL")
+                
+                if lang == "EN":
+                    en_vars.append(x[i, j])
+                elif lang == "NL":
+                    nl_vars.append(x[i, j])
+            
+            if en_vars:
+                # If there are English speakers, we check for Dutch speakers
+                
+                has_en = model.NewBoolVar(f"has_en_{i}")
+                model.Add(sum(en_vars) > 0).OnlyEnforceIf(has_en)
+                model.Add(sum(en_vars) == 0).OnlyEnforceIf(has_en.Not())
+                
+                has_nl = model.NewBoolVar(f"has_nl_{i}")
+                if nl_vars:
+                    model.Add(sum(nl_vars) > 0).OnlyEnforceIf(has_nl)
+                    model.Add(sum(nl_vars) == 0).OnlyEnforceIf(has_nl.Not())
+                else:
+                    model.Add(has_nl == 0)
+                
+                # Violation: Has EN but NO NL
+                violation = model.NewBoolVar(f"lang_violation_{i}")
+                model.AddBoolAnd([has_en, has_nl.Not()]).OnlyEnforceIf(violation)
+                model.AddBoolOr([has_en.Not(), has_nl]).OnlyEnforceIf(violation.Not())
+                
+                obj_terms.append(violation * -LANGUAGE_TEAMING_PENALTY)
 
     # --- Heuristic Hint Injection ---
 
