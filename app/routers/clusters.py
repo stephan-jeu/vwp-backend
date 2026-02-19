@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
+from fastapi import APIRouter, HTTPException, Query, status, Response
 from sqlalchemy import Select, select
 from sqlalchemy.orm import selectinload
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
 from app.models.project import Project
@@ -27,7 +26,7 @@ from app.schemas.cluster import (
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead
-from app.services.security import require_admin
+from app.deps import AdminDep, DbDep
 from app.services.visit_generation import (
     duplicate_cluster_with_visits,
     resolve_protocols_for_combos,
@@ -37,14 +36,9 @@ from app.services.visit_generation import (
 from app.services.activity_log_service import log_activity
 from app.services.planning_run_errors import PlanningRunError
 from app.services.soft_delete import soft_delete_entity
-from db.session import get_db
 
 
 router = APIRouter()
-
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[User, Depends(require_admin)]
 
 
 def _validate_planning_locked_defaults(

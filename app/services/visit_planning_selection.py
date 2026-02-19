@@ -661,6 +661,9 @@ async def _load_all_users(db: AsyncSession) -> list[User]:
 
 async def _load_user_capacities(db: AsyncSession, week: int) -> dict[int, int]:
     """Return per-user total capacity for the ISO week (sum of all dayparts + flex)."""
+    from core.settings import get_settings
+    if get_settings().feature_strict_availability:
+        return await _load_user_capacities_strict(db, week)
     try:
         stmt = (
             select(AvailabilityWeek)
@@ -705,6 +708,9 @@ async def _load_user_daypart_capacities(
     readable part-of-day labels used in DAYPART_TO_AVAIL_FIELD ("Ochtend",
     "Dag", "Avond") plus "Flex".
     """
+    from core.settings import get_settings
+    if get_settings().feature_strict_availability:
+        return await _load_user_daypart_capacities_strict(db, week)
     try:
         stmt = (
             select(AvailabilityWeek)
@@ -853,6 +859,138 @@ def _user_has_capacity_for_visit(
         caps,
     )
     return False
+
+
+def _compute_strict_daypart_caps(
+    patterns: list,
+    week: int,
+    year: int,
+) -> tuple[int, int, int, int | None]:
+    """Compute per-daypart capacity from AvailabilityPattern records for a given week.
+
+    Iterates each day of the week, finds the active pattern (if any), and counts
+    how many days each daypart slot appears in the schedule.  Per-daypart caps
+    are applied: morning ≤ 2, daytime ≤ 5, nighttime ≤ 5.
+
+    Returns (morning_cap, daytime_cap, nighttime_cap, max_visits_per_week).
+    max_visits_per_week is None when no pattern configures it.
+    """
+    try:
+        w_start = date.fromisocalendar(year, week, 1)
+    except ValueError:
+        return 0, 0, 0, None
+
+    day_names = [
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday",
+    ]
+    morning_days = 0
+    daytime_days = 0
+    nighttime_days = 0
+    max_visits: int | None = None
+
+    for i in range(7):
+        day_date = w_start + timedelta(days=i)
+        active = next(
+            (p for p in patterns if p.start_date <= day_date <= p.end_date),
+            None,
+        )
+        if active is None:
+            continue
+        if max_visits is None and active.max_visits_per_week is not None:
+            max_visits = active.max_visits_per_week
+        slots = active.schedule.get(day_names[i], [])
+        if "morning" in slots:
+            morning_days += 1
+        if "daytime" in slots:
+            daytime_days += 1
+        if "nighttime" in slots:
+            nighttime_days += 1
+
+    return min(morning_days, 2), min(daytime_days, 5), min(nighttime_days, 5), max_visits
+
+
+async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int, int]:
+    """Load per-user total capacity from AvailabilityPattern (strict availability mode)."""
+    from app.models.availability_pattern import AvailabilityPattern
+
+    year = date.today().year
+    try:
+        w_start = date.fromisocalendar(year, week, 1)
+    except ValueError:
+        return {}
+    w_end = w_start + timedelta(days=6)
+
+    try:
+        stmt = (
+            select(AvailabilityPattern)
+            .join(User, AvailabilityPattern.user_id == User.id)
+            .where(
+                and_(
+                    User.deleted_at.is_(None),
+                    AvailabilityPattern.deleted_at.is_(None),
+                    AvailabilityPattern.start_date <= w_end,
+                    AvailabilityPattern.end_date >= w_start,
+                )
+            )
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+    except Exception:
+        return {}
+
+    patterns_by_user: dict[int, list] = {}
+    for p in rows:
+        patterns_by_user.setdefault(p.user_id, []).append(p)
+
+    caps: dict[int, int] = {}
+    for uid, user_patterns in patterns_by_user.items():
+        m, d, n, max_visits = _compute_strict_daypart_caps(user_patterns, week, year)
+        total = min(m + d + n, max_visits if max_visits is not None else 7)
+        caps[uid] = total
+
+    return caps
+
+
+async def _load_user_daypart_capacities_strict(
+    db: AsyncSession, week: int
+) -> dict[int, dict[str, int]]:
+    """Load per-user daypart capacity from AvailabilityPattern (strict availability mode)."""
+    from app.models.availability_pattern import AvailabilityPattern
+
+    year = date.today().year
+    try:
+        w_start = date.fromisocalendar(year, week, 1)
+    except ValueError:
+        return {}
+    w_end = w_start + timedelta(days=6)
+
+    try:
+        stmt = (
+            select(AvailabilityPattern)
+            .join(User, AvailabilityPattern.user_id == User.id)
+            .where(
+                and_(
+                    User.deleted_at.is_(None),
+                    AvailabilityPattern.deleted_at.is_(None),
+                    AvailabilityPattern.start_date <= w_end,
+                    AvailabilityPattern.end_date >= w_start,
+                )
+            )
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+    except Exception:
+        return {}
+
+    patterns_by_user: dict[int, list] = {}
+    for p in rows:
+        patterns_by_user.setdefault(p.user_id, []).append(p)
+
+    per_user: dict[int, dict[str, int]] = {}
+    for uid, user_patterns in patterns_by_user.items():
+        m, d, n, _ = _compute_strict_daypart_caps(user_patterns, week, year)
+        per_user[uid] = {"Ochtend": m, "Dag": d, "Avond": n, "Flex": 0}
+
+    return per_user
 
 
 def _consume_user_capacity(

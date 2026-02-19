@@ -1297,6 +1297,14 @@ async def test_single_user_not_assigned_more_visits_than_feasible_days(
     monkeypatch.setattr(
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
+    # This test verifies the 1-visit-per-day coordination rule (non-strict behaviour).
+    from core.settings import get_settings as _real_get_settings
+    _non_strict = _real_get_settings().model_copy(
+        update={"feature_strict_availability": False}
+    )
+    monkeypatch.setattr(
+        "app.services.visit_selection_ortools.get_settings", lambda: _non_strict
+    )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
 
@@ -1371,6 +1379,14 @@ async def test_single_user_not_assigned_two_visits_same_day_across_dayparts(
     )
     monkeypatch.setattr(
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
+    )
+    # This test verifies the 1-visit-per-day coordination rule (non-strict behaviour).
+    from core.settings import get_settings as _real_get_settings
+    _non_strict = _real_get_settings().model_copy(
+        update={"feature_strict_availability": False}
+    )
+    monkeypatch.setattr(
+        "app.services.visit_selection_ortools.get_settings", lambda: _non_strict
     )
 
     await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]

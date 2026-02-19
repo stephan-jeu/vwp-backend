@@ -321,6 +321,7 @@ class VisitListRow(BaseModel):
     provisional_locked: bool = False
     advertized_by: UserNameRead | None = None
     can_accept: bool | None = None
+    visit_code: str | None = None
 
 
 class VisitListResponse(BaseModel):

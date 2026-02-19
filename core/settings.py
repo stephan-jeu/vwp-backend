@@ -26,6 +26,11 @@ class Settings(BaseModel):
     feature_strict_availability: bool = Field(
         default_factory=lambda: os.getenv("FEATURE_STRICT_AVAILABILITY", "false").lower() in {"1", "true", "yes"}
     )
+
+    # Feature: Visit Code (Condensed species/function/daypart codes on visits)
+    enable_visit_code: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_VISIT_CODE", "false").lower() in {"1", "true", "yes"}
+    )
     
     # Feature: Auth Providers (google, azure_ad, email)
     auth_providers: list[str] = Field(

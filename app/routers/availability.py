@@ -2,19 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Query
 
-from app.models.user import User
+from app.deps import DbDep, UserDep
 from app.schemas.availability import AvailabilityWeekOut
 from app.services.availability_service import get_user_availability
-from app.services.security import get_current_user
-from db.session import get_db
 
 router = APIRouter()
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-UserDep = Annotated[User, Depends(get_current_user)]
 
 
 @router.get("/me", response_model=list[AvailabilityWeekOut])

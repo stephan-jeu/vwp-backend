@@ -4,7 +4,8 @@ import os
 import math
 import asyncio
 from datetime import date, timedelta
-from typing import NamedTuple
+from types import SimpleNamespace
+from typing import Any, NamedTuple
 
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -326,14 +327,10 @@ class SeasonPlanningService:
             exp = (getattr(u, "experience_bat", "") or "").lower()
 
             is_intern = contract == "intern"
-            # specific definition for Supervisor: Senior OR (Intern AND Not Junior)
+            # Supervisor: Senior/medior, OR an intern who is not a junior
             is_supervisor = exp in {"senior", "medior"} or (
                 contract == "intern" and exp != "junior"
             )
-
-            # REMOVED FILTER: We need to process ALL users for generic supply!
-            # if not (is_intern or is_supervisor):
-            #     continue
 
             for w in horizon_weeks:
                 # Availability
@@ -355,7 +352,6 @@ class SeasonPlanningService:
                             w,
                             total_days,
                         )
-                    # Generic Skills
                     my_skills = user_skills.get(u.id, set())
                     if _DEBUG_SEASON_PLANNING:
                         logger.debug(
@@ -367,16 +363,11 @@ class SeasonPlanningService:
                         if w not in supply[skill]:
                             supply[skill][w] = {"m": 0, "d": 0, "n": 0, "f": 0}
 
-                        # We only track total days for now in the constraint?
-                        # Step 1115 constraint uses: sum(supply.get(skill, {}).get(w, {}).values())
-                        # So we must populate the dict values.
                         s = supply[skill][w]
                         s["m"] += aw.morning_days or 0
                         s["d"] += aw.daytime_days or 0
                         s["n"] += aw.nighttime_days or 0
-                        s["f"] += aw.flex_days or 0  # Wait, line 181 summed them all?
-                        # Actually original logic (Step 1020) summed them.
-                        # Let's keep consistent structure.
+                        s["f"] += aw.flex_days or 0
 
                     if is_intern:
                         if w not in supply_intern:
@@ -392,9 +383,6 @@ class SeasonPlanningService:
             logger.debug(
                 "SeasonPlanning: debug_visit_id=%s", _DEBUG_SEASON_PLANNING_VISIT_ID
             )
-
-        # ... (Solver Model Setup) ...
-        # [EXISTING MODEL SETUP]
 
         model = cp_model.CpModel()
 
@@ -454,9 +442,7 @@ class SeasonPlanningService:
             else:
                 end_w = end_iso.week
 
-            # Handling year boundary for isocalendar (Dec 29 can be W1)
-            # User said "Current Year Only". So strict integer range.
-            # If dates spill over, we clamp.
+            # Dec 29-31 can fall in ISO week 1 of the next year; we clamp to current year only.
 
             is_custom = bool(
                 getattr(v, "custom_function_name", None)
@@ -651,12 +637,9 @@ class SeasonPlanningService:
             model.Add(vw != 0).OnlyEnforceIf(is_active)
             model.Add(vw == 0).OnlyEnforceIf(is_active.Not())
 
-            # HARD CONSTRAINTS (Anchors)
-            # 1. Already Planned
+            # Hard constraints: anchor planned/locked visits to their week
             if planned_week is not None:
                 model.Add(vw == planned_week).OnlyEnforceIf(is_active)
-                # Should we force active?
-                # Yes, if it's planned, it IS active.
                 model.Add(is_active == 1)
                 forced_active_week_by_visit_id[v.id] = planned_week
 
@@ -879,11 +862,6 @@ class SeasonPlanningService:
                         model.Add(risk == 0).OnlyEnforceIf(a2.Not())
                         successor_risk_terms.append(risk)
 
-        # 3b. Sequence & Gap Constraints
-        # ... (Existing Sequence Logic - Not Touched)
-
-        # [REDACTED PREVIOUS SEQUENCE LOGIC TO SAVE SPACE IF NOT CHANGING? NO, Context]
-
         # 3c. Sleutel (Hard) & Coupling (Soft) Constraints
         # Junior: Junior OR Flex
         # Supervisor: Senior OR (Intern AND Not Junior)
@@ -904,13 +882,8 @@ class SeasonPlanningService:
             if is_supervisor:
                 supervisor_indices.append(j)
 
-        # Pre-calculate Project grouping for Diversity
-        # project_id -> list of v_indices
+        # Pre-calculate project grouping for diversity penalty (project_id -> list of visit indices)
         project_visits_indices = {}
-
-        # We need visit->cluster->project.
-        # visits list is passed.
-        # But we need solver VARS.
 
         for i, v in enumerate(visits):
             if v.id not in visit_week_vars:
@@ -918,9 +891,6 @@ class SeasonPlanningService:
 
             vw = visit_week_vars[v.id]
 
-            # Diversity Tracking
-            # v.cluster is loaded? Yes in _load_all_active_visits.
-            # v.cluster.project_id
             pid = getattr(getattr(v, "cluster", None), "project_id", None)
             if pid:
                 if pid not in project_visits_indices:
@@ -1235,60 +1205,7 @@ class SeasonPlanningService:
                     )
                     slack_global_by_week[w] = slack_global
 
-            # --- Sleutel Constraint (Hard) ---
-            if getattr(v, "sleutel", False):
-                # If active, MUST have intern
-                pass
-                # WAIT. Season Planner does NOT assign Users to Visits!
-                # It assigns Visits to Weeks.
-                # "Who goes" is decided by Weekly Solver.
-                #
-                # CRITICAL REALIZATION:
-                # Season Planner only decides provisional_week.
-                # It calculates feasibility based on AGGREGATE capacity.
-                # It does NOT assign specific x[v, u] variables.
-                #
-                # Therefore, I CANNOT enforce "This visit has an intern" because I don't know who goes!
-                #
-                # I messed up the implementation plan assumption.
-                # The user said: "Since now we actually use the seasonal planner to determine which visits we should do... we should do the tight validation."
-                # But `solve_season` as implemented is creating `visit_week_vars`.
-                # It sums capacity `supply` vs `demand`.
-                #
-                # To enforce Sleutel/Coupling, I must ensure valid capacity exists *of that type*.
-                #
-                # Sleutel: "Need 1 Intern".
-                # Means: In Week W, we need `Intern Days >= Sum(Sleutel Visits)`.
-                #
-                # Coupling: "Need 1 Senior per Multi-Junior Visit".
-                # Means: `Senior/Supervisor Days >= Junior-Heavy Visits`.
-                #
-                # This changes the Implementation. I cannot use `x[v, u]` constraints because they don't exist.
-                # I must add NEW CAPACITY TYPES.
-                #
-                # 1. Supply["Intern"]
-                # 2. Supply["Supervisor"]
-                #
-                # And generated "Demand":
-                # For each Sleutel Visit -> Demand["Intern"] += 1.
-                # For each Multi-person Visit -> Demand["Supervisor"] += 1 (Approximation? Or just "Supervisor Capacity"?)
-                #
-                # Project Diversity: checking if we pile too many visits of same project into one week?
-                # Yes, that I can do. `Sum(v for v in Project P if v.week == W) <= threshold`?
-                # Or just soft penalty on square of counts.
-                #
-                # I need to Pivot.
-                # I will modify the code to:
-                # 1. Add "Intern" and "Supervisor" as pseudo-skills in Supply.
-                # 2. Add Demand for them based on visit attributes.
-                # 3. Add Project Diversity Penalty based on visit week counts.
-                #
-                pass
-
-        # ... (Pivot to new logic below)
-
         # 5. Objective
-        # Split into components for clarity/debugging
 
         # Active Rewards
         active_vars = []
@@ -1302,8 +1219,7 @@ class SeasonPlanningService:
                 if v.to_date is not None and 0 <= (v.to_date - start_date).days <= 14:
                     urgent_active_vars.append(visit_active_vars[v.id])
 
-        # Base Reward: 100,000 per active visit
-        # Using LinearExpr.Sum to ensuring efficient summing
+        # Base reward: 100,000 per active visit
         reward_term = cp_model.LinearExpr.Sum(active_vars) * 100000
 
         urgent_reward_term = cp_model.LinearExpr.Sum(urgent_active_vars) * 150000
@@ -1321,12 +1237,8 @@ class SeasonPlanningService:
 
         slack_penalty = cp_model.LinearExpr.Sum(slack_terms) * -10
 
-        # Constraint Penalties
-        # 200k for Overflow matches 2 Active visits.
-        # So 1 overflow cancels 2 visits?
-        # If Demand=1, Supply=0 -> Overflow=1.
-        # Active=1 (Reward 100k). Overflow=1 (Penalty -200k). Result -100k. Inactive preferred. Correct.
-        #
+        # Constraint penalties: 200k per overflow unit so one overflow outweighs two active-visit rewards,
+        # making it preferable to leave a visit unassigned rather than violate capacity.
         p_overflow = cp_model.LinearExpr.Sum(overflow_penalty_terms) * -200000
         p_intern = cp_model.LinearExpr.Sum(intern_shortfall_terms) * -200000
         p_supervisor = cp_model.LinearExpr.Sum(supervisor_shortfall_terms) * -100
@@ -1955,12 +1867,9 @@ class SeasonPlanningService:
                             supply_map_part[skill][part].get(w, 0) + part_days
                         )
 
-        # Aggregate Demands
-        # Family -> Part -> Week -> {planned, shortfall}
-        # Actually Week View structure is Row -> Week -> {spare, planned}
-        #
+        # Aggregate planned demand per skill/part/week into the week view grid
         week_view_rows = {}
-        deadline_grid = {}  # Legacy deadline view
+        deadline_grid = {}
 
         # Helper structures
         planned_demand = {}  # (Skill, Week) -> count
@@ -2028,26 +1937,17 @@ class SeasonPlanningService:
                 current["shortfall"] += cost
                 deadline_grid[skill][part][deadline] = current
 
-        # Calculate Spare Capacity for Week View
-        # Spare = Supply - Demand
-        # Note: Supply is per Skill.
-        # Week View Rows are "Skill - Part".
-        # We assign Spare to the rows? Or just Totalen?
-        # Simulation service tried to split spare.
+        # Ensure all skill-part combinations have a row, even if no visits are planned in them yet
         for skill, parts in demand_by_skill_part.items():
             for part in parts:
                 lbl = f"{skill} - {part}"
                 week_view_rows.setdefault(lbl, {})
-        # Let's aggregate Totalen first.
 
         for w in horizon_weeks:
             week_iso = f"{year}-W{w:02d}"
 
-            total_supply_w = 0  # Unique person-days?
-            # Summing skills double counts!
-            # Total Supply is sum of all users' days.
-
-            # Global Supply for Totalen
+            # Sum all users' days directly — summing per-skill supply would double-count
+            # users who have multiple skills.
             global_days = 0
             for u in users:
                 aw = avail_map.get((u.id, w))
@@ -2076,9 +1976,7 @@ class SeasonPlanningService:
                 "shortage": max(0, total_demand_w - total_supply_w),
             }
 
-            # Per Skill Spare?
-            # Spare(Skill) = Supply(Skill) - Demand(Skill)
-            # We can backfill this into the rows.
+            # Per-skill spare: Supply(Skill) - Demand(Skill), backfilled into each row
             for row_key in week_view_rows:
                 if row_key == "Totalen":
                     continue
@@ -2153,8 +2051,6 @@ class SeasonPlanningService:
             .join(Project, Cluster.project_id == Project.id)
             .where(
                 or_(Visit.to_date >= start_date, Visit.to_date.is_(None)),
-                # Exclude hard-deleted/soft-deleted handled by mixin usually, but check.
-                # Project.status != 'cancelled' ? (Assume active)
             )
             .options(
                 selectinload(Visit.functions),
@@ -2176,22 +2072,76 @@ class SeasonPlanningService:
         return (await db.execute(stmt)).scalars().all()
 
     @staticmethod
+    async def _load_availability_map_strict(
+        db: AsyncSession, year: int
+    ) -> dict[tuple[int, int], Any]:
+        """Load availability from AvailabilityPattern for strict availability mode.
+
+        Computes a virtual availability record for each (user_id, week) based on
+        the user's AvailabilityPattern schedule.  Per-daypart caps are applied
+        (morning ≤ 2, daytime ≤ 5, nighttime ≤ 5).  The max_visits_per_week cap
+        is enforced via first-fit deduction in order morning → daytime → nighttime.
+
+        Returns SimpleNamespace objects with the same attribute interface as
+        AvailabilityWeek (.morning_days, .daytime_days, .nighttime_days, .flex_days).
+        """
+        from app.models.availability_pattern import AvailabilityPattern
+        from app.services.visit_planning_selection import _compute_strict_daypart_caps
+
+        stmt = select(AvailabilityPattern).where(
+            AvailabilityPattern.deleted_at.is_(None)
+        )
+        all_patterns = (await db.execute(stmt)).scalars().all()
+
+        patterns_by_user: dict[int, list] = {}
+        for p in all_patterns:
+            patterns_by_user.setdefault(p.user_id, []).append(p)
+
+        avail_map: dict[tuple[int, int], Any] = {}
+        for uid, user_patterns in patterns_by_user.items():
+            for week in range(1, 54):
+                m, d, n, max_visits = _compute_strict_daypart_caps(
+                    user_patterns, week, year
+                )
+                # Apply max_visits_per_week cap with first-fit deduction
+                # (morning → daytime → nighttime).
+                cap = max_visits if max_visits is not None else 7
+                remaining = cap
+                m_eff = min(m, remaining)
+                remaining -= m_eff
+                d_eff = min(d, remaining)
+                remaining -= d_eff
+                n_eff = min(n, remaining)
+
+                if m_eff + d_eff + n_eff > 0:
+                    avail_map[(uid, week)] = SimpleNamespace(
+                        morning_days=m_eff,
+                        daytime_days=d_eff,
+                        nighttime_days=n_eff,
+                        flex_days=0,
+                    )
+
+        return avail_map
+
+    @staticmethod
     async def _load_availability_map(
         db: AsyncSession, year: int
-    ) -> dict[tuple[int, int], AvailabilityWeek]:
+    ) -> dict[tuple[int, int], Any]:
         """Load availability rows and index them by (user_id, week).
+
+        When FEATURE_STRICT_AVAILABILITY is enabled, derives capacity from
+        AvailabilityPattern records instead of AvailabilityWeek rows.
 
         Args:
             db: Async SQLAlchemy session.
-            year: ISO year for which the solver runs. The current
-                AvailabilityWeek model is only keyed by ISO week number,
-                so this value is currently not used for filtering.
+            year: ISO year for which the solver runs.
 
         Returns:
-            Mapping from (user_id, week) to AvailabilityWeek.
+            Mapping from (user_id, week) to an availability record.
         """
-
-        _ = year
+        from core.settings import get_settings
+        if get_settings().feature_strict_availability:
+            return await SeasonPlanningService._load_availability_map_strict(db, year)
 
         stmt = select(AvailabilityWeek).where(AvailabilityWeek.deleted_at.is_(None))
         rows = (await db.execute(stmt)).scalars().all()
@@ -2201,12 +2151,8 @@ class SeasonPlanningService:
     async def _load_all_availability(
         db: AsyncSession, start: date, end: date
     ) -> list[AvailabilityWeek]:
-        # Load simplistic sum of availability?
-        # Actually need breakdown for constraints.
-        # But for 'Season' we assume weekly buckets.
-        # ... fetch range ...
         return []
 
     @staticmethod
     def _week_id(d: date) -> int:
-        return d.isocalendar().week  # Simplified, handle year crossing later
+        return d.isocalendar().week

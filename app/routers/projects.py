@@ -2,25 +2,18 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status, Response
+from fastapi import APIRouter, HTTPException, Path, status, Response
 from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.deps import AdminDep, DbDep
 from app.models.project import Project
-from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectRead
-from app.services.security import require_admin
 from app.services.soft_delete import soft_delete_entity
 from app.services.activity_log_service import log_activity
-from db.session import get_db
 
 
 router = APIRouter()
-
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[User, Depends(require_admin)]
 
 
 @router.get("", response_model=list[ProjectRead])

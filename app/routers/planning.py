@@ -4,30 +4,24 @@ import logging
 from datetime import date, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Query, HTTPException, status
 from sqlalchemy import select, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.visit import Visit
 from app.models.cluster import Cluster
 from app.models.user import User
 from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
+from app.deps import AdminDep, DbDep
 from app.services.activity_log_service import log_activity
-from app.services.security import require_admin
 from app.services.visit_planning_selection import select_visits_for_week
 from app.services.planning_run_errors import PlanningRunError
-from db.session import get_db
 
 
 _logger = logging.getLogger("uvicorn.error")
 
 
 router = APIRouter()
-
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[User, Depends(require_admin)]
 
 
 def _work_week_bounds(current_year: int, iso_week: int) -> tuple[date, date]:

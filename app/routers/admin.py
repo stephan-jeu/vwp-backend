@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import Annotated
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from sqlalchemy import Select, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.activity_log import ActivityLog
@@ -22,7 +21,7 @@ from app.schemas.trash import TrashItem, TrashKind
 from app.services.activity_log_service import log_activity
 from app.services.season_planning_service import SeasonPlanningService
 from app.services.planning_run_errors import PlanningRunError
-from app.services.security import require_admin
+from app.deps import AdminDep, DbDep
 from app.services.user_service import (
     list_users_full as svc_list_users_full,
     create_user as svc_create_user,
@@ -36,16 +35,11 @@ from app.services.trash_service import (
 )
 from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
 from core.settings import get_settings
-from db.session import get_db
 
 
 router = APIRouter()
 
 _settings = get_settings()
-
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[User, Depends(require_admin)]
 
 
 @router.get("/tight-visits", response_model=list[TightVisitResponse])

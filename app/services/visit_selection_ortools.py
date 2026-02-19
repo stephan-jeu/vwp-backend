@@ -317,6 +317,57 @@ async def select_visits_cp_sat(
     v_map = {i: v for i, v in enumerate(visits)}
     u_map = {i: u for i, u in enumerate(users)}
 
+    # Pre-fetch cluster-to-cluster travel times for consecutive-daypart proximity
+    # constraint (strict availability mode only).
+    # Consecutive pairs: Ochtend→Dag and Dag→Avond (same day), Avond→Ochtend (overnight).
+    _CONSEC_SAME_DAY: set[tuple[str, str]] = {("Ochtend", "Dag"), ("Dag", "Avond")}
+    _OVERNIGHT_PAIR: tuple[str, str] = ("Avond", "Ochtend")
+    consec_cluster_travel: dict[tuple[str, str], int] = {}
+
+    if include_travel_time and get_settings().feature_strict_availability:
+        from app.services import travel_time as _tt_consec
+
+        _consec_pairs: list[tuple[str, str]] = []
+        _consec_pair_indices: dict[tuple[str, str], list[tuple[int, int]]] = {}
+
+        def _full_addr(cluster) -> str | None:
+            addr = getattr(cluster, "address", None)
+            if not addr:
+                return None
+            addr = addr.strip()
+            is_coords = bool(
+                re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
+                or re.match(r"^\d+°", addr)
+            )
+            if not is_coords:
+                loc = getattr(getattr(cluster, "project", None), "location", None)
+                if loc:
+                    addr = f"{addr}, {loc}"
+            return addr
+
+        for i1, v1 in v_map.items():
+            p1 = (getattr(v1, "part_of_day", None) or "").strip()
+            addr1 = _full_addr(getattr(v1, "cluster", None))
+            if not addr1 or not p1:
+                continue
+            for i2, v2 in v_map.items():
+                if i1 == i2:
+                    continue
+                p2 = (getattr(v2, "part_of_day", None) or "").strip()
+                if (p1, p2) not in _CONSEC_SAME_DAY and (p1, p2) != _OVERNIGHT_PAIR:
+                    continue
+                addr2 = _full_addr(getattr(v2, "cluster", None))
+                if not addr2:
+                    continue
+                key = (addr1, addr2)
+                _consec_pairs.append(key)
+                _consec_pair_indices.setdefault(key, []).append((i1, i2))
+
+        if _consec_pairs:
+            consec_cluster_travel = await _tt_consec.get_travel_minutes_batch(
+                _consec_pairs
+            )
+
     part_labels = ["Ochtend", "Dag", "Avond"]
 
     # Weights based on rank: First items (highest priority/deadline) get highest weight
@@ -427,6 +478,8 @@ async def select_visits_cp_sat(
             model.Add(sum(total_flex_usage) <= flex_max)
 
     # 2d. Strict Day Coordination
+    # In strict availability mode researchers may do 2 visits per day (double visits).
+    max_visits_per_day = 2 if get_settings().feature_strict_availability else 1
     for j in u_map:
         for d in range(5):
             active_vars = [
@@ -435,7 +488,74 @@ async def select_visits_cp_sat(
                 if (i, j, d) in active_assignment
             ]
             if active_vars:
-                model.Add(sum(active_vars) <= 1)
+                model.Add(sum(active_vars) <= max_visits_per_day)
+
+    # 2e. Consecutive-daypart proximity constraint (strict availability mode only).
+    # When a researcher is assigned two visits in consecutive dayparts — either on
+    # the same day (Ochtend→Dag, Dag→Avond) or overnight (Avond on day D →
+    # Ochtend on day D+1) — the clusters must be ≤30 minutes apart.  If the
+    # pre-fetched travel time exceeds 30 minutes, forbid that combination.
+    if get_settings().feature_strict_availability and consec_cluster_travel:
+
+        def _full_addr_constraint(cluster) -> str | None:
+            addr = getattr(cluster, "address", None)
+            if not addr:
+                return None
+            addr = addr.strip()
+            is_coords = bool(
+                re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
+                or re.match(r"^\d+°", addr)
+            )
+            if not is_coords:
+                loc = getattr(getattr(cluster, "project", None), "location", None)
+                if loc:
+                    addr = f"{addr}, {loc}"
+            return addr
+
+        for i1, v1 in v_map.items():
+            p1 = (getattr(v1, "part_of_day", None) or "").strip()
+            addr1 = _full_addr_constraint(getattr(v1, "cluster", None))
+            if not addr1 or not p1:
+                continue
+            for i2, v2 in v_map.items():
+                if i1 == i2:
+                    continue
+                p2 = (getattr(v2, "part_of_day", None) or "").strip()
+                is_same_day = (p1, p2) in _CONSEC_SAME_DAY
+                is_overnight = (p1, p2) == _OVERNIGHT_PAIR
+                if not is_same_day and not is_overnight:
+                    continue
+                addr2 = _full_addr_constraint(getattr(v2, "cluster", None))
+                if not addr2:
+                    continue
+                travel = consec_cluster_travel.get((addr1, addr2))
+                if travel is None or travel <= 30:
+                    continue
+                # Travel time exceeds 30 min: forbid assigning the same researcher
+                # to both visits in this consecutive order.
+                for j in u_map:
+                    if (i1, j) not in x or (i2, j) not in x:
+                        continue
+                    if is_same_day:
+                        for d in range(5):
+                            if (i1, j, d) in active_assignment and (
+                                i2, j, d
+                            ) in active_assignment:
+                                model.Add(
+                                    active_assignment[i1, j, d]
+                                    + active_assignment[i2, j, d]
+                                    <= 1
+                                )
+                    else:  # overnight: v1 is Avond on day d, v2 is Ochtend on day d+1
+                        for d in range(4):
+                            if (i1, j, d) in active_assignment and (
+                                i2, j, d + 1
+                            ) in active_assignment:
+                                model.Add(
+                                    active_assignment[i1, j, d]
+                                    + active_assignment[i2, j, d + 1]
+                                    <= 1
+                                )
 
     # --- Objective ---
     obj_terms = []
@@ -730,6 +850,48 @@ async def select_visits_cp_sat(
                 model.AddBoolOr([has_en.Not(), has_nl]).OnlyEnforceIf(violation.Not())
                 
                 obj_terms.append(violation * -LANGUAGE_TEAMING_PENALTY)
+
+    # 8. Daily Cluster Spread (feature_daily_planning only)
+    # Preference: Avoid scheduling two visits to the same cluster on the same day
+    # or consecutive days (prefer > 1 day gap between visits to the same cluster).
+    # Penalty per "too close" visit pair (same or adjacent day).
+    if settings.feature_daily_planning:
+        DAILY_SPREAD_PENALTY = 25
+
+        cluster_visit_indices: dict[int, list[int]] = {}
+        for i, v in v_map.items():
+            cid = getattr(v, "cluster_id", None)
+            if cid is not None:
+                cluster_visit_indices.setdefault(cid, []).append(i)
+
+        for cid, v_indices in cluster_visit_indices.items():
+            if len(v_indices) < 2:
+                continue
+
+            for k1 in range(len(v_indices)):
+                for k2 in range(k1 + 1, len(v_indices)):
+                    i1 = v_indices[k1]
+                    i2 = v_indices[k2]
+
+                    for d1 in range(5):
+                        if (i1, d1) not in visit_day:
+                            continue
+                        for d2 in range(5):
+                            if (i2, d2) not in visit_day:
+                                continue
+                            if abs(d1 - d2) > 1:
+                                continue
+                            # Both visits land on the same or adjacent day -> penalize
+                            close_var = model.NewBoolVar(
+                                f"cluster_close_{i1}_{i2}_{d1}_{d2}"
+                            )
+                            model.AddBoolAnd(
+                                [visit_day[i1, d1], visit_day[i2, d2]]
+                            ).OnlyEnforceIf(close_var)
+                            model.AddBoolOr(
+                                [visit_day[i1, d1].Not(), visit_day[i2, d2].Not()]
+                            ).OnlyEnforceIf(close_var.Not())
+                            obj_terms.append(close_var * -DAILY_SPREAD_PENALTY)
 
     # --- Heuristic Hint Injection ---
 

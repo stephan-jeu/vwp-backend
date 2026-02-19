@@ -3,11 +3,10 @@ from __future__ import annotations
 from typing import Annotated
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import and_, cast, delete, func, insert, or_, select
 from sqlalchemy.types import String
 from sqlalchemy.orm import selectinload
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cluster import Cluster
 from app.models.function import Function
@@ -43,8 +42,8 @@ from app.schemas.visit import (
     VisitRejectionRequest,
     VisitUpdate,
 )
+from app.deps import AdminDep, DbDep, UserDep
 from app.services.activity_log_service import log_activity
-from app.services.security import get_current_user, require_admin
 from app.services.soft_delete import soft_delete_entity
 from app.services.visit_planning_selection import _qualifies_user_for_visit
 from app.services.visit_status_service import (
@@ -54,15 +53,10 @@ from app.services.visit_status_service import (
     resolve_visit_statuses,
 )
 from app.services.visit_execution_updates import update_subsequent_visits
+from app.services.visit_code_service import compute_visit_code
 from core.settings import get_settings
-from db.session import get_db
 
 router = APIRouter()
-
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[User, Depends(require_admin)]
-UserDep = Annotated[User, Depends(get_current_user)]
 
 
 def _validate_planning_locked_payload(
@@ -397,6 +391,9 @@ async def list_visits(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
+            selectinload(Visit.protocol_visit_windows).selectinload(
+                ProtocolVisitWindow.protocol
+            ),
         )
     )
     visits = (await db.execute(visit_stmt)).scalars().all()
@@ -428,6 +425,7 @@ async def list_visits(
     else:
         page_items = visits
 
+    enable_visit_code = settings.enable_visit_code
     items = []
     for v in page_items:
         cluster = v.cluster
@@ -485,6 +483,7 @@ async def list_visits(
                 "quote": v.quote,
                 "provisional_week": v.provisional_week,
                 "provisional_locked": v.provisional_locked,
+                "visit_code": compute_visit_code(v) if enable_visit_code else None,
             }
         )
 
@@ -517,6 +516,9 @@ async def get_visit_detail(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
+            selectinload(Visit.protocol_visit_windows).selectinload(
+                ProtocolVisitWindow.protocol
+            ),
         )
     )
     visit = (await db.execute(stmt)).scalars().first()
@@ -576,6 +578,7 @@ async def get_visit_detail(
         quote=visit.quote,
         provisional_week=visit.provisional_week,
         provisional_locked=visit.provisional_locked,
+        visit_code=compute_visit_code(visit) if settings.enable_visit_code else None,
     )
 
 
@@ -688,6 +691,9 @@ async def list_advertised_visits(
             selectinload(Visit.functions),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
+            selectinload(Visit.protocol_visit_windows).selectinload(
+                ProtocolVisitWindow.protocol
+            ),
         )
     )
     visits = (await db.execute(stmt)).scalars().all()
@@ -799,6 +805,7 @@ async def list_advertised_visits(
                 quote=v.quote,
                 advertized_by=advertised_by,
                 can_accept=can_accept,
+                visit_code=compute_visit_code(v) if settings.enable_visit_code else None,
             )
         )
 
@@ -1283,6 +1290,9 @@ async def list_visits_for_audit(
         selectinload(Visit.functions),
         selectinload(Visit.species).selectinload(Species.family),
         selectinload(Visit.researchers),
+        selectinload(Visit.protocol_visit_windows).selectinload(
+            ProtocolVisitWindow.protocol
+        ),
     )
     visits = (await db.execute(stmt)).scalars().all()
 
@@ -1394,6 +1404,7 @@ async def list_visits_for_audit(
                 ],
                 advertized=v.advertized,
                 quote=v.quote,
+                visit_code=compute_visit_code(v) if settings.enable_visit_code else None,
             )
         )
 

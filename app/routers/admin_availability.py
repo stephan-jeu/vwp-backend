@@ -2,22 +2,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Path, Query
 
+from app.deps import AdminDep, DbDep
 from app.schemas.availability import (
     AvailabilityCellUpdate,
     AvailabilityListResponse,
     AvailabilityWeekOut,
 )
 from app.services.availability_service import list_by_week_range, upsert_cell
-from app.services.security import require_admin
-from db.session import get_db
 
 router = APIRouter()
-
-DbDep = Annotated[AsyncSession, Depends(get_db)]
-AdminDep = Annotated[object, Depends(require_admin)]
 
 
 @router.get("/availability", response_model=AvailabilityListResponse)
