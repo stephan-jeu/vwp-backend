@@ -11,6 +11,8 @@ from ortools.sat.python import cp_model
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.utils import select_active
+
 from app.models.cluster import Cluster
 from app.models.protocol import Protocol
 from app.models.visit import Visit
@@ -978,7 +980,7 @@ async def generate_visits_cp_sat(
         new_visit.sleutel = default_sleutel
 
         if default_researcher_ids:
-            stmt_users = select(User).where(User.id.in_(default_researcher_ids))
+            stmt_users = select_active(User).where(User.id.in_(default_researcher_ids))
             new_visit.researchers = (
                 (await db.execute(stmt_users)).scalars().unique().all()
             )
@@ -1217,7 +1219,7 @@ async def generate_visits_cp_sat(
     # To fix restart-from-1 issue when adding visits, we fetch ALL existing visits for this cluster.
 
     # 1. Fetch existing visits
-    stmt = select(Visit).where(Visit.cluster_id == cluster.id)
+    stmt = select_active(Visit).where(Visit.cluster_id == cluster.id)
     result = await db.execute(stmt)
     existing_visits = result.scalars().all()
 

@@ -20,7 +20,7 @@ class PlanningVisitRead(BaseModel):
 
     id: int
     project_code: str
-    cluster_number: int
+    cluster_number: str
     functions: list[str]
     species: list[str]
     from_date: date | None = None

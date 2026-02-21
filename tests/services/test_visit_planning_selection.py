@@ -5,8 +5,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
-from app.services.visit_planning_selection import select_visits_for_week
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.visit_planning_selection import select_visits_for_week, _apply_existing_assignments_to_capacities
 
 
 # ---- Test helpers -------------------------------------------------------------
@@ -1526,3 +1528,43 @@ async def test_eligible_visits_query_filters_quote_projects(week_monday: date):
     # Ensure the generated query joins the projects table and references the quote flag
     assert "projects" in sql_str
     assert "quote" in sql_str
+
+
+@pytest.mark.asyncio
+async def test_apply_existing_assignments_uses_select_active():
+    """Verify that _apply_existing_assignments_to_capacities filters out soft-deleted visits."""
+
+    # Mock DB session
+    # We use MagicMock(spec=AsyncSession) because isinstance check requires it.
+    # We assign execute as AsyncMock separately.
+    db = MagicMock(spec=AsyncSession)
+    db.execute = AsyncMock()
+
+    mock_result = MagicMock()
+    # Return empty list to avoid processing logic errors, we only care about the query
+    mock_result.scalars.return_value.unique.return_value.all.return_value = []
+    db.execute.return_value = mock_result
+
+    # Mock caps dict
+    caps = {"Ochtend": 10, "Dag": 5, "Avond": 5, "Flex": 2}
+    week = 22
+
+    # Call the function with empty per_user_daypart_caps
+    await _apply_existing_assignments_to_capacities(db, week, caps, {})
+
+    # Verify db.execute was called
+    assert db.execute.called
+    stmt = db.execute.call_args[0][0]
+
+    # Verify "deleted_at IS NULL" is in the generated SQL
+    # Simple check: string representation often contains the WHERE clause components
+    try:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    except Exception:
+        compiled = str(stmt)
+
+    compiled_lower = compiled.lower()
+
+    # Expect: "visit.deleted_at IS NULL" or similar
+    assert "deleted_at" in compiled_lower
+    assert "is null" in compiled_lower or "is_null" in compiled_lower

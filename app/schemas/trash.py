@@ -42,7 +42,7 @@ class TrashItem(BaseModel):
     kind: TrashKind
     label: str
     project_code: str | None = None
-    cluster_number: int | None = None
+    cluster_number: str | None = None
     visit_nr: int | None = None
     deleted_at: datetime
 

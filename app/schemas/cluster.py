@@ -35,7 +35,8 @@ class ClusterCreate(BaseModel):
 
     project_id: int
     address: str = Field(min_length=1, max_length=255)
-    cluster_number: int
+    location: str | None = None
+    cluster_number: str
     combos: list[SpeciesFunctionCombo] = Field(default_factory=list)
     default_required_researchers: int | None = None
     default_planned_week: int | None = None
@@ -53,8 +54,9 @@ class ClusterCreate(BaseModel):
 class ClusterDuplicate(BaseModel):
     """Payload to duplicate a cluster into a new cluster row."""
 
-    cluster_number: int
+    cluster_number: str
     address: str = Field(min_length=1, max_length=255)
+    location: str | None = None
 
 
 class ClusterUpdate(BaseModel):
@@ -62,9 +64,11 @@ class ClusterUpdate(BaseModel):
 
     Attributes:
         address: New address string.
+        location: Optional location override (replaces project location).
     """
 
     address: str = Field(min_length=1, max_length=255)
+    location: str | None = None
 
 
 class VisitReadCompact(BaseModel):
@@ -111,7 +115,8 @@ class ClusterRead(BaseModel):
     id: int
     project_id: int
     address: str
-    cluster_number: int
+    location: str | None = None
+    cluster_number: str
 
 
 class ClusterWithVisitsRead(ClusterRead):
@@ -149,7 +154,7 @@ class ClusterVisitRow(BaseModel):
 
     id: int
     cluster_id: int
-    cluster_number: int
+    cluster_number: str
     cluster_address: str
     function_ids: list[int]
     species_ids: list[int]

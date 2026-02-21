@@ -27,6 +27,11 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("FEATURE_STRICT_AVAILABILITY", "false").lower() in {"1", "true", "yes"}
     )
 
+    # Feature: Advertise (Hulp gevraagd / Vraag iemand anders)
+    feature_advertise: bool = Field(
+        default_factory=lambda: os.getenv("FEATURE_ADVERTISE", "true").lower() in {"1", "true", "yes"}
+    )
+
     # Feature: Visit Code (Condensed species/function/daypart codes on visits)
     enable_visit_code: bool = Field(
         default_factory=lambda: os.getenv("ENABLE_VISIT_CODE", "false").lower() in {"1", "true", "yes"}

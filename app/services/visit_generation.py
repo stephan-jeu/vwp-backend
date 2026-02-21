@@ -13,6 +13,7 @@ from app.models.function import Function
 from app.models.protocol import Protocol
 from app.models.species import Species
 from app.models.visit import Visit
+from app.db.utils import select_active
 
 from .visit_generation_ortools import generate_visits_cp_sat
 
@@ -135,6 +136,7 @@ async def duplicate_cluster_with_visits(
     source_cluster: Cluster,
     new_number: int,
     new_address: str,
+    new_location: str | None = None,
 ) -> Cluster:
     """Duplicate a cluster and copy all its visits with new sequencing.
 
@@ -144,6 +146,7 @@ async def duplicate_cluster_with_visits(
     new_cluster = Cluster(
         project_id=source_cluster.project_id,
         address=new_address,
+        location=new_location,
         cluster_number=new_number,
     )
     db.add(new_cluster)
@@ -152,7 +155,7 @@ async def duplicate_cluster_with_visits(
     visits = (
         (
             await db.execute(
-                select(Visit)
+                select_active(Visit)
                 .where(Visit.cluster_id == source_cluster.id)
                 .options(
                     selectinload(Visit.functions),

@@ -7,6 +7,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
 
 from app.deps import AdminDep, DbDep
+from app.db.utils import select_active
 from app.models.project import Project
 from app.schemas.project import ProjectCreate, ProjectRead
 from app.services.soft_delete import soft_delete_entity
@@ -28,7 +29,7 @@ async def list_projects(_: AdminDep, db: DbDep) -> list[Project]:
         List of `Project` rows.
     """
 
-    stmt: Select[tuple[Project]] = select(Project).order_by(Project.code)
+    stmt: Select[tuple[Project]] = select_active(Project).order_by(Project.code)
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
@@ -43,6 +44,7 @@ async def create_project(admin: AdminDep, db: DbDep, payload: ProjectCreate) -> 
     project = Project(
         code=payload.code,
         location=payload.location,
+        customer=payload.customer,
         google_drive_folder=payload.google_drive_folder,
         quote=payload.quote,
     )
@@ -88,6 +90,7 @@ async def update_project(
 
     project.code = payload.code
     project.location = payload.location
+    project.customer = payload.customer
     project.google_drive_folder = payload.google_drive_folder
     project.quote = payload.quote
     try:

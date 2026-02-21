@@ -13,6 +13,7 @@ from app.models.cluster import Cluster
 from app.models.user import User
 from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
 from app.deps import AdminDep, DbDep
+from app.db.utils import select_active
 from app.services.activity_log_service import log_activity
 from app.services.visit_planning_selection import select_visits_for_week
 from app.services.planning_run_errors import PlanningRunError
@@ -42,7 +43,7 @@ async def get_planning(
     work week (Mon–Fri) of the current year for the given ISO week.
     """
 
-    stmt = select(Visit).options(
+    stmt = select_active(Visit).options(
         selectinload(Visit.researchers),
         selectinload(Visit.functions),
         selectinload(Visit.species),
@@ -74,7 +75,7 @@ async def get_planning(
             if getattr(v, "cluster", None) and getattr(v.cluster, "project", None)
             else ""
         )
-        cluster_number = getattr(getattr(v, "cluster", None), "cluster_number", 0)
+        cluster_number = getattr(getattr(v, "cluster", None), "cluster_number", "")
         functions = [f.name for f in (v.functions or []) if getattr(f, "name", None)]
         species = [s.name for s in (v.species or []) if getattr(s, "name", None)]
         researchers = [u.full_name or "" for u in (v.researchers or [])]
@@ -83,7 +84,7 @@ async def get_planning(
             PlanningVisitRead(
                 id=v.id,
                 project_code=project_code,
-                cluster_number=cluster_number or 0,
+                cluster_number=cluster_number or "",
                 functions=sorted(set(functions)),
                 species=sorted(set(species)),
                 from_date=v.from_date,
@@ -196,7 +197,7 @@ async def clear_planned_researchers(
 
     week = getattr(payload, "week", None) if payload else None
 
-    stmt = select(Visit)
+    stmt = select_active(Visit)
     if week is not None:
         week_start, week_end = _work_week_bounds(date.today().year, week)
         stmt = stmt.where(
@@ -232,3 +233,24 @@ async def clear_planned_researchers(
     await db.commit()
 
     return {"cleared": len(visits)}
+
+
+@router.post("/{year}/{week}/notify")
+async def notify_planning(
+    admin: AdminDep,
+    db: DbDep,
+    year: int,
+    week: int,
+) -> dict:
+    """Send email notifications to researchers for their planned visits in this week."""
+    from app.services.planning_notification_service import send_planning_emails_for_week
+
+    result = await send_planning_emails_for_week(db, week, year)
+    
+    if result["total"] == 0:
+        return {"message": "Geen onderzoekers met geplande bezoeken gevonden voor deze week.", "stats": result}
+        
+    return {
+        "message": f"Emails verstuurd: {result['sent']} van {result['total']} ({result['failed']} mislukt)",
+        "stats": result
+    }

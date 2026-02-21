@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate, UserBase
 from app.services.soft_delete import soft_delete_entity
+from app.db.utils import select_active
 
 
 def _enum_to_value(value: Any, enum_cls: type[Enum]) -> Any:
@@ -45,7 +46,7 @@ async def list_users_full(db: AsyncSession, q: str | None = None) -> list[User]:
     Returns:
         List of User rows ordered by full_name.
     """
-    stmt: Select[tuple[User]] = select(User).order_by(User.full_name)
+    stmt: Select[tuple[User]] = select_active(User).order_by(User.full_name)
     if q:
         like = f"%{q}%"
         stmt = stmt.where((User.full_name.ilike(like)) | (User.email.ilike(like)))
@@ -68,7 +69,7 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
     
     # Validation: Check if email already exists
     existing = await db.execute(
-        select(User).where(User.email == data["email"], User.deleted_at == None)
+        select_active(User).where(User.email == data["email"])
     )
     if existing.scalar_one_or_none():
          raise HTTPException(
@@ -115,7 +116,7 @@ async def update_user(db: AsyncSession, user_id: int, payload: UserUpdate) -> Us
     # Validation: Check if email already exists (if changing)
     if "email" in data and data["email"] != row.email:
         existing = await db.execute(
-            select(User).where(User.email == data["email"], User.deleted_at == None)
+            select_active(User).where(User.email == data["email"])
         )
         if existing.scalar_one_or_none():
              raise HTTPException(
@@ -168,7 +169,7 @@ async def get_user_by_reset_token(db: AsyncSession, token: str) -> User | None:
     # Context suggests we might use one endpoint for both.
     
     # Check activation token first
-    stmt = select(User).where(User.activation_token == token, User.deleted_at == None)
+    stmt = select_active(User).where(User.activation_token == token)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if user:
@@ -176,7 +177,7 @@ async def get_user_by_reset_token(db: AsyncSession, token: str) -> User | None:
         
     # Check reset token
     # TODO: Check expiry
-    stmt = select(User).where(User.reset_password_token == token, User.deleted_at == None)
+    stmt = select_active(User).where(User.reset_password_token == token)
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 

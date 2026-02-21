@@ -2046,7 +2046,7 @@ class SeasonPlanningService:
             List of visits matching the criteria.
         """
         stmt = (
-            select(Visit)
+            select_active(Visit)
             .join(Cluster, Visit.cluster_id == Cluster.id)
             .join(Project, Cluster.project_id == Project.id)
             .where(
@@ -2068,7 +2068,7 @@ class SeasonPlanningService:
 
     @staticmethod
     async def _load_all_users(db: AsyncSession) -> list[User]:
-        stmt = select(User).where(User.deleted_at.is_(None))
+        stmt = select_active(User)
         return (await db.execute(stmt)).scalars().all()
 
     @staticmethod
@@ -2088,9 +2088,7 @@ class SeasonPlanningService:
         from app.models.availability_pattern import AvailabilityPattern
         from app.services.visit_planning_selection import _compute_strict_daypart_caps
 
-        stmt = select(AvailabilityPattern).where(
-            AvailabilityPattern.deleted_at.is_(None)
-        )
+        stmt = select_active(AvailabilityPattern)
         all_patterns = (await db.execute(stmt)).scalars().all()
 
         patterns_by_user: dict[int, list] = {}

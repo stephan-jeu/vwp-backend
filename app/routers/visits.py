@@ -4,8 +4,7 @@ from typing import Annotated
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
-from sqlalchemy import and_, cast, delete, func, insert, or_, select
-from sqlalchemy.types import String
+from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.models.cluster import Cluster
@@ -45,6 +44,7 @@ from app.schemas.visit import (
 from app.deps import AdminDep, DbDep, UserDep
 from app.services.activity_log_service import log_activity
 from app.services.soft_delete import soft_delete_entity
+from app.db.utils import select_active
 from app.services.visit_planning_selection import _qualifies_user_for_visit
 from app.services.visit_status_service import (
     VisitStatusCode,
@@ -121,6 +121,7 @@ async def _resolve_pvw_ids_for_visit(
             .join(visit_species, visit_species.c.visit_id == Visit.id)
             .where(
                 Visit.cluster_id == cluster_id,
+                Visit.deleted_at.is_(None),
                 Visit.visit_nr.is_not(None),
                 Visit.visit_nr < visit_nr,
                 visit_functions.c.function_id == protocol.function_id,
@@ -167,6 +168,7 @@ async def list_available_weeks(
     stmt = stmt.where(
         (Visit.planned_week.is_not(None)) | (Visit.from_date.is_not(None))
     )
+    stmt = stmt.where(Visit.deleted_at.is_(None))
 
     rows = await db.execute(stmt)
     weeks = set()
@@ -249,7 +251,7 @@ async def list_visits(
     search: Annotated[str | None, Query()] = None,
     statuses: Annotated[list[VisitStatusCode] | None, Query()] = None,
     week: Annotated[int | None, Query(ge=1, le=53)] = None,
-    cluster_number: Annotated[int | None, Query(ge=1)] = None,
+    cluster_number: Annotated[str | None, Query()] = None,
     function_ids: Annotated[list[int] | None, Query()] = None,
     species_ids: Annotated[list[int] | None, Query()] = None,
     simulated_today: Annotated[date | None, Query()] = None,
@@ -277,85 +279,27 @@ async def list_visits(
     Returns:
         Paginated :class:`VisitListResponse` with flattened rows.
     """
+    from app.services.visit_query_service import (
+        apply_visit_filters,
+        get_visit_loading_stmt,
+        get_visit_selection_stmt,
+    )
 
     settings = get_settings()
     effective_today: date | None = None
     if settings.test_mode_enabled and getattr(current_user, "admin", False):
         effective_today = simulated_today
 
-    stmt = (
-        select(Visit.id)
-        .join(Cluster, Visit.cluster_id == Cluster.id)
-        .join(Project, Cluster.project_id == Project.id, isouter=True)
+    stmt = get_visit_selection_stmt()
+    stmt = apply_visit_filters(
+        stmt,
+        search=search,
+        week=week,
+        cluster_number=cluster_number,
+        function_ids=function_ids,
+        species_ids=species_ids,
+        unplanned_only=unplanned_only,
     )
-    stmt = stmt.where(or_(Project.quote.is_(False), Project.quote.is_(None)))
-
-    # --- Week Filtering ---
-    # We filter early if week is provided, to narrow down dataset before other filters
-    if week is not None:
-        stmt = stmt.where(
-            or_(
-                Visit.planned_week == week,
-                Visit.provisional_week == week,
-                and_(
-                    Visit.planned_week.is_(None),
-                    Visit.provisional_week.is_(None),
-                    func.extract("week", Visit.from_date) == week,
-                ),
-            )
-        )
-
-    if unplanned_only:
-        stmt = stmt.where(
-            Visit.provisional_week.is_(None), Visit.planned_week.is_(None)
-        )
-
-    if cluster_number is not None:
-        stmt = stmt.where(Cluster.cluster_number == cluster_number)
-
-    joined_functions = False
-    joined_species = False
-    if function_ids:
-        stmt = stmt.join(visit_functions, Visit.id == visit_functions.c.visit_id)
-        stmt = stmt.where(visit_functions.c.function_id.in_(function_ids))
-        joined_functions = True
-
-    if species_ids:
-        stmt = stmt.join(visit_species, Visit.id == visit_species.c.visit_id)
-        stmt = stmt.where(visit_species.c.species_id.in_(species_ids))
-        joined_species = True
-
-    # Optional text search across project, cluster and related names
-    if search:
-        term = search.strip().lower()
-        like = f"%{term}%"
-        if not joined_functions:
-            stmt = stmt.outerjoin(
-                visit_functions, Visit.id == visit_functions.c.visit_id
-            )
-        stmt = stmt.outerjoin(Function, Function.id == visit_functions.c.function_id)
-        if not joined_species:
-            stmt = stmt.outerjoin(visit_species, Visit.id == visit_species.c.visit_id)
-        stmt = stmt.outerjoin(Species, Species.id == visit_species.c.species_id)
-        stmt = stmt.outerjoin(
-            visit_researchers, Visit.id == visit_researchers.c.visit_id
-        )
-        stmt = stmt.outerjoin(User, User.id == visit_researchers.c.user_id)
-
-        stmt = stmt.where(
-            or_(
-                func.lower(Project.code).like(like),
-                func.lower(Project.location).like(like),
-                func.lower(Cluster.address).like(like),
-                cast(Cluster.cluster_number, String).like(like),
-                func.lower(Function.name).like(like),
-                func.lower(Species.name).like(like),
-                func.lower(Species.abbreviation).like(like),
-                func.lower(User.full_name).like(like),
-                func.lower(Visit.custom_function_name).like(like),
-                func.lower(Visit.custom_species_name).like(like),
-            )
-        )
 
     stmt = stmt.distinct(Visit.id)
 
@@ -383,20 +327,8 @@ async def list_visits(
     if not visit_ids:
         return VisitListResponse(items=[], total=total, page=page, page_size=page_size)
 
-    visit_stmt = (
-        select(Visit)
-        .where(Visit.id.in_(visit_ids))
-        .options(
-            selectinload(Visit.cluster).selectinload(Cluster.project),
-            selectinload(Visit.functions),
-            selectinload(Visit.species).selectinload(Species.family),
-            selectinload(Visit.researchers),
-            selectinload(Visit.protocol_visit_windows).selectinload(
-                ProtocolVisitWindow.protocol
-            ),
-        )
-    )
-    visits = (await db.execute(visit_stmt)).scalars().all()
+    stmt_visits = get_visit_loading_stmt(visit_ids)
+    visits = (await db.execute(stmt_visits)).scalars().all()
 
     # Derive lifecycle status for each visit once, then filter by status
     status_map = await resolve_visit_statuses(db, visits, today=effective_today)
@@ -411,7 +343,7 @@ async def list_visits(
         project: Project | None = getattr(cluster, "project", None)
         from_date = v.from_date or date.max
         project_code = project.code if project else ""
-        cluster_number = cluster.cluster_number if cluster else 0
+        cluster_number = cluster.cluster_number if cluster else ""
         visit_nr = v.visit_nr or 0
         return (from_date, project_code, cluster_number, visit_nr)
 
@@ -439,11 +371,12 @@ async def list_visits(
                 "id": v.id,
                 "project_code": project_code,
                 "project_location": project_location,
+                "project_customer": project.customer if project else None,
                 "project_google_drive_folder": (
                     project.google_drive_folder if project else None
                 ),
                 "cluster_id": cluster.id if cluster else 0,
-                "cluster_number": cluster.cluster_number if cluster else 0,
+                "cluster_number": cluster.cluster_number if cluster else "",
                 "cluster_address": cluster.address if cluster else "",
                 "status": status,
                 "function_ids": [f.id for f in v.functions],
@@ -490,6 +423,165 @@ async def list_visits(
     return VisitListResponse(items=items, total=total, page=page, page_size=page_size)
 
 
+@router.get("/export", response_class=Response)
+async def export_visits(
+    current_user: UserDep,
+    db: DbDep,
+    search: Annotated[str | None, Query()] = None,
+    statuses: Annotated[list[VisitStatusCode] | None, Query()] = None,
+    week: Annotated[int | None, Query(ge=1, le=53)] = None,
+    cluster_number: Annotated[str | None, Query()] = None,
+    function_ids: Annotated[list[int] | None, Query()] = None,
+    species_ids: Annotated[list[int] | None, Query()] = None,
+    simulated_today: Annotated[date | None, Query()] = None,
+    unplanned_only: Annotated[bool, Query()] = False,
+) -> Response:
+    """Export filtered visits to CSV."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    from app.services.visit_query_service import (
+        apply_visit_filters,
+        get_visit_loading_stmt,
+        get_visit_selection_stmt,
+    )
+
+    settings = get_settings()
+    effective_today: date | None = None
+    if settings.test_mode_enabled and getattr(current_user, "admin", False):
+        effective_today = simulated_today
+
+    stmt = get_visit_selection_stmt()
+    stmt = apply_visit_filters(
+        stmt,
+        search=search,
+        week=week,
+        cluster_number=cluster_number,
+        function_ids=function_ids,
+        species_ids=species_ids,
+        unplanned_only=unplanned_only,
+    )
+    stmt = stmt.distinct(Visit.id)
+
+    # Order consistent with list
+    order_from = func.coalesce(Visit.from_date, date(9999, 12, 31))
+    stmt = stmt.order_by(
+        Visit.id,
+        order_from,
+        Project.code,
+        Cluster.cluster_number,
+        Visit.visit_nr,
+    )
+
+    visit_ids = (await db.execute(stmt)).scalars().all()
+
+    if not visit_ids:
+        # Return empty csv
+        stream = io.StringIO()
+        csv.writer(stream).writerow(["Geen resultaten"])
+        stream.seek(0)
+        return StreamingResponse(
+            stream,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=bezoeken.csv"},
+        )
+
+    stmt_visits = get_visit_loading_stmt(visit_ids)
+    visits = (await db.execute(stmt_visits)).scalars().all()
+    status_map = await resolve_visit_statuses(db, visits, today=effective_today)
+
+    if statuses:
+        allowed = set(statuses)
+        visits = [v for v in visits if status_map.get(v.id) in allowed]
+
+    # Use same sorting
+    def _sort_key(v: Visit) -> tuple:
+        cluster = v.cluster
+        project: Project | None = getattr(cluster, "project", None)
+        from_date = v.from_date or date.max
+        project_code = project.code if project else ""
+        cluster_number = cluster.cluster_number if cluster else ""
+        visit_nr = v.visit_nr or 0
+        return (from_date, project_code, cluster_number, visit_nr)
+
+    visits.sort(key=_sort_key)
+
+    def iter_csv():
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        headers = [
+            "Projectcode",
+            "Locatie",
+            "Cluster",
+            "Bezoek nr",
+            "Status",
+            "Week/Datum",
+            "Functies",
+            "Soorten",
+            "Periode",
+            "Dagdeel",
+            "Onderzoekers",
+        ]
+        writer.writerow(headers)
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+
+        for v in visits:
+            cluster = v.cluster
+            project = getattr(cluster, "project", None)
+            project_code = project.code if project else ""
+            project_location = project.location if project else ""
+            status = status_map.get(v.id, VisitStatusCode.CREATED)
+            
+            date_str = ""
+            if v.planned_date:
+                date_str = v.planned_date.strftime("%d-%m-%Y")
+            elif v.planned_week:
+                date_str = f"Week {v.planned_week}"
+            elif v.provisional_week:
+                date_str = f"Week {v.provisional_week} (voorlopig)"
+
+            functions_str = ", ".join([f.name for f in v.functions])
+            if v.custom_function_name:
+                functions_str = v.custom_function_name
+
+            species_str = ", ".join([s.abbreviation or s.name for s in v.species])
+            if v.custom_species_name:
+                species_str = v.custom_species_name
+
+            period_str = ""
+            if v.from_date and v.to_date:
+                period_str = f"{v.from_date.strftime('%d-%m')} / {v.to_date.strftime('%d-%m')}"
+            
+            researchers_str = ", ".join([r.full_name or f"User {r.id}" for r in v.researchers])
+
+            writer.writerow([
+                project_code,
+                project_location,
+                cluster.cluster_number if cluster else "",
+                v.visit_nr or "",
+                status,
+                date_str,
+                functions_str,
+                species_str,
+                period_str,
+                v.part_of_day or "",
+                researchers_str
+            ])
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=bezoeken.csv"},
+    )
+
+
 @router.get("/{visit_id}", response_model=VisitListRow)
 async def get_visit_detail(
     current_user: UserDep,
@@ -509,7 +601,7 @@ async def get_visit_detail(
         effective_today = simulated_today
 
     stmt = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.id == visit_id)
         .options(
             selectinload(Visit.cluster).selectinload(Cluster.project),
@@ -532,15 +624,17 @@ async def get_visit_detail(
     project: Project | None = getattr(cluster, "project", None)
     project_code = project.code if project else ""
     project_location = project.location if project else ""
+    project_customer = project.customer if project else None
     project_google_drive_folder = project.google_drive_folder if project else None
 
     return VisitListRow(
         id=visit.id,
         project_code=project_code,
         project_location=project_location,
+        project_customer=project_customer,
         project_google_drive_folder=project_google_drive_folder,
         cluster_id=cluster.id if cluster else 0,
-        cluster_number=cluster.cluster_number if cluster else 0,
+        cluster_number=cluster.cluster_number if cluster else "",
         cluster_address=cluster.address if cluster else "",
         status=visit_status,
         function_ids=[f.id for f in visit.functions],
@@ -652,7 +746,7 @@ async def create_visit(
 
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
     stmt = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.id == visit.id)
         .options(
             selectinload(Visit.functions),
@@ -684,7 +778,7 @@ async def list_advertised_visits(
         effective_today = simulated_today
 
     stmt = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.advertized.is_(True))
         .options(
             selectinload(Visit.cluster).selectinload(Cluster.project),
@@ -761,11 +855,12 @@ async def list_advertised_visits(
                 id=v.id,
                 project_code=project_code,
                 project_location=project_location,
+                project_customer=project.customer if project else None,
                 project_google_drive_folder=(
                     project.google_drive_folder if project else None
                 ),
                 cluster_id=cluster.id if cluster else 0,
-                cluster_number=cluster.cluster_number if cluster else 0,
+                cluster_number=cluster.cluster_number if cluster else "",
                 cluster_address=cluster.address if cluster else "",
                 status=status,
                 function_ids=[f.id for f in v.functions],
@@ -1012,7 +1107,7 @@ async def update_visit(
     await db.commit()
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
     stmt = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.id == visit.id)
         .options(
             selectinload(Visit.functions),
@@ -1333,7 +1428,7 @@ async def list_visits_for_audit(
         project: Project | None = getattr(cluster, "project", None)
         from_date = v.from_date or date.max
         project_code = project.code if project else ""
-        cluster_number = cluster.cluster_number if cluster else 0
+        cluster_number = cluster.cluster_number if cluster else ""
         visit_nr = v.visit_nr or 0
         return (from_date, project_code, cluster_number, visit_nr)
 
@@ -1362,11 +1457,12 @@ async def list_visits_for_audit(
                 id=v.id,
                 project_code=project_code,
                 project_location=project_location,
+                project_customer=project.customer if project else None,
                 project_google_drive_folder=(
                     project.google_drive_folder if project else None
                 ),
                 cluster_id=cluster.id if cluster else 0,
-                cluster_number=cluster.cluster_number if cluster else 0,
+                cluster_number=cluster.cluster_number if cluster else "",
                 cluster_address=cluster.address if cluster else "",
                 status=status,
                 function_ids=[f.id for f in v.functions],

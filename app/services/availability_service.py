@@ -5,6 +5,7 @@ from typing import Sequence
 from sqlalchemy import Select, and_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.utils import select_active
 from app.models.availability import AvailabilityWeek
 from app.models.user import User
 from app.models.visit import Visit, visit_researchers
@@ -33,7 +34,7 @@ async def list_by_week_range(
         returned with zeros.
     """
     # Load all users; admin status included per requirements
-    users_stmt: Select[tuple[User]] = select(User).order_by(User.full_name)
+    users_stmt: Select[tuple[User]] = select_active(User).order_by(User.full_name)
     users: Sequence[User] = (await db.execute(users_stmt)).scalars().all()
 
     
@@ -45,7 +46,7 @@ async def list_by_week_range(
         return await _list_by_week_range_strict(db, week_start=week_start, week_end=week_end, users=users)
 
     # Load all availability rows in the requested scope
-    av_stmt: Select[tuple[AvailabilityWeek]] = select(AvailabilityWeek).where(
+    av_stmt: Select[tuple[AvailabilityWeek]] = select_active(AvailabilityWeek).where(
         and_(
             AvailabilityWeek.week >= week_start,
             AvailabilityWeek.week <= week_end,
@@ -175,7 +176,7 @@ async def _list_by_week_range_strict(
     end_date = end_date_start_week + timedelta(days=6)
 
     # Fetch patterns
-    patterns_stmt = select(AvailabilityPattern).where(
+    patterns_stmt = select_active(AvailabilityPattern).where(
         and_(
             AvailabilityPattern.start_date <= end_date,
             AvailabilityPattern.end_date >= start_date,
@@ -305,7 +306,7 @@ async def upsert_cell(
     row = (
         (
             await db.execute(
-                select(AvailabilityWeek).where(
+                select_active(AvailabilityWeek).where(
                     and_(
                         AvailabilityWeek.user_id == user_id,
                         AvailabilityWeek.week == week,
@@ -359,7 +360,7 @@ async def get_user_availability(
         List of AvailabilityWeek rows.
     """
     stmt = (
-        select(AvailabilityWeek)
+        select_active(AvailabilityWeek)
         .where(
             and_(
                 AvailabilityWeek.user_id == user_id,

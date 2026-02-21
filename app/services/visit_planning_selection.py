@@ -9,6 +9,7 @@ from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.db.utils import select_active
 from app.models.visit import Visit
 from app.models.cluster import Cluster
 from app.models.project import Project
@@ -336,7 +337,7 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     blocked_pairs.add((prot_id, locked_cluster_id))
 
     stmt = (
-        select(Visit)
+        select_active(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
         .join(Project, Cluster.project_id == Project.id)
         .where(
@@ -791,7 +792,7 @@ async def _apply_existing_assignments_to_capacities(
 
     try:
         stmt = (
-            select(Visit)
+            select_active(Visit)
             .where(Visit.planned_week == week)
             .options(selectinload(Visit.researchers))
         )

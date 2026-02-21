@@ -280,9 +280,10 @@ class VisitListRow(BaseModel):
     id: int
     project_code: str
     project_location: str
+    project_customer: str | None = None
     project_google_drive_folder: str | None = None
     cluster_id: int
-    cluster_number: int
+    cluster_number: str
     cluster_address: str
     status: VisitStatusCode
     function_ids: list[int]

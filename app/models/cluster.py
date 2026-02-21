@@ -23,4 +23,5 @@ class Cluster(TimestampMixin, SoftDeleteMixin, Base):
     )
     project: Mapped[Project] = relationship(Project)
     address: Mapped[str] = mapped_column(String(255))
-    cluster_number: Mapped[int] = mapped_column(nullable=False, index=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cluster_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

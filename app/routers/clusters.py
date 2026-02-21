@@ -27,6 +27,7 @@ from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead
 from app.deps import AdminDep, DbDep
+from app.db.utils import select_active
 from app.services.visit_generation import (
     duplicate_cluster_with_visits,
     resolve_protocols_for_combos,
@@ -69,10 +70,10 @@ async def list_clusters(
 
     stmt: Select[tuple[Cluster]]
     if project_id is None:
-        stmt = select(Cluster).order_by(Cluster.project_id, Cluster.cluster_number)
+        stmt = select_active(Cluster).order_by(Cluster.project_id, Cluster.cluster_number)
     else:
         stmt = (
-            select(Cluster)
+            select_active(Cluster)
             .where(Cluster.project_id == project_id)
             .order_by(Cluster.cluster_number)
         )
@@ -82,7 +83,7 @@ async def list_clusters(
     result: list[ClusterWithVisitsRead] = []
     for cluster in rows:
         visits_stmt: Select[tuple[Visit]] = (
-            select(Visit)
+            select_active(Visit)
             .where(Visit.cluster_id == cluster.id)
             .options(
                 selectinload(Visit.functions),
@@ -97,6 +98,7 @@ async def list_clusters(
                 id=cluster.id,
                 project_id=cluster.project_id,
                 address=cluster.address,
+                location=cluster.location,
                 cluster_number=cluster.cluster_number,
                 visits=[
                     VisitReadCompact(
@@ -161,10 +163,10 @@ async def list_clusters_flat(
 
     stmt: Select[tuple[Cluster]]
     if project_id is None:
-        stmt = select(Cluster).order_by(Cluster.project_id, Cluster.cluster_number)
+        stmt = select_active(Cluster).order_by(Cluster.project_id, Cluster.cluster_number)
     else:
         stmt = (
-            select(Cluster)
+            select_active(Cluster)
             .where(Cluster.project_id == project_id)
             .order_by(Cluster.cluster_number)
         )
@@ -173,7 +175,7 @@ async def list_clusters_flat(
     rows: list[ClusterVisitRow] = []
     for cluster in clusters:
         visits_stmt: Select[tuple[Visit]] = (
-            select(Visit)
+            select_active(Visit)
             .where(Visit.cluster_id == cluster.id)
             .options(
                 selectinload(Visit.functions),
@@ -239,7 +241,7 @@ async def create_cluster(
 
     # If a cluster with the same project and number exists, merge by appending visits
     existing_stmt: Select[tuple[Cluster]] = (
-        select(Cluster)
+        select_active(Cluster)
         .where(
             (Cluster.project_id == payload.project_id)
             & (Cluster.cluster_number == payload.cluster_number)
@@ -248,13 +250,15 @@ async def create_cluster(
     )
     existing = (await db.execute(existing_stmt)).scalars().first()
     if existing is not None:
-        # Update address as requested, keep the same cluster row
+        # Update address and location as requested, keep the same cluster row
         existing.address = payload.address
+        existing.location = payload.location
         cluster = existing
     else:
         cluster = Cluster(
             project_id=payload.project_id,
             address=payload.address,
+            location=payload.location,
             cluster_number=payload.cluster_number,
         )
         db.add(cluster)
@@ -312,7 +316,7 @@ async def create_cluster(
 
     # Re-query visits for response
     visits_stmt: Select[tuple[Visit]] = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.cluster_id == cluster.id)
         .options(
             selectinload(Visit.functions),
@@ -325,6 +329,7 @@ async def create_cluster(
         id=cluster.id,
         project_id=cluster.project_id,
         address=cluster.address,
+        location=cluster.location,
         cluster_number=cluster.cluster_number,
         visits=[
             VisitReadCompact(
@@ -375,7 +380,7 @@ async def create_cluster(
     # Log cluster creation including high-level function/species context
     project_code: str | None = None
     if cluster.project_id is not None:
-        project_stmt: Select[tuple[Project]] = select(Project).where(
+        project_stmt: Select[tuple[Project]] = select_active(Project).where(
             Project.id == cluster.project_id
         )
         project = (await db.execute(project_stmt)).scalars().first()
@@ -443,13 +448,14 @@ async def duplicate_cluster(
         source_cluster=source,
         new_number=payload.cluster_number,
         new_address=payload.address,
+        new_location=payload.location,
     )
     await db.commit()
     await db.refresh(new_cluster)
 
     # Eager load visits with relations to populate log details
     visits_stmt: Select[tuple[Visit]] = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.cluster_id == new_cluster.id)
         .options(
             selectinload(Visit.functions),
@@ -500,6 +506,7 @@ async def duplicate_cluster(
         id=new_cluster.id,
         project_id=new_cluster.project_id,
         address=new_cluster.address,
+        location=new_cluster.location,
         cluster_number=new_cluster.cluster_number,
     )
 
@@ -514,6 +521,7 @@ async def update_cluster(
     if cluster is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     cluster.address = payload.address
+    cluster.location = payload.location
     await db.commit()
     await db.refresh(cluster)
 
@@ -541,6 +549,7 @@ async def update_cluster(
         id=cluster.id,
         project_id=cluster.project_id,
         address=cluster.address,
+        location=cluster.location,
         cluster_number=cluster.cluster_number,
     )
 
@@ -560,7 +569,7 @@ async def delete_cluster(admin: AdminDep, db: DbDep, cluster_id: int) -> Respons
     project_code: str | None = None
     project_id = getattr(cluster, "project_id", None)
     if project_id is not None:
-        stmt: Select[tuple[Project]] = select(Project).where(Project.id == project_id)
+        stmt: Select[tuple[Project]] = select_active(Project).where(Project.id == project_id)
         project = (await db.execute(stmt)).scalars().first()
         if project is not None:
             project_code = getattr(project, "code", None)
