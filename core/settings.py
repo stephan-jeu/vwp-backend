@@ -44,14 +44,9 @@ class Settings(BaseModel):
         ]
     )
     
-    # Constraint: Language Matching (Team must share >= 1 language)
-    constraint_language_match: bool = Field(
-        default_factory=lambda: os.getenv("CONSTRAINT_LANGUAGE_MATCH", "false").lower() in {"1", "true", "yes"}
-    )
-    
-    # Constraint: Evening -> Morning Sequence (Eve shift implies Morning shift next day)
-    constraint_eve_morn_sequence: bool = Field(
-        default_factory=lambda: os.getenv("CONSTRAINT_EVE_MORN_SEQUENCE", "false").lower() in {"1", "true", "yes"}
+    # Observability
+    sentry_dsn: str | None = Field(
+        default_factory=lambda: os.getenv("SENTRY_DSN")
     )
     
     # Constraint: English/Dutch Teaming (English speakers need Dutch buddy)
@@ -67,6 +62,14 @@ class Settings(BaseModel):
     # Constraint: Max Travel Time (Minutes)
     constraint_max_travel_time_minutes: int = Field(
         default_factory=lambda: int(os.getenv("CONSTRAINT_MAX_TRAVEL_TIME_MINUTES", "75"))
+    )
+
+    # Constraint: Consecutive Travel Penalty
+    constraint_consecutive_travel_penalty: bool = Field(
+        default_factory=lambda: os.getenv("CONSTRAINT_CONSECUTIVE_TRAVEL_PENALTY", "true").lower() in {"1", "true", "yes"}
+    )
+    constraint_consecutive_travel_penalty_weight: int = Field(
+        default_factory=lambda: int(os.getenv("CONSTRAINT_CONSECUTIVE_TRAVEL_PENALTY_WEIGHT", "1"))
     )
 
     # Seasonal planner scheduler
@@ -105,6 +108,23 @@ class Settings(BaseModel):
     )
     pvw_backfill_timezone: str = Field(
         default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
+    )
+
+    # Trash purge scheduler
+    trash_purge_scheduler_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "TRASH_PURGE_SCHEDULER_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+    trash_purge_cron: str = Field(
+        default_factory=lambda: os.getenv("TRASH_PURGE_CRON", "0 3 * * *")
+    )
+    trash_purge_timezone: str = Field(
+        default_factory=lambda: os.getenv("TRASH_PURGE_TIMEZONE", "Europe/Amsterdam")
+    )
+    trash_purge_retention_days: int = Field(
+        default_factory=lambda: int(os.getenv("TRASH_PURGE_RETENTION_DAYS", "30"))
     )
 
     # Test mode

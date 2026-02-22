@@ -3,11 +3,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Sequence
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from core.settings import get_settings
-from db.session import engine
+from db.session import engine, AsyncSessionLocal
 from app.routers.auth import router as auth_router
 from app.routers.visits import router as visits_router
 from app.routers.clusters import router as clusters_router
@@ -24,21 +25,34 @@ from app.services.pvw_backfill_scheduler import (
     shutdown_pvw_backfill_scheduler,
     start_pvw_backfill_scheduler,
 )
+from app.services.trash_purge_scheduler import (
+    shutdown_trash_purge_scheduler,
+    start_trash_purge_scheduler,
+)
 
 import logging
 
 settings = get_settings()
 
+if settings.sentry_dsn:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.tenant_name,
+        traces_sample_rate=1.0,
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic could be added here (e.g., warm caches)
     start_season_planner_scheduler()
     start_pvw_backfill_scheduler()
+    start_trash_purge_scheduler()
     yield
     # Ensure DB connections are cleanly closed on shutdown
     shutdown_season_planner_scheduler()
     shutdown_pvw_backfill_scheduler()
+    shutdown_trash_purge_scheduler()
     await engine.dispose()
 
 
@@ -113,7 +127,16 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, str]:
-        return {"status": "ok"}
+        try:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text("SELECT 1"))
+        except Exception as e:
+            logging.error(f"Health check failed (Database connect error): {e}")
+            raise HTTPException(
+                status_code=503,
+                detail={"status": "error", "database": "down"},
+            )
+        return {"status": "ok", "database": "up"}
 
     return app
 

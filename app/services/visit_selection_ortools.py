@@ -365,7 +365,7 @@ async def select_visits_cp_sat(
 
         if _consec_pairs:
             consec_cluster_travel = await _tt_consec.get_travel_minutes_batch(
-                _consec_pairs
+                _consec_pairs, db=db
             )
 
     part_labels = ["Ochtend", "Dag", "Avond"]
@@ -617,7 +617,7 @@ async def select_visits_cp_sat(
 
         # Parallel Fetch
         if pairs_to_check:
-            batch_results = await travel_time.get_travel_minutes_batch(pairs_to_check)
+            batch_results = await travel_time.get_travel_minutes_batch(pairs_to_check, db=db)
             # Map back to indices
             for (origin, dest), mins in batch_results.items():
                 indices_list = pair_to_indices.get((origin, dest), [])
@@ -639,6 +639,51 @@ async def select_visits_cp_sat(
 
     # Load Balancing Penalty (Quadratic)
     # For each user, sum of assignments^2
+    
+    # 3. Consecutive Travel Penalty (Soft Constraint)
+    # If the user is assigned consecutive visits (same day or overnight), penalize the
+    # travel time between them to encourage tighter routing.
+    # We only apply this if the travel time is <= 30 mins (since > 30 is forbidden).
+    if settings.feature_strict_availability and settings.constraint_consecutive_travel_penalty and consec_cluster_travel:
+        CONSEC_PENALTY_WEIGHT = settings.constraint_consecutive_travel_penalty_weight
+        
+        for i1, v1 in v_map.items():
+            p1 = (getattr(v1, "part_of_day", None) or "").strip()
+            addr1 = _full_addr_constraint(getattr(v1, "cluster", None))
+            if not addr1 or not p1: continue
+            
+            for i2, v2 in v_map.items():
+                if i1 == i2: continue
+                p2 = (getattr(v2, "part_of_day", None) or "").strip()
+                is_same_day = (p1, p2) in _CONSEC_SAME_DAY
+                is_overnight = (p1, p2) == _OVERNIGHT_PAIR
+                if not is_same_day and not is_overnight: continue
+                
+                addr2 = _full_addr_constraint(getattr(v2, "cluster", None))
+                if not addr2: continue
+                
+                travel = consec_cluster_travel.get((addr1, addr2))
+                # Only penalize if there is actual travel time (and it's valid <=30 mins)
+                if travel is None or travel == 0 or travel > 30: continue
+                
+                for j in u_map:
+                    if (i1, j) not in x or (i2, j) not in x: continue
+                    
+                    if is_same_day:
+                        for d in range(5):
+                            if (i1, j, d) in active_assignment and (i2, j, d) in active_assignment:
+                                both_active = model.NewBoolVar(f"consec_{i1}_{i2}_{j}_{d}")
+                                model.AddBoolAnd([active_assignment[i1, j, d], active_assignment[i2, j, d]]).OnlyEnforceIf(both_active)
+                                model.AddBoolOr([active_assignment[i1, j, d].Not(), active_assignment[i2, j, d].Not()]).OnlyEnforceIf(both_active.Not())
+                                obj_terms.append(both_active * -(travel * CONSEC_PENALTY_WEIGHT))
+                                
+                    else: # overnight
+                        for d in range(4):
+                            if (i1, j, d) in active_assignment and (i2, j, d + 1) in active_assignment:
+                                both_active = model.NewBoolVar(f"consec_overnight_{i1}_{i2}_{j}_{d}")
+                                model.AddBoolAnd([active_assignment[i1, j, d], active_assignment[i2, j, d + 1]]).OnlyEnforceIf(both_active)
+                                model.AddBoolOr([active_assignment[i1, j, d].Not(), active_assignment[i2, j, d + 1].Not()]).OnlyEnforceIf(both_active.Not())
+                                obj_terms.append(both_active * -(travel * CONSEC_PENALTY_WEIGHT))
 
     for j, u in u_map.items():
         # User assignments across all visits

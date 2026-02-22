@@ -86,6 +86,9 @@ async def test_travel_time_scoring_picks_closest(
             return 60  # bucket 4
         return None
 
+    async def fake_travel_minutes_batch(pairs, db=None) -> dict:
+        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+
     async def fake_load_dp_caps(_db, _week):
         return {
             1: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
@@ -115,6 +118,9 @@ async def test_travel_time_scoring_picks_closest(
     )
     monkeypatch.setattr(
         "app.services.travel_time.get_travel_minutes", fake_travel_minutes
+    )
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
     result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday)
@@ -156,6 +162,9 @@ async def test_excludes_over_75_minutes(
     async def fake_travel_minutes(origin: str, destination: str) -> int | None:
         return 80 if origin == "Origin A" else 10
 
+    async def fake_travel_minutes_batch(pairs, db=None) -> dict:
+        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+
     async def fake_load_dp_caps(_db, _week):
         return {
             1: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
@@ -185,6 +194,9 @@ async def test_excludes_over_75_minutes(
     )
     monkeypatch.setattr(
         "app.services.travel_time.get_travel_minutes", fake_travel_minutes
+    )
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
     result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday)
@@ -237,6 +249,9 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
     async def fake_travel_minutes(origin: str, destination: str) -> int | None:
         return 10
 
+    async def fake_travel_minutes_batch(pairs, db=None) -> dict:
+        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+
     async def fake_load_dp_caps(_db, _week):
         return {
             1: {"Ochtend": 5, "Dag": 5, "Avond": 5, "Flex": 0},
@@ -266,6 +281,9 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
     )
     monkeypatch.setattr(
         "app.services.travel_time.get_travel_minutes", fake_travel_minutes
+    )
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
     result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday)
@@ -322,6 +340,9 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
             return 20
         return 0
 
+    async def fake_travel_minutes_batch(pairs, db=None) -> dict:
+        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+
     async def fake_eligible(db, wm):
         return [v1, v2]
 
@@ -336,6 +357,9 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
 
     async def fake_load_dp_caps(db, w):
         return {u.id: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 0} for u in users}
+
+    from core.settings import get_settings
+    monkeypatch.setattr(get_settings(), "constraint_large_team_penalty", True)
 
     # Monkeypatching
     monkeypatch.setattr(
@@ -361,6 +385,9 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     )
     monkeypatch.setattr(
         "app.services.travel_time.get_travel_minutes", fake_travel_minutes
+    )
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
     # Run
@@ -393,8 +420,14 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
             return 200
         return 0
 
+    async def fake_travel_minutes_batch_high(pairs, db=None) -> dict:
+        return {(o, d): await fake_travel_minutes_high(o, d) for o, d in set(pairs) if await fake_travel_minutes_high(o, d) is not None}
+
     monkeypatch.setattr(
         "app.services.travel_time.get_travel_minutes", fake_travel_minutes_high
+    )
+    monkeypatch.setattr(
+        "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch_high
     )
 
     # Must clear researchers to avoid 'planned' interference in this specific test setup

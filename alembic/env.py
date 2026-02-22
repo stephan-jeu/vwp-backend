@@ -28,6 +28,7 @@ from app.models import (  # noqa: E402,F401
     protocol_visit_window,
     simulation_result,
     species,
+    travel_time_cache,
     user,
     visit,
     availability_pattern,

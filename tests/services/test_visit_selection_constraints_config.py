@@ -113,3 +113,75 @@ async def test_max_travel_time_configuration():
         # Expectation: Visit Scheduled
         assert visit in result_loose.selected, "Visit should be scheduled with loose travel limit"
         assert len(getattr(visit, "researchers", [])) == 1
+
+@pytest.mark.asyncio
+async def test_consecutive_travel_penalty():
+    """Verify that the model favors closer clusters for consecutive visits."""
+    
+    # Arrange 2 morning visits and 1 daytime visit
+    # Visit 1 (Morning, Cluster A)
+    v1 = make_visit(vid=101)
+    v1.part_of_day = "Ochtend"
+    v1.cluster.address = "CloseLocal"
+    
+    # Visit 2 (Morning, Cluster B)
+    v2 = make_visit(vid=102)
+    v2.part_of_day = "Ochtend"
+    v2.cluster.address = "FarLocal"
+    
+    # Visit 3 (Day, Cluster C)
+    v3 = make_visit(vid=103)
+    v3.part_of_day = "Dag"
+    v3.cluster.address = "TargetLocal"
+    
+    user = make_user(uid=11)
+    users = [user]
+    # Give user enough capacity to do 1 Morning and 1 Day
+    user_caps = {11: 5}
+    user_daypart_caps = {11: {"Ochtend": 1, "Dag": 1, "Avond": 0, "Flex": 0}}
+    
+    # We set it up such that:
+    # TargetLocal to CloseLocal is 5 mins
+    # TargetLocal to FarLocal is 25 mins
+    # Both are within the 30 min hard limit, but CloseLocal is cheaper because of the penalty.
+    
+    with patch("app.services.travel_time.get_travel_minutes_batch") as mock_get_travel, \
+         patch("app.services.visit_selection_ortools.get_settings") as mock_settings_getter, \
+         patch("app.services.visit_planning_selection._qualifies_user_for_visit", return_value=True):
+         
+        mock_get_travel.return_value = {
+            ("UserLocation", "CloseLocal, ProjectLoc"): 10,
+            ("UserLocation", "FarLocal, ProjectLoc"): 10,
+            ("UserLocation", "TargetLocal, ProjectLoc"): 15,
+            ("CloseLocal, ProjectLoc", "TargetLocal, ProjectLoc"): 5,
+            ("FarLocal, ProjectLoc", "TargetLocal, ProjectLoc"): 25,
+            ("TargetLocal, ProjectLoc", "CloseLocal, ProjectLoc"): 5,
+            ("TargetLocal, ProjectLoc", "FarLocal, ProjectLoc"): 25
+        }
+        
+        mock_settings = MagicMock()
+        mock_settings.feature_strict_availability = True
+        mock_settings.constraint_consecutive_travel_penalty = True
+        mock_settings.constraint_consecutive_travel_penalty_weight = 10
+        mock_settings.constraint_max_travel_time_minutes = 60
+        mock_settings.constraint_large_team_penalty = True
+        mock_settings_getter.return_value = mock_settings
+        
+        result = await select_visits_cp_sat(
+            db=[],
+            week_monday=date(2026, 5, 4),
+            visits=[v1, v2, v3],
+            users=users,
+            user_caps=user_caps,
+            user_daypart_caps=user_daypart_caps,
+            include_travel_time=True
+        )
+        
+        # Expectation: User should do v1 and v3, because v1 is closer to v3 than v2.
+        # But wait, priorities might override. Let's make sure priority keys don't strictly enforce v2 over v1.
+        # The priorities are identical for v1 and v2, but v1 has shorter travel time penalty.
+        selected_ids = {v.id for v in result.selected}
+        
+        assert 103 in selected_ids, "Daytime visit must be scheduled"
+        assert 101 in selected_ids, "Closer morning visit should be selected"
+        assert 102 not in selected_ids, "Further morning visit should NOT be selected"

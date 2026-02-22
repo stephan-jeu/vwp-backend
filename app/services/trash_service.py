@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import logger
 from app.models import SoftDeleteMixin
 from app.models.activity_log import ActivityLog
 from app.models.availability import AvailabilityWeek
@@ -470,3 +471,39 @@ async def _hard_delete_visits(db: AsyncSession, visit_ids: list[int]) -> None:
         )
     )
     await db.execute(delete(Visit).where(Visit.id.in_(visit_ids)))
+
+
+async def purge_old_trash(db: AsyncSession, retention_days: int) -> int:
+    """Hard delete all top-level trash items older than retention_days.
+
+    This identifies top-level soft-deleted entities (projects, clusters,
+    visits, users) identical to `list_trash_items` and hard deletes them
+    if their `deleted_at` is older than `retention_days`.
+
+    Args:
+        db: Async SQLAlchemy session.
+        retention_days: Number of days to retain soft-deleted items.
+
+    Returns:
+        Number of items hard deleted.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    all_trash_items = await list_trash_items(db)
+    items_to_purge = [
+        item
+        for item in all_trash_items
+        if item.deleted_at is not None and item.deleted_at < cutoff
+    ]
+
+    count = 0
+    for item in items_to_purge:
+        try:
+            await hard_delete_trash_item(db, item.kind, item.id)
+            count += 1
+        except Exception:
+            logger.exception(
+                "Failed to purge old trash item kind=%s id=%s", item.kind, item.id
+            )
+
+    return count
