@@ -1169,6 +1169,24 @@ async def generate_visits_cp_sat(
         if has_langoren:
             remarks_lines.append("Geen mist, sneeuwval. Bodemtemperatuur < 15 graden")
 
+        # Special Case: Vleermuis & Zwaluw (GZ) Combine
+        has_vleermuis_any = any(_is_vleermuis(r.protocol) for r in assigned_reqs)
+        has_zwaluw_gz = False
+        for r in assigned_reqs:
+            p = r.protocol
+            fam_name = getattr(
+                getattr(getattr(p, "species", None), "family", None), "name", ""
+            )
+            sp_abbr = getattr(getattr(p, "species", None), "abbreviation", "")
+            if fam_name == "Zwaluw" and sp_abbr == "GZ":
+                has_zwaluw_gz = True
+                break
+
+        if has_vleermuis_any and has_zwaluw_gz:
+            remarks_lines.append(
+                "1 persoon voor GZ-gedeelte, zelf overleggen wie. De andere(n) begint bij zonsondergang."
+            )
+
         # Special Case: SMP Zwaluw
         has_smp_zwaluw = False
         for r in assigned_reqs:
