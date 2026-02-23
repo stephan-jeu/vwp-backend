@@ -22,8 +22,13 @@ class UserBase(BaseModel):
         MEDIOR = "Medior"
         SENIOR = "Senior"
 
+    class Language(StrEnum):
+        EN = "EN"
+        NL = "NL"
+
     contract: ContractType | None = None
     experience_bat: ExperienceBat | None = None
+    language: Language = Language.NL
     smp_huismus: bool = False
     smp_vleermuis: bool = False
     smp_gierzwaluw: bool = False
@@ -66,6 +71,7 @@ class UserUpdate(BaseModel):
     address: str | None = None
     contract: UserBase.ContractType | None = None
     experience_bat: UserBase.ExperienceBat | None = None
+    language: UserBase.Language | None = None
     smp_huismus: bool | None = None
     smp_vleermuis: bool | None = None
     smp_gierzwaluw: bool | None = None

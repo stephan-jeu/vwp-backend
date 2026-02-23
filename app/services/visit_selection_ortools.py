@@ -407,8 +407,7 @@ async def select_visits_cp_sat(
                     model.Add(visit_day[i, d] == 0)
 
             # If scheduled, must pick exactly one day
-            model.Add(sum(days_vars) == 1).OnlyEnforceIf(scheduled[i])
-            model.Add(sum(days_vars) == 0).OnlyEnforceIf(scheduled[i].Not())
+            model.Add(sum(days_vars) == scheduled[i])
 
         # 2b. Researcher Assignment
         req = getattr(v, "required_researchers", 1) or 1
@@ -433,8 +432,7 @@ async def select_visits_cp_sat(
 
         # If scheduled, must assign exactly 'req' researchers
         if assigned_vars:
-            model.Add(sum(assigned_vars) == req).OnlyEnforceIf(scheduled[i])
-            model.Add(sum(assigned_vars) == 0).OnlyEnforceIf(scheduled[i].Not())
+            model.Add(sum(assigned_vars) == req * scheduled[i])
         else:
             model.Add(scheduled[i] == 0)
 

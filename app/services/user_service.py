@@ -80,6 +80,7 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
     data["experience_bat"] = _enum_to_value(
         data.get("experience_bat"), UserBase.ExperienceBat
     )
+    data["language"] = _enum_to_value(data.get("language"), UserBase.Language)
 
     user = User(**data)
     db.add(user)
@@ -129,6 +130,8 @@ async def update_user(db: AsyncSession, user_id: int, payload: UserUpdate) -> Us
         data["experience_bat"] = _enum_to_value(
             data.get("experience_bat"), UserBase.ExperienceBat
         )
+    if "language" in data:
+        data["language"] = _enum_to_value(data.get("language"), UserBase.Language)
     for k, v in data.items():
         setattr(row, k, v)
 

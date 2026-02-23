@@ -90,4 +90,5 @@ def compute_visit_code(visit: Visit) -> str | None:
             elif abbreviation:
                 codes.append(f"{abbreviation}{visit_index}")
 
-    return " ".join(codes) if codes else None
+    deduped_codes = list(dict.fromkeys(codes))
+    return " ".join(deduped_codes) if deduped_codes else None

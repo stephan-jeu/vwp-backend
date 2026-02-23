@@ -34,6 +34,7 @@ from app.services.trash_service import (
     hard_delete_trash_item as svc_hard_delete_trash_item,
 )
 from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
+from app.services.address_validation import is_valid_address
 from core.settings import get_settings
 
 
@@ -54,6 +55,19 @@ async def list_tight_visits(
 async def admin_status() -> dict[str, str]:
     """Return admin status placeholder."""
     return {"status": "admin-ok"}
+
+
+@router.get("/utils/validate-address")
+async def validate_address(
+    _: AdminDep, address: str = Query(..., description="The address to validate")
+) -> dict[str, bool | None]:
+    """Validate an address via Google Maps Geocoding API.
+    
+    Returns:
+        {"valid": True} if valid, {"valid": False} if invalid, {"valid": None} on error or no API key.
+    """
+    is_valid = await is_valid_address(address)
+    return {"valid": is_valid}
 
 
 @router.get("/season-planner/status", response_model=SeasonPlannerStatusRead)

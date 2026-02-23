@@ -11,6 +11,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.db.utils import select_active
 from app.core.logging import logger
 from app.models.protocol import Protocol
 from app.models.visit import Visit
@@ -27,6 +28,7 @@ from app.services.visit_planning_selection import (
 from app.services.planning_run_errors import PlanningRunError
 from app.schemas.capacity import CapacitySimulationResponse
 from ortools.sat.python import cp_model
+from core.settings import get_settings
 
 
 _DEBUG_SEASON_PLANNING = os.getenv("SEASON_PLANNING_DEBUG", "").lower() in (
@@ -905,6 +907,7 @@ class SeasonPlanningService:
         intern_shortfall_terms = []
         supervisor_shortfall_terms = []
         diversity_penalty_terms = []
+        large_team_penalty_terms = []
 
         # Map: Week -> Skill -> List of (v, overlap, is_active)
         # We constructed 'visits_per_week_candidate' earlier.
@@ -934,6 +937,7 @@ class SeasonPlanningService:
             week_intern_demand = []
             week_supervisor_demand = []
             week_proj_counts = {}  # pid -> list of bools
+            week_large_team_demand = []
             week_total_demand_terms = []
             week_daypart_demand_terms = {"m": [], "d": [], "n": []}
 
@@ -992,6 +996,11 @@ class SeasonPlanningService:
                         if pid not in week_proj_counts:
                             week_proj_counts[pid] = []
                         week_proj_counts[pid].append(b)
+
+                    # --- LARGE TEAM VISITS ---
+                    if get_settings().constraint_large_team_penalty:
+                        if (v.required_researchers or 1) >= 3:
+                            week_large_team_demand.append(b)
 
                 # Skill Volume Constraint
                 sup_total = sum(supply.get(skill, {}).get(w, {}).values())
@@ -1131,6 +1140,15 @@ class SeasonPlanningService:
                     model.Add(excess >= c - 1)
                     diversity_penalty_terms.append(excess)
 
+            # 4f. Large Team Spread
+            if week_large_team_demand:
+                large_count = model.NewIntVar(0, 1000, f"large_count_{w}")
+                model.Add(large_count == sum(week_large_team_demand))
+                
+                sq_large = model.NewIntVar(0, 1000000, f"sq_large_{w}")
+                model.AddMultiplicationEquality(sq_large, [large_count, large_count])
+                large_team_penalty_terms.append(sq_large)
+
             fixed_custom_demand = custom_fixed_demand_by_week.get(w, 0)
             if week_total_demand_terms or fixed_custom_demand:
                 global_supply_w = 0
@@ -1244,6 +1262,7 @@ class SeasonPlanningService:
         p_supervisor = cp_model.LinearExpr.Sum(supervisor_shortfall_terms) * -100
         p_diversity = cp_model.LinearExpr.Sum(diversity_penalty_terms) * -10
         p_successor_risk = cp_model.LinearExpr.Sum(successor_risk_terms) * -500
+        p_large_teams = cp_model.LinearExpr.Sum(large_team_penalty_terms) * -10
 
         scaled_load_terms = []
         for idx, term in enumerate(quadratic_load_terms):
@@ -1262,6 +1281,7 @@ class SeasonPlanningService:
             + p_supervisor
             + p_diversity
             + p_successor_risk
+            + p_large_teams
             + p_load
         )
         model.Maximize(total_obj)
