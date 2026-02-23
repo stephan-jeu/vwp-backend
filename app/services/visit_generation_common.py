@@ -436,8 +436,16 @@ def calculate_visit_props(
         for p in protocols
     )
 
-    if has_massawinter and not has_mv_paarverblijf and len(protocols) == 1:
-        return duration_min, "00:00", None
+    if has_massawinter and len(protocols) == 1:
+        # User confirmed single Massawinterverblijfplaats already has 00:00 and the right duration
+        pass
+    elif has_massawinter and len(protocols) > 1:
+        if has_mv_paarverblijf:
+            # MV Paarverblijf exception: starts at Zonsondergang, default max duration
+            return duration_min, "Zonsondergang", None
+        else:
+            # Combined with non-MV Paarverblijf (or other): fixed to 00:00 and 2 hours (120 min)
+            return 120, "00:00", None
 
     def _wrap_night_minutes(value: int) -> int:
         if value < 600:
