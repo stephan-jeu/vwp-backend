@@ -19,3 +19,7 @@ class ProjectRead(ProjectBase):
     id: int
 
     model_config = {"from_attributes": True}
+
+
+class ProjectBulkArchive(BaseModel):
+    project_ids: list[int]

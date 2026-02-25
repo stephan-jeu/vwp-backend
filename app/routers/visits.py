@@ -256,6 +256,8 @@ async def list_visits(
     species_ids: Annotated[list[int] | None, Query()] = None,
     simulated_today: Annotated[date | None, Query()] = None,
     unplanned_only: Annotated[bool, Query()] = False,
+    include_archived: Annotated[bool, Query()] = False,
+    only_archived: Annotated[bool, Query()] = False,
 ) -> VisitListResponse:
     """Return a paginated list of visits for the overview table.
 
@@ -301,6 +303,11 @@ async def list_visits(
         unplanned_only=unplanned_only,
     )
 
+    if include_archived and only_archived:
+        stmt = stmt.where(Visit.is_archived.is_(True))
+    elif not include_archived and hasattr(Visit, "is_archived"):
+        stmt = stmt.where(Visit.is_archived.is_(False))
+
     stmt = stmt.distinct(Visit.id)
 
     order_from = func.coalesce(Visit.from_date, date(9999, 12, 31))
@@ -327,7 +334,7 @@ async def list_visits(
     if not visit_ids:
         return VisitListResponse(items=[], total=total, page=page, page_size=page_size)
 
-    stmt_visits = get_visit_loading_stmt(visit_ids)
+    stmt_visits = get_visit_loading_stmt(visit_ids, include_archived=include_archived)
     visits = (await db.execute(stmt_visits)).scalars().all()
 
     # Derive lifecycle status for each visit once, then filter by status
@@ -435,6 +442,8 @@ async def export_visits(
     species_ids: Annotated[list[int] | None, Query()] = None,
     simulated_today: Annotated[date | None, Query()] = None,
     unplanned_only: Annotated[bool, Query()] = False,
+    include_archived: Annotated[bool, Query()] = False,
+    only_archived: Annotated[bool, Query()] = False,
 ) -> Response:
     """Export filtered visits to CSV."""
     import csv
@@ -462,6 +471,12 @@ async def export_visits(
         species_ids=species_ids,
         unplanned_only=unplanned_only,
     )
+
+    if include_archived and only_archived:
+        stmt = stmt.where(Visit.is_archived.is_(True))
+    elif not include_archived and hasattr(Visit, "is_archived"):
+        stmt = stmt.where(Visit.is_archived.is_(False))
+
     stmt = stmt.distinct(Visit.id)
 
     # Order consistent with list
@@ -487,7 +502,7 @@ async def export_visits(
             headers={"Content-Disposition": "attachment; filename=bezoeken.csv"},
         )
 
-    stmt_visits = get_visit_loading_stmt(visit_ids)
+    stmt_visits = get_visit_loading_stmt(visit_ids, include_archived=include_archived)
     visits = (await db.execute(stmt_visits)).scalars().all()
     status_map = await resolve_visit_statuses(db, visits, today=effective_today)
 

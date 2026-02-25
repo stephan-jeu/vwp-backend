@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import ForeignKey, Integer, String, Table, Column, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models import Base, TimestampMixin, SoftDeleteMixin
+from app.models import Base, TimestampMixin, SoftDeleteMixin, ArchivableMixin
 from app.models.cluster import Cluster
 from app.models.function import Function
 from app.models.species import Species
@@ -48,7 +48,7 @@ visit_protocol_visit_windows = Table(
 )
 
 
-class Visit(TimestampMixin, SoftDeleteMixin, Base):
+class Visit(TimestampMixin, SoftDeleteMixin, ArchivableMixin, Base):
     """Central planning entity representing a field visit."""
 
     __tablename__ = "visits"

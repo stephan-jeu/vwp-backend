@@ -3,10 +3,10 @@ from __future__ import annotations
 from sqlalchemy import String, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models import Base, TimestampMixin, SoftDeleteMixin
+from app.models import Base, TimestampMixin, SoftDeleteMixin, ArchivableMixin
 
 
-class Project(TimestampMixin, SoftDeleteMixin, Base):
+class Project(TimestampMixin, SoftDeleteMixin, ArchivableMixin, Base):
     """Project container.
 
     Attributes:

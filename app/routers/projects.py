@@ -9,9 +9,12 @@ from sqlalchemy.exc import IntegrityError
 from app.deps import AdminDep, DbDep
 from app.db.utils import select_active
 from app.models.project import Project
-from app.schemas.project import ProjectCreate, ProjectRead
+from app.schemas.project import ProjectCreate, ProjectRead, ProjectBulkArchive
 from app.services.soft_delete import soft_delete_entity
 from app.services.activity_log_service import log_activity
+from sqlalchemy import update
+from app.models.cluster import Cluster
+from app.models.visit import Visit
 
 
 router = APIRouter()
@@ -135,3 +138,61 @@ async def delete_project(
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/bulk-archive", status_code=status.HTTP_200_OK)
+async def bulk_archive_projects(
+    admin: AdminDep, db: DbDep, payload: ProjectBulkArchive
+) -> dict[str, int]:
+    """Archive multiple projects and cascade to underlying clusters/visits."""
+
+    if not payload.project_ids:
+        return {"archived_projects": 0}
+
+    # Verify projects exist and get their cluster IDs
+    stmt_clusters = select(Cluster.id).where(
+        Cluster.project_id.in_(payload.project_ids),
+        Cluster.deleted_at.is_(None)
+    )
+    cluster_result = await db.execute(stmt_clusters)
+    cluster_ids = [row[0] for row in cluster_result.all()]
+
+    # 1. Archive Projects
+    stmt_upd_proj = (
+        update(Project)
+        .where(Project.id.in_(payload.project_ids))
+        .values(is_archived=True)
+    )
+    await db.execute(stmt_upd_proj)
+
+    # 2. Archive Clusters
+    if cluster_ids:
+        stmt_upd_clust = (
+            update(Cluster)
+            .where(Cluster.project_id.in_(payload.project_ids))
+            .values(is_archived=True)
+        )
+        await db.execute(stmt_upd_clust)
+
+        # 3. Archive Visits
+        stmt_upd_visits = (
+            update(Visit)
+            .where(Visit.cluster_id.in_(cluster_ids))
+            .values(is_archived=True)
+        )
+        await db.execute(stmt_upd_visits)
+
+    await db.commit()
+
+    # Log activity for each archived project
+    for pid in payload.project_ids:
+        await log_activity(
+            db,
+            actor_id=admin.id,
+            action="project_archived",
+            target_type="project",
+            target_id=pid,
+            details={"bulk": True},
+        )
+
+    return {"archived_projects": len(payload.project_ids)}
