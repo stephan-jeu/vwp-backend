@@ -2106,36 +2106,36 @@ class SeasonPlanningService:
         AvailabilityWeek (.morning_days, .daytime_days, .nighttime_days, .flex_days).
         """
         from app.models.availability_pattern import AvailabilityPattern
+        from app.models.user_unavailability import UserUnavailability
         from app.services.visit_planning_selection import _compute_strict_daypart_caps
 
         stmt = select_active(AvailabilityPattern)
         all_patterns = (await db.execute(stmt)).scalars().all()
 
+        stmt_u = select(UserUnavailability).where(UserUnavailability.start_date <= date(year, 12, 31), UserUnavailability.end_date >= date(year, 1, 1))
+        all_unavail = (await db.execute(stmt_u)).scalars().all()
+
         patterns_by_user: dict[int, list] = {}
         for p in all_patterns:
             patterns_by_user.setdefault(p.user_id, []).append(p)
 
+        unavail_by_user: dict[int, list] = {}
+        for u in all_unavail:
+            unavail_by_user.setdefault(u.user_id, []).append(u)
+
         avail_map: dict[tuple[int, int], Any] = {}
         for uid, user_patterns in patterns_by_user.items():
+            user_unavail = unavail_by_user.get(uid, [])
             for week in range(1, 54):
-                m, d, n, max_visits = _compute_strict_daypart_caps(
-                    user_patterns, week, year
+                m, d, n = _compute_strict_daypart_caps(
+                    user_patterns, user_unavail, week, year
                 )
-                # Apply max_visits_per_week cap with first-fit deduction
-                # (morning → daytime → nighttime).
-                cap = max_visits if max_visits is not None else 7
-                remaining = cap
-                m_eff = min(m, remaining)
-                remaining -= m_eff
-                d_eff = min(d, remaining)
-                remaining -= d_eff
-                n_eff = min(n, remaining)
-
-                if m_eff + d_eff + n_eff > 0:
+                
+                if m + d + n > 0:
                     avail_map[(uid, week)] = SimpleNamespace(
-                        morning_days=m_eff,
-                        daytime_days=d_eff,
-                        nighttime_days=n_eff,
+                        morning_days=m,
+                        daytime_days=d,
+                        nighttime_days=n,
                         flex_days=0,
                     )
 

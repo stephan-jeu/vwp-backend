@@ -123,6 +123,8 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     app.include_router(availability_router, prefix="/availability", tags=["availability"])
     from app.routers.availability_patterns import router as availability_patterns_router
     app.include_router(availability_patterns_router, prefix="/api", tags=["availability_patterns"])
+    from app.routers.user_unavailabilities import router as unavailabilities_router
+    app.include_router(unavailabilities_router, prefix="/api", tags=["user_unavailabilities"])
     app.include_router(clusters_router, prefix="/clusters", tags=["clusters"])
 
     @app.get("/health")

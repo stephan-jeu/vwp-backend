@@ -826,7 +826,7 @@ async def generate_visits_cp_sat(
             quality = "EXCELLENT"
         elif gap <= 0.05:
             quality = "GOOD"
-        elif gap <= 0.15:
+        elif gap <= 0.3:
             quality = "OK"
         else:
             quality = "WEAK"
@@ -1213,7 +1213,10 @@ async def generate_visits_cp_sat(
             )
 
         if remarks_lines:
-            new_visit.remarks_field = "\n".join(remarks_lines)
+            if new_visit.remarks_field:
+                new_visit.remarks_field += "\n" + "\n".join(remarks_lines)
+            else:
+                new_visit.remarks_field = "\n".join(remarks_lines)
 
         if default_remarks_field:
             if new_visit.remarks_field:

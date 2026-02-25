@@ -21,7 +21,8 @@ class AvailabilityPattern(TimestampMixin, SoftDeleteMixin, Base):
         user_id: Foreign key to the `users` table.
         start_date: Start of the validity period.
         end_date: End of the validity period.
-        max_visits_per_week: Optional cap on visits per week.
+        max_mornings_per_week: Optional cap on morning visits per week (default 2).
+        max_evenings_per_week: Optional cap on evening visits per week (default 5).
         schedule: JSON definition of availability per weekday.
                   Example:
                   {
@@ -42,7 +43,12 @@ class AvailabilityPattern(TimestampMixin, SoftDeleteMixin, Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
 
-    max_visits_per_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_mornings_per_week: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=2, server_default="2"
+    )
+    max_evenings_per_week: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=5, server_default="5"
+    )
 
     # Schedule is a JSON object mapping day names to lists of parts of day
     # e.g. {"monday": ["morning", "nighttime"], ...}

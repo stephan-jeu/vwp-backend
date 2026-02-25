@@ -40,7 +40,8 @@ async def create_pattern(
         user_id=user_id,
         start_date=payload.start_date,
         end_date=payload.end_date,
-        max_visits_per_week=payload.max_visits_per_week,
+        max_mornings_per_week=payload.max_mornings_per_week,
+        max_evenings_per_week=payload.max_evenings_per_week,
         schedule=payload.schedule,
     )
     db.add(pattern)
@@ -75,8 +76,11 @@ async def update_pattern(
         pattern.start_date = new_start
         pattern.end_date = new_end
 
-    if payload.max_visits_per_week is not None:
-        pattern.max_visits_per_week = payload.max_visits_per_week
+    if payload.max_mornings_per_week is not None:
+        pattern.max_mornings_per_week = payload.max_mornings_per_week
+    
+    if payload.max_evenings_per_week is not None:
+        pattern.max_evenings_per_week = payload.max_evenings_per_week
     
     if payload.schedule is not None:
         pattern.schedule = payload.schedule

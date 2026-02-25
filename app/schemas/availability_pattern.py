@@ -15,7 +15,8 @@ ScheduleMap = dict[str, list[PartOfDay]]
 class AvailabilityPatternBase(BaseModel):
     start_date: date
     end_date: date
-    max_visits_per_week: int | None = Field(default=None, ge=0)
+    max_mornings_per_week: int | None = Field(default=2, ge=0)
+    max_evenings_per_week: int | None = Field(default=5, ge=0)
     schedule: ScheduleMap = Field(default_factory=dict)
 
     @field_validator("schedule")
@@ -50,7 +51,8 @@ class AvailabilityPatternCreate(AvailabilityPatternBase):
 class AvailabilityPatternUpdate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
-    max_visits_per_week: int | None = None
+    max_mornings_per_week: int | None = None
+    max_evenings_per_week: int | None = None
     schedule: ScheduleMap | None = None
 
 

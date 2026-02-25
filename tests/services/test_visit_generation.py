@@ -452,3 +452,53 @@ async def test_visit_generation_defaults_are_applied(mocker, fake_db):
     assert v.dvp is True
     assert v.sleutel is True
     assert "Custom Remark" in (v.remarks_field or "")
+
+
+@pytest.mark.asyncio
+async def test_visit_generation_remarks_are_appended(mocker, fake_db):
+    # Arrange
+    today_year = date.today().year
+    wf = date(today_year, 5, 1)
+    wt = date(today_year, 8, 1)
+
+    # Vlinder triggers automatic remarks
+    p1 = _make_protocol(
+        proto_id=1,
+        fam_name="Vlinder",
+        species_id=101,
+        species_name="VlinderA",
+        fn_id=10,
+        fn_name="Fly",
+        window_from=wf,
+        window_to=wt,
+        start_ref="SUNRISE",
+        visit_duration_h=2.0,
+    )
+
+    async def exec_stub(_stmt):
+        sql = str(_stmt)
+        if "FROM protocols" in sql:
+            return _FakeResult([p1])
+        if "FROM visits" in sql:
+            return _FakeResult([])
+        return _FakeResult([p1.function, p1.species])
+
+    fake_db.execute = exec_stub
+
+    cluster = Cluster(id=1, project_id=1, address="c1", cluster_number=1)
+
+    # Act
+    visits, _ = await generate_visits_for_cluster(
+        fake_db,
+        cluster,
+        function_ids=[10],
+        species_ids=[101],
+        default_remarks_field="This is a user default comment",
+    )
+
+    # Assert
+    assert len(visits) > 0
+    v = visits[0]
+    # Check that both the automatic comment and the default comment are present
+    assert "Min. 15 tot 19 graden" in (v.remarks_field or "")
+    assert "This is a user default comment" in (v.remarks_field or "")
