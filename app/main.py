@@ -32,6 +32,11 @@ from app.services.trash_purge_scheduler import (
 
 import logging
 
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().find("GET /health") == -1
+
+
 settings = get_settings()
 
 if settings.sentry_dsn:
@@ -84,6 +89,9 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
         logger.handlers = []
         logger.propagate = True
         logger.setLevel(log_level)
+
+    # Filter out /health endpoint logs
+    logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
     # Silence noisy libraries even in DEBUG mode
     for logger_name in ["httpx", "httpcore", "hpack"]:

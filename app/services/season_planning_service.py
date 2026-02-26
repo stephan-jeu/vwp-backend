@@ -112,11 +112,15 @@ class SeasonPlanningService:
             else:
                 return f"SMP {fam_name.capitalize()}"
 
-        # 2. VRFG Check
+        # 2. VOG Check (strict credential override similar to VR/FG)
+        if getattr(v, "vog", False):
+            return "VOG"
+
+        # 3. VRFG Check
         if _any_function_contains(v, ("Vliegroute", "Foerageergebied")):
             return "VR/FG"
 
-        # 3. Standard Family Fallback
+        # 4. Standard Family Fallback
         try:
             sp = (v.species or [None])[0]
             fam = getattr(sp, "family", None)
@@ -151,8 +155,14 @@ class SeasonPlanningService:
             skills.add("SMP Vleermuis")
         if u.smp_gierzwaluw:
             skills.add("SMP Gierzwaluw")
+        if getattr(u, "smp_huismus", False):
+            skills.add("SMP Huismus")
         if u.smp_huismus:
             skills.add("SMP Huismus")  # Covers smp_zangvogel/standard
+        
+        # VOG
+        if getattr(u, "vog", False):
+            skills.add("VOG")
 
         # Special
         if u.vrfg:

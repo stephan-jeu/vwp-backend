@@ -70,6 +70,7 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
     roofvogel: Mapped[bool] = mapped_column(default=False, server_default="false")
     wbc: Mapped[bool] = mapped_column(default=False, server_default="false")
     fiets: Mapped[bool] = mapped_column(default=False, server_default="false")
+    vog: Mapped[bool] = mapped_column(default=False, server_default="false")
     hub: Mapped[bool] = mapped_column(default=False, server_default="false")
     dvp: Mapped[bool] = mapped_column(default=False, server_default="false")
     vrfg: Mapped[bool] = mapped_column(default=False, server_default="false")

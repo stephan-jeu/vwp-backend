@@ -5,11 +5,11 @@ from datetime import date
 from sqlalchemy import ForeignKey, Date, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models import Base, TimestampMixin
+from app.models import Base, TimestampMixin, SoftDeleteMixin
 from app.models.user import User
 
 
-class UserUnavailability(TimestampMixin, Base):
+class UserUnavailability(TimestampMixin, SoftDeleteMixin, Base):
     """Configuration for periods where a user is unavailable.
 
     Defines a period (start_date to end_date) during which a researcher is not available

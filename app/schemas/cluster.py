@@ -45,6 +45,7 @@ class ClusterCreate(BaseModel):
     default_expertise_level: str | None = None
     default_wbc: bool = False
     default_fiets: bool = False
+    default_vog: bool = False
     default_hub: bool = False
     default_dvp: bool = False
     default_sleutel: bool = False
@@ -65,10 +66,12 @@ class ClusterUpdate(BaseModel):
     Attributes:
         address: New address string.
         location: Optional location override (replaces project location).
+        cluster_number: Cluster identifier code.
     """
 
     address: str = Field(min_length=1, max_length=255)
     location: str | None = None
+    cluster_number: str = Field(min_length=1, max_length=255)
 
 
 class VisitReadCompact(BaseModel):
@@ -99,6 +102,7 @@ class VisitReadCompact(BaseModel):
     expertise_level: str | None
     wbc: bool
     fiets: bool
+    vog: bool
     hub: bool
     dvp: bool
     sleutel: bool
@@ -145,6 +149,7 @@ class ClusterVisitRow(BaseModel):
         expertise_level: Whether expertise is required.
         wbc: WBC flag.
         fiets: Bicycle required flag.
+        vog: VOG required flag.
         hub: HUB flag.
         dvp: DvP flag.
         remarks_planning: Planner remarks.
@@ -171,6 +176,7 @@ class ClusterVisitRow(BaseModel):
     expertise_level: str | None
     wbc: bool
     fiets: bool
+    vog: bool
     hub: bool
     dvp: bool
     sleutel: bool

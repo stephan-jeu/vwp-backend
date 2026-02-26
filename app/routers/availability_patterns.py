@@ -12,7 +12,7 @@ from app.schemas.availability_pattern import (
     AvailabilityPatternOut,
 )
 from app.services import availability_pattern_service as service
-from app.services.security import require_admin
+from app.services.security import require_admin, get_current_user
 
 router = APIRouter()
 
@@ -21,9 +21,11 @@ router = APIRouter()
 async def list_user_patterns(
     user_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(require_admin)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    """List availability patterns for a specific user (Admin only)."""
+    """List availability patterns for a specific user (Admins or the user themselves)."""
+    if not current_user.admin and current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
     return await service.list_patterns(db, user_id=user_id)
 
 

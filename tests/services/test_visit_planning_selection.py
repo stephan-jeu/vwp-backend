@@ -765,11 +765,12 @@ async def test_flex_shared_across_parts_not_overdrawn(
 async def test_load_week_capacity_applies_spare_subtraction():
     from app.services.visit_planning_selection import _load_week_capacity
     from types import SimpleNamespace
+    from unittest.mock import patch
 
     # Create fake rows with totals: morning=3, day=3, night=3, flex=2
     rows = [
-        SimpleNamespace(morning_days=2, daytime_days=1, nighttime_days=1, flex_days=1),
-        SimpleNamespace(morning_days=1, daytime_days=2, nighttime_days=2, flex_days=1),
+        SimpleNamespace(morning_days=2, daytime_days=1, nighttime_days=1, flex_days=1, user_id=1),
+        SimpleNamespace(morning_days=1, daytime_days=2, nighttime_days=2, flex_days=1, user_id=2),
     ]
 
     class FakeResult:
@@ -785,7 +786,9 @@ async def test_load_week_capacity_applies_spare_subtraction():
 
     fake_db = SimpleNamespace(execute=fake_execute)
 
-    caps = await _load_week_capacity(fake_db, week=1)
+    with patch("core.settings.get_settings") as mock_get_settings:
+        mock_get_settings.return_value.feature_strict_availability = False
+        caps = await _load_week_capacity(fake_db, week=1)
 
     # Spare subtraction configured in service: Ochtend-1, Dag-2, Avond-2
     # So: morning 3-1=2, day 3-2=1, night 3-2=1, flex unchanged=2

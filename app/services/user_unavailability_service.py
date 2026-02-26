@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Sequence
 from datetime import date
 
-from sqlalchemy import select, and_, delete
+from sqlalchemy import and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.utils import select_active
 
 from app.models.user_unavailability import UserUnavailability
 from app.schemas.user_unavailability import UserUnavailabilityCreate, UserUnavailabilityUpdate
@@ -15,7 +17,7 @@ async def list_unavailabilities(
 ) -> Sequence[UserUnavailability]:
     """List all unavailabilities for a user, ordered by start date."""
     stmt = (
-        select(UserUnavailability)
+        select_active(UserUnavailability)
         .where(UserUnavailability.user_id == user_id)
         .order_by(UserUnavailability.start_date)
     )
@@ -106,7 +108,7 @@ async def _check_overlap(
 ) -> None:
     """Check if the given range overlaps with any existing unavailability for this user."""
     # Overlap logic: (StartA <= EndB) and (EndA >= StartB)
-    stmt = select(UserUnavailability).where(
+    stmt = select_active(UserUnavailability).where(
         and_(
             UserUnavailability.user_id == user_id,
             UserUnavailability.start_date <= end,

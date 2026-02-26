@@ -30,6 +30,7 @@ class VisitBase(BaseModel):
     expertise_level: str | None = None
     wbc: bool = False
     fiets: bool = False
+    vog: bool = False
     hub: bool = False
     dvp: bool = False
     sleutel: bool = False
@@ -95,6 +96,7 @@ class VisitUpdate(BaseModel):
     expertise_level: str | None = None
     wbc: bool | None = None
     fiets: bool | None = None
+    vog: bool | None = None
     hub: bool | None = None
     dvp: bool | None = None
     sleutel: bool | None = None
@@ -304,6 +306,7 @@ class VisitListRow(BaseModel):
     expertise_level: str | None
     wbc: bool
     fiets: bool
+    vog: bool
     hub: bool
     dvp: bool
     sleutel: bool

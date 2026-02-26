@@ -69,7 +69,7 @@ def compute_visit_code(visit: Visit) -> str | None:
                 function = function_by_id.get(protocol.function_id)
                 if function is None:
                     continue
-                func_letter = function.name[0].upper() if function.name else "?"
+                func_letter = "Z" if function.name == "Kraamverblijfplaats" else (function.name[0].upper() if function.name else "?")
                 codes.append(f"V{func_letter}{daypart}{visit_index}")
             elif abbreviation:
                 codes.append(f"{abbreviation}{visit_index}")
@@ -85,7 +85,7 @@ def compute_visit_code(visit: Visit) -> str | None:
 
             if is_vleermuis:
                 for function in visit.functions or []:
-                    func_letter = function.name[0].upper() if function.name else "?"
+                    func_letter = "Z" if function.name == "Kraamverblijfplaats" else (function.name[0].upper() if function.name else "?")
                     codes.append(f"V{func_letter}{daypart}{visit_index}")
             elif abbreviation:
                 codes.append(f"{abbreviation}{visit_index}")

@@ -251,6 +251,7 @@ async def get_tight_visit_chains(
                     expertise_level=v.expertise_level,
                     wbc=v.wbc,
                     fiets=v.fiets,
+                    vog=v.vog,
                     hub=v.hub,
                     dvp=v.dvp,
                     sleutel=v.sleutel,

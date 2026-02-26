@@ -488,6 +488,7 @@ async def generate_visits_cp_sat(
     default_expertise_level: str | None = None,
     default_wbc: bool = False,
     default_fiets: bool = False,
+    default_vog: bool = False,
     default_hub: bool = False,
     default_dvp: bool = False,
     default_sleutel: bool = False,
@@ -975,6 +976,7 @@ async def generate_visits_cp_sat(
         new_visit.expertise_level = default_expertise_level
         new_visit.wbc = default_wbc
         new_visit.fiets = default_fiets
+        new_visit.vog = default_vog
         new_visit.hub = default_hub
         new_visit.dvp = default_dvp
         new_visit.sleutel = default_sleutel

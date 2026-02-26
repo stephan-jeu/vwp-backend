@@ -130,6 +130,7 @@ async def list_clusters(
                         expertise_level=v.expertise_level,
                         wbc=v.wbc,
                         fiets=v.fiets,
+                        vog=v.vog,
                         hub=v.hub,
                         dvp=v.dvp,
                         sleutel=v.sleutel,
@@ -214,6 +215,7 @@ async def list_clusters_flat(
                     expertise_level=v.expertise_level,
                     wbc=v.wbc,
                     fiets=v.fiets,
+                    vog=v.vog,
                     hub=v.hub,
                     dvp=v.dvp,
                     sleutel=v.sleutel,
@@ -286,6 +288,7 @@ async def create_cluster(
                 default_expertise_level=payload.default_expertise_level,
                 default_wbc=payload.default_wbc,
                 default_fiets=payload.default_fiets,
+                default_vog=payload.default_vog,
                 default_hub=payload.default_hub,
                 default_dvp=payload.default_dvp,
                 default_sleutel=payload.default_sleutel,
@@ -358,6 +361,7 @@ async def create_cluster(
                 expertise_level=v.expertise_level,
                 wbc=v.wbc,
                 fiets=v.fiets,
+                vog=v.vog,
                 hub=v.hub,
                 dvp=v.dvp,
                 sleutel=v.sleutel,
@@ -515,13 +519,14 @@ async def duplicate_cluster(
 async def update_cluster(
     admin: AdminDep, db: DbDep, cluster_id: int, payload: ClusterUpdate
 ) -> ClusterRead:
-    """Update mutable fields on a cluster (currently only address)."""
+    """Update mutable fields on a cluster (address, location, cluster_number)."""
 
     cluster = await db.get(Cluster, cluster_id)
     if cluster is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     cluster.address = payload.address
     cluster.location = payload.location
+    cluster.cluster_number = payload.cluster_number
     await db.commit()
     await db.refresh(cluster)
 

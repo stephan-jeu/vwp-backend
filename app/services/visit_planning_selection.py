@@ -198,22 +198,33 @@ def _priority_key(week_monday: date, v: Visit) -> tuple:
 
 
 async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
-    stmt = (
-        select(AvailabilityWeek)
-        .join(User, AvailabilityWeek.user_id == User.id)
-        .where(
-            and_(
-                AvailabilityWeek.week == week,
-                User.deleted_at.is_(None),
+    from core.settings import get_settings
+    
+    if get_settings().feature_strict_availability:
+        # Load strict capacities per user and sum them up
+        user_daypart_caps = await _load_user_daypart_capacities_strict(db, week)
+        
+        total_morning = sum(caps.get("Ochtend", 0) for caps in user_daypart_caps.values())
+        total_daytime = sum(caps.get("Dag", 0) for caps in user_daypart_caps.values())
+        total_night = sum(caps.get("Avond", 0) for caps in user_daypart_caps.values())
+        total_flex = sum(caps.get("Flex", 0) for caps in user_daypart_caps.values())
+    else:
+        stmt = (
+            select(AvailabilityWeek)
+            .join(User, AvailabilityWeek.user_id == User.id)
+            .where(
+                and_(
+                    AvailabilityWeek.week == week,
+                    User.deleted_at.is_(None),
+                )
             )
         )
-    )
-    rows = (await db.execute(stmt)).scalars().all()
-
-    total_morning = sum(r.morning_days or 0 for r in rows)
-    total_daytime = sum(r.daytime_days or 0 for r in rows)
-    total_night = sum(r.nighttime_days or 0 for r in rows)
-    total_flex = sum(r.flex_days or 0 for r in rows)
+        rows = (await db.execute(stmt)).scalars().all()
+    
+        total_morning = sum(r.morning_days or 0 for r in rows)
+        total_daytime = sum(r.daytime_days or 0 for r in rows)
+        total_night = sum(r.nighttime_days or 0 for r in rows)
+        total_flex = sum(r.flex_days or 0 for r in rows)
 
     # Apply spare capacity caps (cannot go below zero)
     total_morning = max(0, total_morning - SPARE_BY_DAYPART["Ochtend"])
@@ -641,7 +652,7 @@ def _qualifies_user_for_visit(user: User, visit: Visit) -> bool:
 
     # Visit flags that must exist on user when required. "sleutel" is handled
     # separately during assignment based on contract type.
-    for flag in ("hub", "fiets", "wbc", "dvp"):
+    for flag in ("hub", "fiets", "wbc", "dvp", "vog"):
         if bool(getattr(visit, flag, False)) and not bool(getattr(user, flag, False)):
             if _DEBUG_PLANNING:
                 _logger.debug(

@@ -184,10 +184,24 @@ async def _list_by_week_range_strict(
     )
     patterns = (await db.execute(patterns_stmt)).scalars().all()
     
+    # Fetch unavailabilities
+    from app.models.user_unavailability import UserUnavailability
+    unavail_stmt = select_active(UserUnavailability).where(
+        and_(
+            UserUnavailability.start_date <= end_date,
+            UserUnavailability.end_date >= start_date,
+        )
+    )
+    unavailabilities = (await db.execute(unavail_stmt)).scalars().all()
+    
     # Organise patterns by user
     patterns_by_user: dict[int, list[AvailabilityPattern]] = {}
     for p in patterns:
         patterns_by_user.setdefault(p.user_id, []).append(p)
+
+    unavail_by_user: dict[int, list[UserUnavailability]] = {}
+    for u_unavail in unavailabilities:
+        unavail_by_user.setdefault(u_unavail.user_id, []).append(u_unavail)
 
     # Also need assignments (same logic as normal flow)
     # Load assigned visit counts per (user_id, week, part_of_day).
@@ -222,45 +236,19 @@ async def _list_by_week_range_strict(
          elif label == "Dag": bucket["daytime"] += count_int
          elif label == "Avond": bucket["evening"] += count_int
 
+    from app.services.visit_planning_selection import _compute_strict_daypart_caps
+
     users_payload: list[UserAvailability] = []
     
     for u in users:
         user_patterns = patterns_by_user.get(u.id, [])
+        user_unavail = unavail_by_user.get(u.id, [])
         weeks_data: list[AvailabilityCompact] = []
         
         for w in range(week_start, week_end + 1):
-            w_start = get_start_of_iso_week(year, w)
-            
-            # Calculate capacity for this week based on patterns
-            # A simplistic approach: Iterate days Mon-Fri (or Mon-Sun)
-            # Find applicable pattern for each day.
-            # Sum up slots.
-            
-            morning_cap = 0
-            daytime_cap = 0
-            nighttime_cap = 0
-            
-            for i in range(5): # Mon(0) to Fri(4) - assuming weekends irrelevant for now or handled? 
-                # Strict availability usually implies work week. 
-                # check if pattern covers this day
-                day_date = w_start + timedelta(days=i)
-                
-                # Find active pattern
-                active_pattern = next(
-                    (p for p in user_patterns if p.start_date <= day_date <= p.end_date), 
-                    None
-                )
-                
-                if active_pattern:
-                    # Get schedule for this day
-                    # day_date.weekday() -> 0=Mon, ...
-                    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-                    day_name = day_names[day_date.weekday()]
-                    
-                    slots = active_pattern.schedule.get(day_name, [])
-                    if "morning" in slots: morning_cap += 1
-                    if "daytime" in slots: daytime_cap += 1
-                    if "nighttime" in slots: nighttime_cap += 1
+            morning_cap, daytime_cap, nighttime_cap = _compute_strict_daypart_caps(
+                user_patterns, user_unavail, w, year
+            )
             
             assigned = assigned_by_key.get((u.id, w), {})
             
