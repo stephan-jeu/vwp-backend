@@ -11,6 +11,9 @@ class Settings(BaseModel):
     # App
     app_name: str = Field(default="Veldwerkplanning API")
     debug: bool = Field(default=False)
+    frontend_url: str = Field(
+        default_factory=lambda: os.getenv("FRONTEND_URL", "http://localhost:3000")
+    )
 
     # Multi-tenancy & Feature Flags
     tenant_name: str = Field(

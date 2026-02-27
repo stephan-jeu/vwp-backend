@@ -84,7 +84,7 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
     stats = {"total": len(visits_by_researcher), "sent": 0, "failed": 0, "skipped": 0}
 
     settings = get_settings()
-    frontend_url = "http://localhost:3000" # TODO: Should ideally come from settings too for prod
+    frontend_url = settings.frontend_url
     
     for researcher_id, researcher_visits in visits_by_researcher.items():
         researcher = researchers_map[researcher_id]
@@ -120,11 +120,37 @@ def _generate_email_body(user: User, visits: list[Visit], week: int, frontend_ur
         location = v.cluster.project.location if v.cluster and v.cluster.project else "?"
         address = v.cluster.address if v.cluster else ""
         
-        # Day and Date
-        day_str = "?"
-        if v.planned_date:
-            days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-            day_str = f"{days[v.planned_date.weekday()]} {v.planned_date.strftime('%d-%m')}"
+        # Day and Date / Week
+        day_str = ""
+        part_of_day_str = v.part_of_day or "-"
+        
+        settings = get_settings()
+        if settings.feature_daily_planning:
+            if v.planned_date:
+                days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+                day_str = f"{days[v.planned_date.weekday()]} {v.planned_date.strftime('%d-%m')}"
+        else:
+            # Weekly planning logic
+            if v.from_date and v.to_date:
+                # Calculate if the visit window is entirely within the planned week
+                week_start, week_end = _work_week_bounds(v.from_date.year, week)
+                
+                if v.from_date >= week_start and v.to_date <= week_end:
+                     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+                     if v.from_date == v.to_date:
+                          day_str = f"{days[v.from_date.weekday()]} {v.from_date.strftime('%d-%m')}"
+                     else:
+                          day_str = f"Vanaf {days[v.from_date.weekday()].lower()} {v.from_date.strftime('%d-%m')} t/m {days[v.to_date.weekday()].lower()} {v.to_date.strftime('%d-%m')}"
+                elif v.from_date >= week_start:
+                     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+                     day_str = f"Vanaf {days[v.from_date.weekday()].lower()} {v.from_date.strftime('%d-%m')}"
+                elif v.to_date <= week_end:
+                     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+                     day_str = f"Uiterlijk {days[v.to_date.weekday()].lower()} {v.to_date.strftime('%d-%m')}"
+                else:
+                     day_str = "Hele week"
+            else:
+                day_str = "Hele week"
         
         # Functions & Species
         funcs = ", ".join([f.name for f in v.functions])
@@ -144,7 +170,7 @@ def _generate_email_body(user: User, visits: list[Visit], week: int, frontend_ur
         <tr style="border-bottom: 1px solid #eee;">
             <td style="padding: 10px; vertical-align: top;">
                 <strong>{day_str}</strong><br>
-                <span style="font-size: 0.9em; color: #666;">{v.part_of_day or '-'}</span>
+                <span style="font-size: 0.9em; color: #666;">{part_of_day_str}</span>
             </td>
             <td style="padding: 10px; vertical-align: top;">
                 <strong>{project_code} {cluster_info}</strong><br>
