@@ -37,11 +37,9 @@ def apply_visit_filters(
         stmt = stmt.where(
             or_(
                 Visit.planned_week == week,
-                Visit.provisional_week == week,
                 and_(
                     Visit.planned_week.is_(None),
-                    Visit.provisional_week.is_(None),
-                    func.extract("week", Visit.from_date) == week,
+                    Visit.provisional_week == week,
                 ),
             )
         )

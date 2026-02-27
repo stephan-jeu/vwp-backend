@@ -158,7 +158,7 @@ async def list_available_weeks(
     from app.models.visit import visit_researchers
     from app.models.availability import AvailabilityWeek
 
-    stmt = select(Visit.planned_week, Visit.from_date)
+    stmt = select(Visit.planned_week, Visit.provisional_week)
 
     if mine:
         stmt = stmt.join(visit_researchers).where(
@@ -166,19 +166,17 @@ async def list_available_weeks(
         )
 
     stmt = stmt.where(
-        (Visit.planned_week.is_not(None)) | (Visit.from_date.is_not(None))
+        (Visit.planned_week.is_not(None)) | (Visit.provisional_week.is_not(None))
     )
     stmt = stmt.where(Visit.deleted_at.is_(None))
 
     rows = await db.execute(stmt)
     weeks = set()
 
-    for p_week, f_date in rows:
-        if p_week is not None and 1 <= p_week <= 53:
-            weeks.add(p_week)
-        elif f_date is not None:
-            # Fallback to calculated week from date
-            weeks.add(f_date.isocalendar()[1])
+    for p_week, prov_week in rows:
+        target_week = p_week if p_week is not None else prov_week
+        if target_week is not None and 1 <= target_week <= 53:
+            weeks.add(target_week)
 
     # If listing for all (admin usage usually), also include weeks with availability
     if not mine:

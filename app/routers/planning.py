@@ -60,10 +60,12 @@ async def get_planning(
         planned = [
             v
             for v in planned
-            if (getattr(v, "planned_week", None) == week)
-            or (
-                (getattr(v, "from_date", None) and getattr(v, "to_date", None))
-                and (v.from_date <= week_end and v.to_date >= week_start)
+            if (
+                (getattr(v, "planned_week", None) == week)
+                or (
+                    getattr(v, "planned_week", None) is None
+                    and getattr(v, "provisional_week", None) == week
+                )
             )
         ]
 
@@ -205,11 +207,11 @@ async def clear_planned_researchers(
             # We want to clear "Planning" which implies mapped to a week.
             # So targets:
             # 1. planned_week == week
-            # 2. OR date overlap (fallback for legacy/implicit)
+            # 2. OR planned_week is None AND provisional_week == week
             (Visit.planned_week == week)
             | and_(
-                Visit.from_date <= week_end,
-                Visit.to_date >= week_start,
+                Visit.planned_week.is_(None),
+                Visit.provisional_week == week,
             )
         ).options(selectinload(Visit.researchers))
     else:
