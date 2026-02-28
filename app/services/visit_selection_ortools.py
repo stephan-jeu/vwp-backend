@@ -1048,7 +1048,7 @@ async def select_visits_cp_sat(
             quality = "EXCELLENT"
         elif gap <= 0.05:
             quality = "GOOD"
-        elif gap <= 0.15:
+        elif gap <= 0.40:
             quality = "OK"
         else:
             quality = "WEAK"
