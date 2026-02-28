@@ -123,7 +123,7 @@ async def test_travel_time_scoring_picks_closest(
         "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
-    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday)
+    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday, today=week_monday)
 
     # Expect user 1 (shorter travel) assigned
     assert result["selected_visit_ids"] == [1]
@@ -199,7 +199,7 @@ async def test_excludes_over_75_minutes(
         "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
-    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday)
+    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday, today=week_monday)
 
     # User 1 excluded, so user 2 gets assigned
     assert result["selected_visit_ids"] == [2]
@@ -286,7 +286,7 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
         "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
-    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday)
+    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday, today=week_monday)
 
     # Expect user 1 gets v1, user 2 gets v2 due to lower already-assigned ratio
     assert result["selected_visit_ids"] == [10, 11]
@@ -397,7 +397,7 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     # Logic prefers New D (150 > 70).
     # So we expect NO overlap.
 
-    await select_visits_for_week(DummyDB(), week_monday)
+    await select_visits_for_week(DummyDB(), week_monday, today=week_monday)
 
     assigned_ids_v1 = [r.id for r in v1.researchers]
     assigned_ids_v2 = [r.id for r in v2.researchers]
@@ -435,7 +435,7 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
     v1.researchers = []
     v2.researchers = []
 
-    await select_visits_for_week(DummyDB(), week_monday)
+    await select_visits_for_week(DummyDB(), week_monday, today=week_monday)
 
     assigned_ids_v1_high = [r.id for r in v1.researchers]
     assigned_ids_v2_high = [r.id for r in v2.researchers]

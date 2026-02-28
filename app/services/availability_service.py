@@ -246,7 +246,7 @@ async def _list_by_week_range_strict(
         weeks_data: list[AvailabilityCompact] = []
         
         for w in range(week_start, week_end + 1):
-            morning_cap, daytime_cap, nighttime_cap = _compute_strict_daypart_caps(
+            morning_cap, daytime_cap, nighttime_cap, _ = _compute_strict_daypart_caps(
                 user_patterns, user_unavail, w, year
             )
             

@@ -55,7 +55,7 @@ def _end_of_work_week(week_monday: date) -> date:
     return week_monday + timedelta(days=4)
 
 
-def _allowed_day_indices_for_visit(week_monday: date, visit: Visit) -> list[int]:
+def _allowed_day_indices_for_visit(week_monday: date, visit: Visit, today: date | None = None) -> list[int]:
     """Return 0-based indices (Mon=0..Fri=4) for days the visit can occur.
 
     The indices are the intersection of the visit's [from_date, to_date] window
@@ -63,8 +63,19 @@ def _allowed_day_indices_for_visit(week_monday: date, visit: Visit) -> list[int]
     intersection, the list is empty.
     """
 
+    if today is None:
+        today = date.today()
+
     week_friday = _end_of_work_week(week_monday)
     from_d = max(getattr(visit, "from_date", None) or date.min, week_monday)
+    # Prevent assigning visits to days in the past during a mid-week run
+    from_d = max(from_d, today)
+    
+    # Too late to plan Ochtend or Dag visits on the current day itself
+    part = getattr(visit, "part_of_day", None)
+    if from_d == today and part in ("Ochtend", "Dag"):
+        from_d = today + timedelta(days=1)
+        
     to_d = min(getattr(visit, "to_date", None) or date.max, week_friday)
 
     if from_d > to_d:
@@ -885,12 +896,12 @@ def _compute_strict_daypart_caps(
     how many days each daypart slot appears in the schedule. Applies per-daypart caps
     and skips periods marked by UserUnavailability.
 
-    Returns (morning_days, daytime_days, nighttime_days).
+    Returns (morning_days, daytime_days, nighttime_days, specific_days).
     """
     try:
         w_start = date.fromisocalendar(year, week, 1)
     except ValueError:
-        return 0, 0, 0
+        return 0, 0, 0, {"Ochtend": [], "Dag": [], "Avond": []}
 
     day_names = [
         "monday", "tuesday", "wednesday", "thursday", "friday",
@@ -901,6 +912,8 @@ def _compute_strict_daypart_caps(
     nighttime_days = 0
     max_mornings: int = 2
     max_evenings: int = 5
+    
+    specific_days = {"Ochtend": [], "Dag": [], "Avond": []}
 
     for i in range(7):
         day_date = w_start + timedelta(days=i)
@@ -926,12 +939,15 @@ def _compute_strict_daypart_caps(
         
         if "morning" in slots and not (active_unavail and getattr(active_unavail, "morning", True)):
             morning_days += 1
+            if i < 5: specific_days["Ochtend"].append(i)
         if "daytime" in slots and not (active_unavail and getattr(active_unavail, "daytime", True)):
             daytime_days += 1
+            if i < 5: specific_days["Dag"].append(i)
         if "nighttime" in slots and not (active_unavail and getattr(active_unavail, "nighttime", True)):
             nighttime_days += 1
+            if i < 5: specific_days["Avond"].append(i)
 
-    return min(morning_days, max_mornings), min(daytime_days, 5), min(nighttime_days, max_evenings)
+    return min(morning_days, max_mornings), min(daytime_days, 5), min(nighttime_days, max_evenings), specific_days
 
 
 async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int, int]:
@@ -989,7 +1005,7 @@ async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int,
 
     caps: dict[int, int] = {}
     for uid, user_patterns in patterns_by_user.items():
-        m, d, n = _compute_strict_daypart_caps(user_patterns, unavail_by_user.get(uid, []), week, year)
+        m, d, n, _ = _compute_strict_daypart_caps(user_patterns, unavail_by_user.get(uid, []), week, year)
         total = m + d + n
         caps[uid] = total
 
@@ -1051,10 +1067,10 @@ async def _load_user_daypart_capacities_strict(
     for u in rows_u:
         unavail_by_user.setdefault(u.user_id, []).append(u)
 
-    per_user: dict[int, dict[str, int]] = {}
+    per_user: dict[int, dict[str, int | dict[str, list[int]]]] = {}
     for uid, user_patterns in patterns_by_user.items():
-        m, d, n = _compute_strict_daypart_caps(user_patterns, unavail_by_user.get(uid, []), week, year)
-        per_user[uid] = {"Ochtend": m, "Dag": d, "Avond": n, "Flex": 0}
+        m, d, n, specific_days = _compute_strict_daypart_caps(user_patterns, unavail_by_user.get(uid, []), week, year)
+        per_user[uid] = {"Ochtend": m, "Dag": d, "Avond": n, "Flex": 0, "days": specific_days}
 
     return per_user
 
@@ -1194,6 +1210,7 @@ async def select_visits_for_week(
     week_monday: date,
     timeout_seconds: float | None = None,
     include_travel_time: bool = True,
+    today: date | None = None,
 ) -> dict:
     """Run CP-SAT solver for a given week.
 
@@ -1218,6 +1235,7 @@ async def select_visits_for_week(
             week_monday,
             timeout_seconds=timeout_seconds,
             include_travel_time=include_travel_time,
+            today=today,
         )
     except PlanningRunError:
         if db:

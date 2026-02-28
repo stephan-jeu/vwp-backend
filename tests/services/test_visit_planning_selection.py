@@ -127,7 +127,7 @@ async def test_select_respects_capacity_and_priority_order_async(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # Assert: all four selected thanks to 3 dedicated + 1 flex
     assert result["selected_visit_ids"] == [1, 2, 3, 4]
@@ -173,7 +173,7 @@ async def test_unknown_part_of_day_is_skipped(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert result["selected_visit_ids"] == [1]
     assert result["skipped_visit_ids"] == [2]
@@ -207,7 +207,7 @@ async def test_required_researchers_consumes_capacity_and_flex(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # 2 dedicated + 1 flex -> should fit
     assert result["selected_visit_ids"] == [10]
@@ -253,7 +253,7 @@ async def test_spare_capacity_is_applied(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert result["selected_visit_ids"] == [21]
     assert result["skipped_visit_ids"] == [22]
@@ -368,7 +368,7 @@ async def test_priority_tiers_global_order(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert result["selected_visit_ids"] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
@@ -453,7 +453,7 @@ async def test_tie_breakers_by_dates_then_id(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # Expected order: by earliest to_date -> earliest from_date -> lowest id
     assert result["selected_visit_ids"] == [31, 32, 33, 10, 99, 30]
@@ -505,7 +505,7 @@ async def test_capacity_insufficient_selects_highest_weight(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert result["selected_visit_ids"] == [1, 2]
     assert result["skipped_visit_ids"] == [3]
@@ -559,7 +559,7 @@ async def test_sleutel_between_hub_and_misc(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert result["selected_visit_ids"] == [1, 2, 3]
 
@@ -612,7 +612,7 @@ async def test_flex_consumed_when_period_deficit(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # Expect top two selected using flex, lowest skipped
     assert result["selected_visit_ids"] == [11, 12]
@@ -657,7 +657,7 @@ async def test_required_researchers_consumes_multiple_slots(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # v_big takes both slots; v_small cannot fit afterwards
     assert result["selected_visit_ids"] == [20]
@@ -709,7 +709,7 @@ async def test_function_name_detection_smp_and_route_case_insensitive(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # Expected order: SMP-like first, then route-like, then plain
     assert result["selected_visit_ids"] == [40, 41, 42]
@@ -754,7 +754,7 @@ async def test_flex_shared_across_parts_not_overdrawn(
         "app.services.visit_planning_selection._eligible_visits_for_week", fake_eligible
     )
 
-    result = await select_visits_for_week(db=None, week_monday=week_monday)  # type: ignore[arg-type]
+    result = await select_visits_for_week(db=None, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # Only the highest-priority one should use the single flex day
     assert result["selected_visit_ids"] == [50]
@@ -901,7 +901,7 @@ async def test_assign_requires_all_families(
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert [u.full_name for u in getattr(v, "researchers", [])] == ["B"]
 
@@ -955,7 +955,7 @@ async def test_assign_requires_smp(monkeypatch: pytest.MonkeyPatch, week_monday:
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert [u.full_name for u in getattr(v, "researchers", [])] == ["B"]
 
@@ -1006,7 +1006,7 @@ async def test_assign_requires_vrfg(monkeypatch: pytest.MonkeyPatch, week_monday
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert [u.full_name for u in getattr(v, "researchers", [])] == ["B"]
 
@@ -1064,7 +1064,7 @@ async def test_assign_requires_visit_flags(
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assert [u.full_name for u in getattr(v, "researchers", [])] == ["B"]
 
@@ -1148,7 +1148,7 @@ async def test_sleutel_requires_at_least_one_intern(
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assigned_names = [u.full_name for u in getattr(v, "researchers", [])]
     # Both researchers should be assigned and at least one INTERN must be
@@ -1216,7 +1216,7 @@ async def test_single_user_can_be_assigned_to_multiple_visits_when_capacity_allo
         "app.services.visit_planning_selection._load_user_capacities", fake_user_caps_fn
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     counts = [len(getattr(v, "researchers", [])) for v in (v1, v2)]
     assert counts == [1, 1]
@@ -1311,7 +1311,7 @@ async def test_single_user_not_assigned_more_visits_than_feasible_days(
         "app.services.visit_selection_ortools.get_settings", lambda: _non_strict
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assigned_counts = [len(getattr(v, "researchers", [])) for v in (v1, v2, v3)]
     assert sum(assigned_counts) <= 2
@@ -1394,7 +1394,7 @@ async def test_single_user_not_assigned_two_visits_same_day_across_dayparts(
         "app.services.visit_selection_ortools.get_settings", lambda: _non_strict
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     assigned_counts = [
         len(getattr(v, "researchers", [])) for v in (v_morning, v_evening)
@@ -1468,7 +1468,7 @@ async def test_users_without_daypart_capacity_rows_not_assigned(
         fake_user_daypart_caps,
     )
 
-    await select_visits_for_week(db=fake_db, week_monday=week_monday)  # type: ignore[arg-type]
+    await select_visits_for_week(db=fake_db, week_monday=week_monday, today=week_monday)  # type: ignore[arg-type]
 
     # Both visits should be assigned to the user that has availability; the
     # user without a capacity row must not receive any assignments.

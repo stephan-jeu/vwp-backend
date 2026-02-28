@@ -131,7 +131,7 @@ async def generate_planning(
     # Include travel time optimization
     try:
         result = await select_visits_for_week(
-            db, week_monday, timeout_seconds=None, include_travel_time=True
+            db, week_monday, timeout_seconds=None, include_travel_time=True, today=today
         )
     except PlanningRunError as exc:
         _logger.exception("PlanningRunError: %s", exc)

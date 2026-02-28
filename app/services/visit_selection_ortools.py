@@ -29,6 +29,7 @@ def _generate_greedy_planning_solution(
     user_caps: dict[int, int],
     user_daypart_caps: dict[int, dict[str, int]],
     week_monday: date,
+    today: date | None = None,
 ) -> tuple[set[int], dict[int, int], dict[int, list[int]]]:
     """
     Generate a Greedy First-Fit solution for planning.
@@ -77,7 +78,7 @@ def _generate_greedy_planning_solution(
         if not part:
             continue
 
-        allowed_days = _allowed_day_indices_for_visit(week_monday, v)
+        allowed_days = _allowed_day_indices_for_visit(week_monday, v, today=today)
         if not allowed_days:
             continue
 
@@ -163,6 +164,7 @@ async def select_visits_cp_sat(
     timeout_seconds: float | None = None,
     include_travel_time: bool = True,
     ignore_existing_assignments: bool = False,
+    today: date | None = None,
 ) -> VisitSelectionResult:
     """
     Select visits and assign researchers using OR-Tools (CP-SAT).
@@ -330,7 +332,7 @@ async def select_visits_cp_sat(
         _consec_pairs: list[tuple[str, str]] = []
         _consec_pair_indices: dict[tuple[str, str], list[tuple[int, int]]] = {}
 
-        def _full_addr(cluster) -> str | None:
+        def _full_addr_for_travel_time(cluster) -> str | None:
             addr = getattr(cluster, "address", None)
             if not addr:
                 return None
@@ -347,7 +349,7 @@ async def select_visits_cp_sat(
 
         for i1, v1 in v_map.items():
             p1 = (getattr(v1, "part_of_day", None) or "").strip()
-            addr1 = _full_addr(getattr(v1, "cluster", None))
+            addr1 = _full_addr_for_travel_time(getattr(v1, "cluster", None))
             if not addr1 or not p1:
                 continue
             for i2, v2 in v_map.items():
@@ -356,7 +358,7 @@ async def select_visits_cp_sat(
                 p2 = (getattr(v2, "part_of_day", None) or "").strip()
                 if (p1, p2) not in _CONSEC_SAME_DAY and (p1, p2) != _OVERNIGHT_PAIR:
                     continue
-                addr2 = _full_addr(getattr(v2, "cluster", None))
+                addr2 = _full_addr_for_travel_time(getattr(v2, "cluster", None))
                 if not addr2:
                     continue
                 key = (addr1, addr2)
@@ -367,6 +369,11 @@ async def select_visits_cp_sat(
             consec_cluster_travel = await _tt_consec.get_travel_minutes_batch(
                 _consec_pairs, db=db
             )
+            from app.services.visit_planning_selection import _DEBUG_PLANNING
+            if _DEBUG_PLANNING:
+                _logger.info("planning_consec: Fetched travel times for %d pairs", len(_consec_pairs))
+                for k, v in consec_cluster_travel.items():
+                    _logger.debug("planning_consec: Pair %s -> %s min", k, v)
 
     part_labels = ["Ochtend", "Dag", "Avond"]
 
@@ -392,7 +399,7 @@ async def select_visits_cp_sat(
         scheduled[i] = model.NewBoolVar(f"scheduled_{i}")
 
         # 2a. Visit Day Logic
-        allowed_indices = _allowed_day_indices_for_visit(week_monday, v)
+        allowed_indices = _allowed_day_indices_for_visit(week_monday, v, today=today)
         if not allowed_indices:
             # Cannot be scheduled if no allowed days
             model.Add(scheduled[i] == 0)
@@ -423,10 +430,13 @@ async def select_visits_cp_sat(
                 for d in range(5):
                     active_assignment[i, j, d] = model.NewBoolVar(f"active_{i}_{j}_{d}")
                     model.Add(active_assignment[i, j, d] <= x[i, j])
-                    model.Add(active_assignment[i, j, d] <= visit_day[i, d])
-                    model.Add(
-                        active_assignment[i, j, d] >= x[i, j] + visit_day[i, d] - 1
-                    )
+                    if (i, d) in visit_day:
+                        model.Add(active_assignment[i, j, d] <= visit_day[i, d])
+                        model.Add(
+                            active_assignment[i, j, d] >= x[i, j] + visit_day[i, d] - 1
+                        )
+                    else:
+                        model.Add(active_assignment[i, j, d] == 0)
             else:
                 pass
 
@@ -437,6 +447,9 @@ async def select_visits_cp_sat(
             model.Add(scheduled[i] == 0)
 
     # 2c. User Capacity Constraints
+
+    # Helper: ensure assigning to allowed days only (Strict Mode)
+    strict_mode = get_settings().feature_strict_availability
 
     for j, u in u_map.items():
         uid = getattr(u, "id", None)
@@ -475,11 +488,37 @@ async def select_visits_cp_sat(
         if total_flex_usage:
             model.Add(sum(total_flex_usage) <= flex_max)
 
+        # Restrict assignment precisely to allowed days per daypart (Strict Mode)
+        if strict_mode:
+            allowed_days_dict = dp_caps.get("days", {})
+            for part in part_labels:
+                allowed_days_for_part = allowed_days_dict.get(part, [0, 1, 2, 3, 4])
+                
+                # If they have 0 dedicated slots, their entire capacity relies on Flex.
+                # In that case, we can't restrict their days by the 'part' schedule directly,
+                # but if they DO have dedicated slots from the DB, the 'days' array will hold them.
+                # Actually, in strict mode, *all* availability comes from scheduled slots. 
+                # There is no generic "Flex" in strict mode unless unhandled.
+                # Therefore, if day d is NOT in allowed_days_for_part, we must forbid assigning
+                # this part on day d.
+                
+                for d in range(5):
+                    if d not in allowed_days_for_part:
+                        forbidden_vars = [
+                            active_assignment[i, j, d]
+                            for i in v_map
+                            if (i, j, d) in active_assignment
+                            and getattr(v_map[i], "part_of_day", None) == part
+                        ]
+                        for f_var in forbidden_vars:
+                            model.Add(f_var == 0)
+
     # 2d. Strict Day Coordination
     # In strict availability mode researchers may do 2 visits per day (double visits).
     max_visits_per_day = 2 if get_settings().feature_strict_availability else 1
     for j in u_map:
         for d in range(5):
+            # 1. Total visits per day limit
             active_vars = [
                 active_assignment[i, j, d]
                 for i in v_map
@@ -488,31 +527,28 @@ async def select_visits_cp_sat(
             if active_vars:
                 model.Add(sum(active_vars) <= max_visits_per_day)
 
+            # 2. Strict Daypart Exclusion: At most 1 visit per daypart per day
+            for part in part_labels:
+                part_active_vars = [
+                    active_assignment[i, j, d]
+                    for i in v_map
+                    if (i, j, d) in active_assignment
+                    and getattr(v_map[i], "part_of_day", None) == part
+                ]
+                if part_active_vars:
+                    model.Add(sum(part_active_vars) <= 1)
+
     # 2e. Consecutive-daypart proximity constraint (strict availability mode only).
     # When a researcher is assigned two visits in consecutive dayparts — either on
     # the same day (Ochtend→Dag, Dag→Avond) or overnight (Avond on day D →
     # Ochtend on day D+1) — the clusters must be ≤30 minutes apart.  If the
     # pre-fetched travel time exceeds 30 minutes, forbid that combination.
     if get_settings().feature_strict_availability and consec_cluster_travel:
-
-        def _full_addr_constraint(cluster) -> str | None:
-            addr = getattr(cluster, "address", None)
-            if not addr:
-                return None
-            addr = addr.strip()
-            is_coords = bool(
-                re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
-                or re.match(r"^\d+°", addr)
-            )
-            if not is_coords:
-                loc = getattr(getattr(cluster, "project", None), "location", None)
-                if loc:
-                    addr = f"{addr}, {loc}"
-            return addr
+        _logger.info("planning_consec: Checking %d pre-fetched consecutive cluster travel times", len(consec_cluster_travel))
 
         for i1, v1 in v_map.items():
             p1 = (getattr(v1, "part_of_day", None) or "").strip()
-            addr1 = _full_addr_constraint(getattr(v1, "cluster", None))
+            addr1 = _full_addr_for_travel_time(getattr(v1, "cluster", None))
             if not addr1 or not p1:
                 continue
             for i2, v2 in v_map.items():
@@ -523,12 +559,25 @@ async def select_visits_cp_sat(
                 is_overnight = (p1, p2) == _OVERNIGHT_PAIR
                 if not is_same_day and not is_overnight:
                     continue
-                addr2 = _full_addr_constraint(getattr(v2, "cluster", None))
+                addr2 = _full_addr_for_travel_time(getattr(v2, "cluster", None))
                 if not addr2:
                     continue
                 travel = consec_cluster_travel.get((addr1, addr2))
-                if travel is None or travel <= 30:
+                
+                if travel is None:
                     continue
+                
+                # We always log if it's evaluated for a researcher pair, but let's log the raw truth first
+                # Actually, only log if >30 explicitly
+                if travel <= 30:
+                    continue
+                    
+                if _DEBUG_PLANNING:
+                    _logger.info(
+                        "planning_consec: Forbidding %s (V%s) and %s (V%s) because travel time %s min > 30 min",
+                        p1, i1, p2, i2, travel
+                    )
+
                 # Travel time exceeds 30 min: forbid assigning the same researcher
                 # to both visits in this consecutive order.
                 for j in u_map:
@@ -546,9 +595,10 @@ async def select_visits_cp_sat(
                                 )
                     else:  # overnight: v1 is Avond on day d, v2 is Ochtend on day d+1
                         for d in range(4):
-                            if (i1, j, d) in active_assignment and (
-                                i2, j, d + 1
-                            ) in active_assignment:
+                            has_d = (i1, j, d) in active_assignment
+                            has_next_d = (i2, j, d + 1) in active_assignment
+
+                            if has_d and has_next_d:
                                 model.Add(
                                     active_assignment[i1, j, d]
                                     + active_assignment[i2, j, d + 1]
@@ -647,7 +697,7 @@ async def select_visits_cp_sat(
         
         for i1, v1 in v_map.items():
             p1 = (getattr(v1, "part_of_day", None) or "").strip()
-            addr1 = _full_addr_constraint(getattr(v1, "cluster", None))
+            addr1 = _full_addr_for_travel_time(getattr(v1, "cluster", None))
             if not addr1 or not p1: continue
             
             for i2, v2 in v_map.items():
@@ -657,7 +707,7 @@ async def select_visits_cp_sat(
                 is_overnight = (p1, p2) == _OVERNIGHT_PAIR
                 if not is_same_day and not is_overnight: continue
                 
-                addr2 = _full_addr_constraint(getattr(v2, "cluster", None))
+                addr2 = _full_addr_for_travel_time(getattr(v2, "cluster", None))
                 if not addr2: continue
                 
                 travel = consec_cluster_travel.get((addr1, addr2))

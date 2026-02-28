@@ -141,6 +141,7 @@ async def test_cp_sat_prefers_supervisor_for_vleermuis_multi_person():
         user_caps=user_caps,
         user_daypart_caps=user_daypart_caps,
         include_travel_time=False,
+        today=date(2026, 5, 4),
     )
 
     # Assert
@@ -182,6 +183,7 @@ async def test_cp_sat_allows_non_vleermuis_without_supervisor():
         user_caps=user_caps,
         user_daypart_caps=user_daypart_caps,
         include_travel_time=False,
+        today=date(2026, 5, 4),
     )
 
     # Assert
@@ -219,6 +221,7 @@ async def test_cp_sat_allows_single_researcher_vleermuis_junior_only():
         user_caps=user_caps,
         user_daypart_caps=user_daypart_caps,
         include_travel_time=False,
+        today=date(2026, 5, 4),
     )
 
     # Assert
@@ -272,6 +275,7 @@ async def test_cp_sat_enforces_dutch_buddy_for_english(monkeypatch):
         user_caps=user_caps,
         user_daypart_caps=user_daypart_caps,
         include_travel_time=False,
+        today=date(2026, 5, 4),
     )
     
     # Assert
@@ -337,6 +341,7 @@ async def test_cp_sat_ignores_language_when_disabled(monkeypatch):
         user_caps=user_caps,
         user_daypart_caps=user_daypart_caps,
         include_travel_time=False,
+        today=date(2026, 5, 4),
     )
     
     # Assert
