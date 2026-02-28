@@ -369,11 +369,6 @@ async def select_visits_cp_sat(
             consec_cluster_travel = await _tt_consec.get_travel_minutes_batch(
                 _consec_pairs, db=db
             )
-            from app.services.visit_planning_selection import _DEBUG_PLANNING
-            if _DEBUG_PLANNING:
-                _logger.info("planning_consec: Fetched travel times for %d pairs", len(_consec_pairs))
-                for k, v in consec_cluster_travel.items():
-                    _logger.debug("planning_consec: Pair %s -> %s min", k, v)
 
     part_labels = ["Ochtend", "Dag", "Avond"]
 
@@ -544,7 +539,6 @@ async def select_visits_cp_sat(
     # Ochtend on day D+1) — the clusters must be ≤30 minutes apart.  If the
     # pre-fetched travel time exceeds 30 minutes, forbid that combination.
     if get_settings().feature_strict_availability and consec_cluster_travel:
-        _logger.info("planning_consec: Checking %d pre-fetched consecutive cluster travel times", len(consec_cluster_travel))
 
         for i1, v1 in v_map.items():
             p1 = (getattr(v1, "part_of_day", None) or "").strip()
@@ -571,12 +565,6 @@ async def select_visits_cp_sat(
                 # Actually, only log if >30 explicitly
                 if travel <= 30:
                     continue
-                    
-                if _DEBUG_PLANNING:
-                    _logger.info(
-                        "planning_consec: Forbidding %s (V%s) and %s (V%s) because travel time %s min > 30 min",
-                        p1, i1, p2, i2, travel
-                    )
 
                 # Travel time exceeds 30 min: forbid assigning the same researcher
                 # to both visits in this consecutive order.
