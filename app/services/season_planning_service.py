@@ -2137,7 +2137,7 @@ class SeasonPlanningService:
         for uid, user_patterns in patterns_by_user.items():
             user_unavail = unavail_by_user.get(uid, [])
             for week in range(1, 54):
-                m, d, n = _compute_strict_daypart_caps(
+                m, d, n, _ = _compute_strict_daypart_caps(
                     user_patterns, user_unavail, week, year
                 )
                 
