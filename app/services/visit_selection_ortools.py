@@ -228,7 +228,7 @@ async def select_visits_cp_sat(
     clean_visits = []
     skipped_visits = []
 
-    # 1. Group by Protocol
+    # 1. Group by Protocol + Cluster
     for v in visits:
         pod = getattr(v, "part_of_day", None)
         if not pod or pod not in DAYPART_TO_AVAIL_FIELD:
@@ -243,7 +243,7 @@ async def select_visits_cp_sat(
             continue
 
         for pvw in pvws:
-            protocol_groups[pvw.protocol_id].append((pvw.visit_index, v))
+            protocol_groups[(pvw.protocol_id, v.cluster_id)].append((pvw.visit_index, v))
 
     # 2. Identify "Allowed" visits (lowest index per protocol)
     # A visit is rejected if it has a window that is NOT the lowest index for that protocol.

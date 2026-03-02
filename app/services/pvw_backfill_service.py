@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import insert, select
+from sqlalchemy import delete, insert, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -74,8 +74,10 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
         cluster_visits.sort(key=lambda v: v.visit_nr or 0)
 
     inserts: list[dict[str, int]] = []
+    deletes: list[tuple[int, int]] = []
     total_checked = 0
     total_missing = 0
+    total_stale = 0
     skipped_custom = 0
     skipped_no_visit_nr = 0
     skipped_no_relations = 0
@@ -152,17 +154,34 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                     {"visit_id": visit.id, "protocol_visit_window_id": pvw_id}
                 )
 
+        stale_ids = existing_ids - expected_ids
+        if stale_ids:
+            total_stale += len(stale_ids)
+            for pvw_id in stale_ids:
+                deletes.append((visit.id, pvw_id))
+
     if inserts:
         await session.execute(insert(visit_protocol_visit_windows), inserts)
-        await session.commit()
-        logger.info(
-            "Backfilled %s missing PVW links across %s visits.",
-            total_missing,
-            total_checked,
-        )
-    else:
-        logger.info("No missing PVW links found across %s visits.", total_checked)
 
+    if deletes:
+        await session.execute(
+            delete(visit_protocol_visit_windows).where(
+                tuple_(
+                    visit_protocol_visit_windows.c.visit_id,
+                    visit_protocol_visit_windows.c.protocol_visit_window_id,
+                ).in_(deletes)
+            )
+        )
+
+    if inserts or deletes:
+        await session.commit()
+
+    logger.info(
+        "Checked %s visits: added %s missing PVW links, removed %s stale PVW links.",
+        total_checked,
+        total_missing,
+        total_stale,
+    )
     logger.info(
         "Skipped %s custom visits, %s without visit_nr, %s without species/functions.",
         skipped_custom,
