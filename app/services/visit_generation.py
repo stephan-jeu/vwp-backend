@@ -196,6 +196,7 @@ async def duplicate_cluster_with_visits(
             vog=v.vog,
             hub=v.hub,
             dvp=v.dvp,
+            sleutel=v.sleutel,
             remarks_planning=v.remarks_planning,
             remarks_field=v.remarks_field,
             planned_week=v.planned_week,

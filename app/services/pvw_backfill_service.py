@@ -1,13 +1,48 @@
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import delete, insert, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import logger
+from app.db.utils import select_active
 from app.models.protocol import Protocol
 from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.visit import Visit, visit_protocol_visit_windows
+
+
+def _month_day_overlap_days(
+    visit_from: date,
+    visit_to: date,
+    pvw_from: date,
+    pvw_to: date,
+) -> int:
+    """Compute overlap in days between a visit's date range and a pvw template window.
+
+    Year is ignored — only month and day are compared (pvw windows use a
+    canonical year like 2000).
+
+    Args:
+        visit_from: Visit start date.
+        visit_to: Visit end date.
+        pvw_from: PVW template window start date.
+        pvw_to: PVW template window end date.
+
+    Returns:
+        Number of overlapping days (0 if no overlap).
+    """
+    try:
+        vf = date(2000, visit_from.month, visit_from.day)
+        vt = date(2000, visit_to.month, visit_to.day)
+        pf = date(2000, pvw_from.month, pvw_from.day)
+        pt = date(2000, pvw_to.month, pvw_to.day)
+    except ValueError:
+        return 0
+    start = max(vf, pf)
+    end = min(vt, pt)
+    return max(0, (end - start).days + 1)
 
 
 def _protocol_key(protocol: Protocol) -> tuple[int, int] | None:
@@ -39,7 +74,7 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
         None.
     """
 
-    stmt = select(Visit).options(
+    stmt = select_active(Visit).options(
         selectinload(Visit.functions),
         selectinload(Visit.species),
         selectinload(Visit.protocol_visit_windows),
@@ -66,6 +101,24 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
             for protocol in protocols
             if (key := _protocol_key(protocol)) is not None
         }
+
+    # Preload all PVWs for relevant protocols to enable window-overlap matching.
+    protocol_ids = {p.id for p in protocol_map.values()}
+    all_pvws: list[ProtocolVisitWindow] = []
+    if protocol_ids:
+        all_pvws = (
+            await session.execute(
+                select(ProtocolVisitWindow).where(
+                    ProtocolVisitWindow.protocol_id.in_(protocol_ids)
+                )
+            )
+        ).scalars().all()
+
+    protocol_pvws: dict[int, list[ProtocolVisitWindow]] = {}
+    for pvw in all_pvws:
+        protocol_pvws.setdefault(pvw.protocol_id, []).append(pvw)
+    for pid in protocol_pvws:
+        protocol_pvws[pid].sort(key=lambda p: p.visit_index)
 
     visits_by_cluster: dict[int, list[Visit]] = {}
     for visit in visits:
@@ -131,12 +184,39 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                 protocol = protocol_map.get((func_id, species_id))
                 if not protocol:
                     continue
-                visit_index = counters.get((func_id, species_id), 0) + 1
-                stmt_pvw = select(ProtocolVisitWindow.id).where(
-                    ProtocolVisitWindow.protocol_id == protocol.id,
-                    ProtocolVisitWindow.visit_index == visit_index,
-                )
-                pvw_id = (await session.execute(stmt_pvw)).scalar_one_or_none()
+                pvws = protocol_pvws.get(protocol.id, [])
+                pvw_id = None
+
+                # Primary: match by date-window overlap (ignoring year).
+                # This correctly handles clusters where multiple visits of the
+                # same protocol share a date range rather than relying on
+                # visit_nr position alone.
+                if visit.from_date and visit.to_date:
+                    best_pvw_id = None
+                    best_overlap = 0
+                    for pvw in pvws:
+                        if pvw.window_from and pvw.window_to:
+                            overlap = _month_day_overlap_days(
+                                visit.from_date,
+                                visit.to_date,
+                                pvw.window_from,
+                                pvw.window_to,
+                            )
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                best_pvw_id = pvw.id
+                    if best_pvw_id is not None:
+                        pvw_id = best_pvw_id
+
+                # Fallback: positional ordering (original behaviour) for visits
+                # that lack date windows or whose window matches no pvw.
+                if pvw_id is None:
+                    visit_index = counters.get((func_id, species_id), 0) + 1
+                    for pvw in pvws:
+                        if pvw.visit_index == visit_index:
+                            pvw_id = pvw.id
+                            break
+
                 if pvw_id is not None:
                     expected_ids.add(pvw_id)
 
