@@ -194,6 +194,7 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                 if visit.from_date and visit.to_date:
                     best_pvw_id = None
                     best_overlap = 0
+                    tied_pvws: list[ProtocolVisitWindow] = []
                     for pvw in pvws:
                         if pvw.window_from and pvw.window_to:
                             overlap = _month_day_overlap_days(
@@ -205,6 +206,17 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                             if overlap > best_overlap:
                                 best_overlap = overlap
                                 best_pvw_id = pvw.id
+                                tied_pvws = [pvw]
+                            elif overlap == best_overlap and overlap > 0:
+                                tied_pvws.append(pvw)
+                    # Tiebreaker: when multiple pvws share the same best overlap
+                    # (e.g. identical windows), use the positional counter.
+                    if len(tied_pvws) > 1:
+                        visit_index = counters.get((func_id, species_id), 0) + 1
+                        for pvw in tied_pvws:
+                            if pvw.visit_index == visit_index:
+                                best_pvw_id = pvw.id
+                                break
                     if best_pvw_id is not None:
                         pvw_id = best_pvw_id
 
