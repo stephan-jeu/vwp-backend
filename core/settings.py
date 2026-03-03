@@ -107,7 +107,7 @@ class Settings(BaseModel):
         in {"1", "true", "yes"}
     )
     pvw_backfill_cron: str = Field(
-        default_factory=lambda: os.getenv("PVW_BACKFILL_CRON", "55 14 * * *")
+        default_factory=lambda: os.getenv("PVW_BACKFILL_CRON", "7 15 * * *")
     )
     pvw_backfill_timezone: str = Field(
         default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
@@ -121,7 +121,7 @@ class Settings(BaseModel):
         in {"1", "true", "yes"}
     )
     trash_purge_cron: str = Field(
-        default_factory=lambda: os.getenv("TRASH_PURGE_CRON", "0 3 * * *")
+        default_factory=lambda: os.getenv("TRASH_PURGE_CRON", "0 1 * * *")
     )
     trash_purge_timezone: str = Field(
         default_factory=lambda: os.getenv("TRASH_PURGE_TIMEZONE", "Europe/Amsterdam")
