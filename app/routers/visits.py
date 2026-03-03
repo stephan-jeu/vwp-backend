@@ -54,6 +54,7 @@ from app.services.visit_status_service import (
 )
 from app.services.visit_execution_updates import update_subsequent_visits
 from app.services.visit_code_service import compute_visit_code
+from app.services.pvw_sync_service import sync_cluster_pvw_links
 from core.settings import get_settings
 
 router = APIRouter()
@@ -1758,7 +1759,9 @@ async def delete_visit(_: AdminDep, db: DbDep, visit_id: int) -> Response:
     visit = await db.get(Visit, visit_id)
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    cluster_id = visit.cluster_id
     await soft_delete_entity(db, visit, cascade=False)
+    await sync_cluster_pvw_links(db, cluster_id)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

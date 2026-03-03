@@ -15,6 +15,7 @@ from app.models.species import Species
 from app.models.visit import Visit
 from app.db.utils import select_active
 
+from app.services.pvw_sync_service import sync_cluster_pvw_links
 from .visit_generation_ortools import generate_visits_cp_sat
 
 _DEBUG_VISIT_GEN = os.getenv("VISIT_GEN_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -224,9 +225,10 @@ async def duplicate_cluster_with_visits(
             .all()
         )
         clone.researchers = []
-        clone.protocol_visit_windows = list(v.protocol_visit_windows or [])
         db.add(clone)
 
+    await db.flush()
+    await sync_cluster_pvw_links(db, new_cluster.id)
     return new_cluster
 
 

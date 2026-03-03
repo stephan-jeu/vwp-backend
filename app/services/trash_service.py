@@ -21,6 +21,7 @@ from app.models.visit import (
     visit_species,
 )
 from app.schemas.trash import TrashItem, TrashKind
+from app.services.pvw_sync_service import sync_cluster_pvw_links
 from app.services.soft_delete import _CASCADE_MAP
 
 
@@ -328,7 +329,9 @@ async def hard_delete_trash_item(
         if visit is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
+        cluster_id = visit.cluster_id
         await _hard_delete_visits(db, [visit.id])
+        await sync_cluster_pvw_links(db, cluster_id)
         await db.commit()
         return
 
