@@ -107,7 +107,7 @@ class Settings(BaseModel):
         in {"1", "true", "yes"}
     )
     pvw_backfill_cron: str = Field(
-        default_factory=lambda: os.getenv("PVW_BACKFILL_CRON", "59 15 * * *")
+        default_factory=lambda: os.getenv("PVW_BACKFILL_CRON", "30 1 * * *")
     )
     pvw_backfill_timezone: str = Field(
         default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
