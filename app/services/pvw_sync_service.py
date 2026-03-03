@@ -110,6 +110,8 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
     inserts: list[dict[str, int]] = []
     deletes: list[tuple[int, int]] = []
     counters: dict[tuple[int, int], int] = {}
+    # Track pvw IDs claimed via tie-breaking to avoid re-use within this cluster.
+    claimed_tie_pvws: dict[int, set[int]] = {}
 
     for visit in visits:
         if visit.visit_nr is None:
@@ -155,15 +157,17 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
                             elif overlap == best_overlap and overlap > 0:
                                 tied_pvws.append(pvw)
                     # Tiebreaker: when multiple pvws share the same best overlap
-                    # (e.g. identical windows), use the positional counter.
+                    # (e.g. identical windows), pick the first unclaimed pvw.
                     if len(tied_pvws) > 1:
-                        visit_index = counters.get((func_id, species_id), 0) + 1
+                        already_claimed = claimed_tie_pvws.get(protocol.id, set())
                         for pvw in tied_pvws:
-                            if pvw.visit_index == visit_index:
+                            if pvw.id not in already_claimed:
                                 best_pvw_id = pvw.id
                                 break
                     if best_pvw_id is not None:
                         pvw_id = best_pvw_id
+                        if len(tied_pvws) > 1:
+                            claimed_tie_pvws.setdefault(protocol.id, set()).add(pvw_id)
 
                 # Fallback: positional ordering (original behaviour) for visits
                 # that lack date windows or whose window matches no pvw.

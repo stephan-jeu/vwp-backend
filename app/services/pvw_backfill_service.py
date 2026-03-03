@@ -135,122 +135,112 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
     skipped_no_visit_nr = 0
     skipped_no_relations = 0
 
-    for visit in visits:
-        if visit.custom_function_name or visit.custom_species_name:
-            skipped_custom += 1
-            continue
-        if visit.visit_nr is None:
-            skipped_no_visit_nr += 1
-            continue
-        if not visit.functions or not visit.species:
-            skipped_no_relations += 1
-            continue
-
-        function_ids = [f.id for f in visit.functions if f.id is not None]
-        species_ids = [s.id for s in visit.species if s.id is not None]
-        if not function_ids or not species_ids:
-            continue
-
-        total_checked += 1
-
+    for cluster_visits_list in visits_by_cluster.values():
         counters: dict[tuple[int, int], int] = {}
-        cluster_visits = visits_by_cluster.get(visit.cluster_id, [])
-        for clustered_visit in cluster_visits:
-            if clustered_visit.id == visit.id:
-                break
-            if (
-                clustered_visit.custom_function_name
-                or clustered_visit.custom_species_name
-            ):
+        # Track pvw IDs claimed via tie-breaking to avoid re-use within this cluster.
+        claimed_tie_pvws: dict[int, set[int]] = {}
+
+        for visit in cluster_visits_list:
+            if visit.custom_function_name or visit.custom_species_name:
+                skipped_custom += 1
                 continue
-            if clustered_visit.visit_nr is None:
+            if visit.visit_nr is None:
+                skipped_no_visit_nr += 1
                 continue
-            prior_function_ids = [
-                f.id for f in clustered_visit.functions if f.id is not None
-            ]
-            prior_species_ids = [
-                s.id for s in clustered_visit.species if s.id is not None
-            ]
-            for func_id in prior_function_ids:
-                for species_id in prior_species_ids:
+            if not visit.functions or not visit.species:
+                skipped_no_relations += 1
+                continue
+
+            function_ids = [f.id for f in visit.functions if f.id is not None]
+            species_ids = [s.id for s in visit.species if s.id is not None]
+            if not function_ids or not species_ids:
+                continue
+
+            total_checked += 1
+
+            expected_ids: set[int] = set()
+            for func_id in function_ids:
+                for species_id in species_ids:
+                    protocol = protocol_map.get((func_id, species_id))
+                    if not protocol:
+                        continue
+                    pvws = protocol_pvws.get(protocol.id, [])
+                    pvw_id = None
+
+                    # Primary: match by date-window overlap (ignoring year).
+                    # This correctly handles clusters where multiple visits of the
+                    # same protocol share a date range rather than relying on
+                    # visit_nr position alone.
+                    if visit.from_date and visit.to_date:
+                        best_pvw_id = None
+                        best_overlap = 0
+                        tied_pvws: list[ProtocolVisitWindow] = []
+                        for pvw in pvws:
+                            if pvw.window_from and pvw.window_to:
+                                overlap = _month_day_overlap_days(
+                                    visit.from_date,
+                                    visit.to_date,
+                                    pvw.window_from,
+                                    pvw.window_to,
+                                )
+                                if overlap > best_overlap:
+                                    best_overlap = overlap
+                                    best_pvw_id = pvw.id
+                                    tied_pvws = [pvw]
+                                elif overlap == best_overlap and overlap > 0:
+                                    tied_pvws.append(pvw)
+                        # Tiebreaker: when multiple pvws share the same best overlap
+                        # (e.g. identical windows), pick the first unclaimed pvw.
+                        if len(tied_pvws) > 1:
+                            already_claimed = claimed_tie_pvws.get(protocol.id, set())
+                            for pvw in tied_pvws:
+                                if pvw.id not in already_claimed:
+                                    best_pvw_id = pvw.id
+                                    break
+                        if best_pvw_id is not None:
+                            pvw_id = best_pvw_id
+                            if len(tied_pvws) > 1:
+                                claimed_tie_pvws.setdefault(protocol.id, set()).add(pvw_id)
+
+                    # Fallback: positional ordering (original behaviour) for visits
+                    # that lack date windows or whose window matches no pvw.
+                    if pvw_id is None:
+                        visit_index = counters.get((func_id, species_id), 0) + 1
+                        for pvw in pvws:
+                            if pvw.visit_index == visit_index:
+                                pvw_id = pvw.id
+                                break
+
+                    if pvw_id is not None:
+                        expected_ids.add(pvw_id)
+
+            # Increment counters for the fallback path of subsequent visits.
+            for func_id in function_ids:
+                for species_id in species_ids:
                     if (func_id, species_id) in protocol_map:
                         counters[(func_id, species_id)] = (
                             counters.get((func_id, species_id), 0) + 1
                         )
 
-        expected_ids: set[int] = set()
-        for func_id in function_ids:
-            for species_id in species_ids:
-                protocol = protocol_map.get((func_id, species_id))
-                if not protocol:
-                    continue
-                pvws = protocol_pvws.get(protocol.id, [])
-                pvw_id = None
+            if not expected_ids:
+                continue
 
-                # Primary: match by date-window overlap (ignoring year).
-                # This correctly handles clusters where multiple visits of the
-                # same protocol share a date range rather than relying on
-                # visit_nr position alone.
-                if visit.from_date and visit.to_date:
-                    best_pvw_id = None
-                    best_overlap = 0
-                    tied_pvws: list[ProtocolVisitWindow] = []
-                    for pvw in pvws:
-                        if pvw.window_from and pvw.window_to:
-                            overlap = _month_day_overlap_days(
-                                visit.from_date,
-                                visit.to_date,
-                                pvw.window_from,
-                                pvw.window_to,
-                            )
-                            if overlap > best_overlap:
-                                best_overlap = overlap
-                                best_pvw_id = pvw.id
-                                tied_pvws = [pvw]
-                            elif overlap == best_overlap and overlap > 0:
-                                tied_pvws.append(pvw)
-                    # Tiebreaker: when multiple pvws share the same best overlap
-                    # (e.g. identical windows), use the positional counter.
-                    if len(tied_pvws) > 1:
-                        visit_index = counters.get((func_id, species_id), 0) + 1
-                        for pvw in tied_pvws:
-                            if pvw.visit_index == visit_index:
-                                best_pvw_id = pvw.id
-                                break
-                    if best_pvw_id is not None:
-                        pvw_id = best_pvw_id
+            existing_ids = {
+                pvw.id for pvw in visit.protocol_visit_windows if pvw.id is not None
+            }
+            missing_ids = expected_ids - existing_ids
+            if missing_ids:
+                total_missing += len(missing_ids)
+                for pvw_id in missing_ids:
+                    inserts.append(
+                        {"visit_id": visit.id, "protocol_visit_window_id": pvw_id}
+                    )
 
-                # Fallback: positional ordering (original behaviour) for visits
-                # that lack date windows or whose window matches no pvw.
-                if pvw_id is None:
-                    visit_index = counters.get((func_id, species_id), 0) + 1
-                    for pvw in pvws:
-                        if pvw.visit_index == visit_index:
-                            pvw_id = pvw.id
-                            break
-
-                if pvw_id is not None:
-                    expected_ids.add(pvw_id)
-
-        if not expected_ids:
-            continue
-
-        existing_ids = {
-            pvw.id for pvw in visit.protocol_visit_windows if pvw.id is not None
-        }
-        missing_ids = expected_ids - existing_ids
-        if missing_ids:
-            total_missing += len(missing_ids)
-            for pvw_id in missing_ids:
-                inserts.append(
-                    {"visit_id": visit.id, "protocol_visit_window_id": pvw_id}
-                )
-
-        stale_ids = existing_ids - expected_ids
-        if stale_ids:
-            total_stale += len(stale_ids)
-            for pvw_id in stale_ids:
-                deletes.append((visit.id, pvw_id))
+            stale_ids = existing_ids - expected_ids
+            if stale_ids:
+                total_stale += len(stale_ids)
+                for pvw_id in stale_ids:
+                    deletes.append((visit.id, pvw_id))
 
     if inserts:
         await session.execute(insert(visit_protocol_visit_windows), inserts)
