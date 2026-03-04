@@ -33,6 +33,7 @@ from app.models import (  # noqa: E402,F401
     visit,
     availability_pattern,
     user_unavailability,
+    organization_unavailability,
 )
 from core.settings import get_settings  # noqa: E402
 

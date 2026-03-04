@@ -64,11 +64,19 @@ def _validate_planning_locked_payload(
     *,
     planning_locked: bool,
     planned_week: int | None,
+    planned_date: "date | None" = None,
     researcher_ids: list[int] | None,
 ) -> None:
     if not planning_locked:
         return
-    if planned_week is None:
+    settings = get_settings()
+    if settings.feature_daily_planning:
+        if planned_date is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="planning_locked requires planned_date",
+            )
+    elif planned_week is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="planning_locked requires planned_week",
@@ -703,6 +711,7 @@ async def create_visit(
     _validate_planning_locked_payload(
         planning_locked=payload.planning_locked,
         planned_week=payload.planned_week,
+        planned_date=payload.planned_date,
         researcher_ids=payload.researcher_ids,
     )
 
@@ -1060,12 +1069,14 @@ async def update_visit(
 
     final_planning_locked = bool(getattr(visit, "planning_locked", False))
     final_planned_week = getattr(visit, "planned_week", None)
+    final_planned_date = getattr(visit, "planned_date", None)
     final_researcher_ids = payload.researcher_ids
     if final_researcher_ids is None:
         final_researcher_ids = [r.id for r in (visit.researchers or [])]
     _validate_planning_locked_payload(
         planning_locked=final_planning_locked,
         planned_week=final_planned_week,
+        planned_date=final_planned_date,
         researcher_ids=final_researcher_ids,
     )
 

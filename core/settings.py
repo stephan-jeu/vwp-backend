@@ -113,6 +113,17 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
     )
 
+    # Holiday reset scheduler (runs Jan 1 to reset org unavailabilities)
+    holiday_reset_scheduler_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "HOLIDAY_RESET_SCHEDULER_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+    holiday_reset_timezone: str = Field(
+        default_factory=lambda: os.getenv("HOLIDAY_RESET_TIMEZONE", "Europe/Amsterdam")
+    )
+
     # Trash purge scheduler
     trash_purge_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(

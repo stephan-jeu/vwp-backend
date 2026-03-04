@@ -2117,6 +2117,7 @@ class SeasonPlanningService:
         """
         from app.models.availability_pattern import AvailabilityPattern
         from app.models.user_unavailability import UserUnavailability
+        from app.models.organization_unavailability import OrganizationUnavailability
         from app.services.visit_planning_selection import _compute_strict_daypart_caps
 
         stmt = select_active(AvailabilityPattern)
@@ -2124,6 +2125,13 @@ class SeasonPlanningService:
 
         stmt_u = select(UserUnavailability).where(UserUnavailability.start_date <= date(year, 12, 31), UserUnavailability.end_date >= date(year, 1, 1))
         all_unavail = (await db.execute(stmt_u)).scalars().all()
+
+        stmt_org = select(OrganizationUnavailability).where(
+            OrganizationUnavailability.deleted_at.is_(None),
+            OrganizationUnavailability.start_date <= date(year, 12, 31),
+            OrganizationUnavailability.end_date >= date(year, 1, 1),
+        )
+        org_unavail = list((await db.execute(stmt_org)).scalars().all())
 
         patterns_by_user: dict[int, list] = {}
         for p in all_patterns:
@@ -2138,9 +2146,9 @@ class SeasonPlanningService:
             user_unavail = unavail_by_user.get(uid, [])
             for week in range(1, 54):
                 m, d, n, _ = _compute_strict_daypart_caps(
-                    user_patterns, user_unavail, week, year
+                    user_patterns, user_unavail, week, year, org_unavail
                 )
-                
+
                 if m + d + n > 0:
                     avail_map[(uid, week)] = SimpleNamespace(
                         morning_days=m,

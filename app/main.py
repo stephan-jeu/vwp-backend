@@ -29,6 +29,10 @@ from app.services.trash_purge_scheduler import (
     shutdown_trash_purge_scheduler,
     start_trash_purge_scheduler,
 )
+from app.services.holiday_reset_scheduler import (
+    shutdown_holiday_reset_scheduler,
+    start_holiday_reset_scheduler,
+)
 
 import logging
 
@@ -53,11 +57,13 @@ async def lifespan(app: FastAPI):
     start_season_planner_scheduler()
     start_pvw_backfill_scheduler()
     start_trash_purge_scheduler()
+    start_holiday_reset_scheduler()
     yield
     # Ensure DB connections are cleanly closed on shutdown
     shutdown_season_planner_scheduler()
     shutdown_pvw_backfill_scheduler()
     shutdown_trash_purge_scheduler()
+    shutdown_holiday_reset_scheduler()
     await engine.dispose()
 
 
@@ -133,6 +139,8 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     app.include_router(availability_patterns_router, prefix="/api", tags=["availability_patterns"])
     from app.routers.user_unavailabilities import router as unavailabilities_router
     app.include_router(unavailabilities_router, prefix="/api", tags=["user_unavailabilities"])
+    from app.routers.organization_unavailabilities import router as org_unavailabilities_router
+    app.include_router(org_unavailabilities_router, prefix="/api", tags=["organization_unavailabilities"])
     app.include_router(clusters_router, prefix="/clusters", tags=["clusters"])
 
     @app.get("/health")
