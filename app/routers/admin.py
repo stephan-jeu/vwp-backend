@@ -221,6 +221,25 @@ async def regenerate_family_capacity(
     return res
 
 
+@router.get("/capacity/planning-reasons", response_model=dict[str, str])
+async def get_planning_reasons(_: AdminDep, db: DbDep) -> dict[str, str]:
+    """Return the latest planning diagnostics per visit (visit_id -> reason_nl)."""
+    stmt = (
+        select(ActivityLog)
+        .where(ActivityLog.action.like("planning_season_%"))
+        .where(ActivityLog.target_id.is_not(None))
+        .order_by(ActivityLog.created_at.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    reasons: dict[str, str] = {}
+    for row in rows:
+        key = str(row.target_id)
+        details = row.details or {}
+        reason_nl = details.get("reason_nl", "Reden onbekend.")
+        reasons[key] = reason_nl
+    return reasons
+
+
 @router.get("/functions", response_model=list[FunctionRead])
 async def list_functions(_: AdminDep, db: DbDep) -> list[Function]:
     """List all functions (admin only)."""

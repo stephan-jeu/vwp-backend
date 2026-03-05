@@ -7,9 +7,13 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
-from sqlalchemy import select, or_
+from uuid import uuid4
+
+from sqlalchemy import delete, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+from app.models.activity_log import ActivityLog
 
 from app.db.utils import select_active
 from app.core.logging import logger
@@ -46,6 +50,36 @@ try:
     )
 except ValueError:
     _DEBUG_SEASON_PLANNING_VISIT_ID = None
+
+
+def _visit_label(v: "Visit") -> str:
+    """Return a human-readable label for a visit: '<project code> / <cluster number> bezoek <nr>'."""
+    cluster = getattr(v, "cluster", None)
+    project = getattr(cluster, "project", None)
+    project_code = getattr(project, "code", None) or f"project-{getattr(cluster, 'project_id', '?')}"
+    cluster_nr = getattr(cluster, "cluster_number", None) or f"cluster-{getattr(v, 'cluster_id', '?')}"
+    visit_nr = getattr(v, "visit_nr", None)
+    nr_suffix = f" bezoek {visit_nr}" if visit_nr is not None else ""
+    return f"{project_code}/{cluster_nr}{nr_suffix} (id={v.id})"
+
+
+def _protocol_label(protocol: "Protocol") -> str:
+    """Return a human-readable label for a protocol: '<function name> / <species name>'."""
+    function = getattr(protocol, "function", None)
+    species = getattr(protocol, "species", None)
+    func_name = getattr(function, "name", None) or f"protocol-{protocol.id}"
+    species_name = getattr(species, "name", None)
+    if species_name:
+        return f"{func_name} / {species_name}"
+    return func_name
+
+
+class PlanningDiagnostic(NamedTuple):
+    """Diagnostic entry collected during a season planning run."""
+
+    visit_id: int
+    action: str  # e.g. "planning_season_unscheduled", "planning_season_protocol_violation"
+    details: dict  # JSON-serializable, must include "reason_nl" key
 
 
 class CapacityProfile(NamedTuple):
@@ -234,7 +268,7 @@ class SeasonPlanningService:
 
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(
+            diagnostics: list[PlanningDiagnostic] = await loop.run_in_executor(
                 None,
                 lambda: SeasonPlanningService.solve_season(
                     start_date,
@@ -249,6 +283,24 @@ class SeasonPlanningService:
             raise
 
         if persist:
+            # Replace old planning diagnostics with fresh ones from this run
+            await db.execute(
+                delete(ActivityLog).where(
+                    ActivityLog.action.like("planning_season_%")
+                )
+            )
+            if diagnostics:
+                batch = str(uuid4())
+                for d in diagnostics:
+                    db.add(
+                        ActivityLog(
+                            action=d.action,
+                            target_type="visit",
+                            target_id=d.visit_id,
+                            details=d.details,
+                            batch_id=batch,
+                        )
+                    )
             await db.commit()
 
     @staticmethod
@@ -259,11 +311,15 @@ class SeasonPlanningService:
         avail_map: dict[tuple[int, int], AvailabilityWeek],
         *,
         timeout_seconds: float | None = None,
-    ) -> None:
+    ) -> list[PlanningDiagnostic]:
         """
         Pure logic solver for Season Planning.
         Updates visits in-place with provisional_week.
+        Returns a list of planning diagnostics (reasons why visits could not be scheduled).
         """
+        diagnostics: list[PlanningDiagnostic] = []
+        no_window_visit_ids: set[int] = set()
+
         year = start_date.year
         current_week = start_date.isocalendar().week
         horizon_weeks = range(current_week, 54)
@@ -587,8 +643,8 @@ class SeasonPlanningService:
                     w_fri = w_mon + timedelta(days=4)
                 except ValueError:
                     logger.warning(
-                        "SeasonPlanning: visit=%s has fixed_week=%s source=%s not valid for year=%s; ignoring fixed anchor.",
-                        getattr(v, "id", None),
+                        "SeasonPlanning: %s — vastgepinde week %s (%s) is geen geldig ISO-weeknummer voor jaar %s; anker genegeerd.",
+                        _visit_label(v),
                         fixed_week,
                         fixed_source,
                         year,
@@ -605,8 +661,8 @@ class SeasonPlanningService:
                     fixed_days = (overlap_end - overlap_start).days + 1
                     if fixed_days < 1:
                         logger.warning(
-                            "SeasonPlanning: visit=%s fixed_week=%s source=%s outside date window (from=%s to=%s); ignoring fixed anchor.",
-                            getattr(v, "id", None),
+                            "SeasonPlanning: %s — vastgepinde week %s (%s) valt buiten het uitvoeringsvenster (%s t/m %s); anker genegeerd.",
+                            _visit_label(v),
                             fixed_week,
                             fixed_source,
                             getattr(v, "from_date", None),
@@ -635,6 +691,7 @@ class SeasonPlanningService:
                         )
 
             if len(domain_list) <= 1:  # Only [0]
+                no_window_visit_ids.add(v.id)
                 model.Add(is_active == 0)
                 # Assign dummy 0
                 visit_week_vars[v.id] = model.NewConstant(0)
@@ -842,15 +899,39 @@ class SeasonPlanningService:
                                 gap_weeks > 0 and forced_w2 < forced_w1 + gap_weeks
                             )
                             if violates:
+                                proto_obj = protocols_1.get(pid)
+                                proto_lbl = _protocol_label(proto_obj) if proto_obj is not None else str(pid)
                                 logger.warning(
-                                    "SeasonPlanning: protocol order infeasible for fixed visits earlier=%s(w=%s) later=%s(w=%s) protocol=%s gap=%s; skipping hard constraint.",
-                                    earlier.id,
+                                    "SeasonPlanning: protocolvolgorde niet haalbaar — "
+                                    "%s (week %s) moet minstens %s week(en) vóór %s (week %s) staan "
+                                    "volgens protocol '%s'; volgorderesbeperking geskipt.",
+                                    _visit_label(earlier),
                                     forced_w1,
-                                    later.id,
-                                    forced_w2,
-                                    pid,
                                     gap_weeks,
+                                    _visit_label(later),
+                                    forced_w2,
+                                    proto_lbl,
                                 )
+                                reason_nl = (
+                                    f"Protocolvolgorde conflict: {_visit_label(earlier)} staat vastgepind in week {forced_w1}, "
+                                    f"{_visit_label(later)} staat vastgepind in week {forced_w2}. "
+                                    f"Protocol '{proto_lbl}' vereist minimaal {gap_weeks} week(en) tussenruimte. "
+                                    f"De volgorderesbeperking is geskipt — controleer de vastgepinde weken."
+                                )
+                                for affected_id in (earlier.id, later.id):
+                                    diagnostics.append(PlanningDiagnostic(
+                                        visit_id=affected_id,
+                                        action="planning_season_protocol_violation",
+                                        details={
+                                            "reason_nl": reason_nl,
+                                            "earlier_visit_id": earlier.id,
+                                            "later_visit_id": later.id,
+                                            "gap_required_weeks": gap_weeks,
+                                            "earlier_week": forced_w1,
+                                            "later_week": forced_w2,
+                                            "protocol": proto_lbl,
+                                        },
+                                    ))
                                 continue
                         model.Add(w2 > w1).OnlyEnforceIf([a1, a2])
                         if gap_weeks > 0:
@@ -1688,6 +1769,59 @@ class SeasonPlanningService:
                     else:
                         if not v.provisional_locked or v.provisional_week is None:
                             v.provisional_week = None
+                        # Collect diagnostic: why was this visit not scheduled?
+                        if v.id in no_window_visit_ids:
+                            diagnostics.append(PlanningDiagnostic(
+                                visit_id=v.id,
+                                action="planning_season_unscheduled",
+                                details={
+                                    "reason_nl": (
+                                        f"Geen geldig uitvoeringsvenster gevonden voor dit seizoen "
+                                        f"(uitvoeringsvenster: {getattr(v, 'from_date', None)} t/m {getattr(v, 'to_date', None)})."
+                                    ),
+                                    "reason_code": "geen_venster",
+                                },
+                            ))
+                        else:
+                            v_skill = SeasonPlanningService._get_required_user_flag(v)
+                            candidates = visit_candidates.get(v.id, [])
+                            has_any_supply = any(
+                                sum(supply.get(v_skill, {}).get(w, {}).values()) > 0
+                                for w, _ in candidates
+                            )
+                            if not has_any_supply:
+                                diagnostics.append(PlanningDiagnostic(
+                                    visit_id=v.id,
+                                    action="planning_season_unscheduled",
+                                    details={
+                                        "reason_nl": (
+                                            f"Geen medewerkers met de vereiste kwalificatie '{v_skill}' "
+                                            f"beschikbaar in het uitvoeringsvenster."
+                                        ),
+                                        "reason_code": "geen_kwalificatie",
+                                        "skill_required": v_skill,
+                                    },
+                                ))
+                            else:
+                                cand_weeks = sorted(w for w, _ in candidates)
+                                w_min = cand_weeks[0] if cand_weeks else None
+                                w_max = cand_weeks[-1] if cand_weeks else None
+                                diagnostics.append(PlanningDiagnostic(
+                                    visit_id=v.id,
+                                    action="planning_season_unscheduled",
+                                    details={
+                                        "reason_nl": (
+                                            f"Onvoldoende '{v_skill}' capaciteit beschikbaar "
+                                            f"in het uitvoeringsvenster (week {w_min}–{w_max})."
+                                        ),
+                                        "reason_code": "capaciteitsgebrek",
+                                        "skill_required": v_skill,
+                                        "window_from_week": w_min,
+                                        "window_to_week": w_max,
+                                    },
+                                ))
+
+        return diagnostics
 
     @staticmethod
     async def get_capacity_grid(
@@ -2087,9 +2221,12 @@ class SeasonPlanningService:
                 selectinload(Visit.species).selectinload(Species.family),
                 selectinload(Visit.researchers),
                 selectinload(Visit.cluster).selectinload(Cluster.project),
-                selectinload(Visit.protocol_visit_windows).selectinload(
-                    ProtocolVisitWindow.protocol
-                ),
+                selectinload(Visit.protocol_visit_windows)
+                .selectinload(ProtocolVisitWindow.protocol)
+                .selectinload(Protocol.function),
+                selectinload(Visit.protocol_visit_windows)
+                .selectinload(ProtocolVisitWindow.protocol)
+                .selectinload(Protocol.species),
             )
         )
         if not include_quotes:
