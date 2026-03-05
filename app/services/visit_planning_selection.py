@@ -1307,23 +1307,77 @@ async def select_visits_for_week(
                 )
             )
         )
-        if result.diagnostics:
-            batch = str(uuid4())
-            for d in result.diagnostics:
-                db.add(
-                    ActivityLog(
-                        action="planning_week_skipped",
-                        target_type="planning_week",
-                        target_id=week,
-                        details={
-                            "visit_id": d.visit_id,
-                            "week": week,
-                            "reason_code": d.reason_code,
-                            "reason_nl": d.reason_nl,
-                        },
-                        batch_id=batch,
-                    )
+        batch = str(uuid4())
+
+        # Solver-level diagnostics: visits the solver received but didn't schedule.
+        for d in result.diagnostics:
+            db.add(
+                ActivityLog(
+                    action="planning_week_skipped",
+                    target_type="planning_week",
+                    target_id=week,
+                    details={
+                        "visit_id": d.visit_id,
+                        "week": week,
+                        "reason_code": d.reason_code,
+                        "reason_nl": d.reason_nl,
+                    },
+                    batch_id=batch,
                 )
+            )
+
+        # Post-hoc: detect Voorlopig visits that were invisible to the solver
+        # (filtered out before the solver ran, e.g. date-window mismatch or protocol
+        # frequency block). Load all Voorlopig visits for this week and compare.
+        week_friday = week_monday + timedelta(days=4)
+        solver_seen_ids = {v.id for v in result.selected} | {v.id for v in result.skipped}
+
+        voorlopig_stmt = select_active(Visit).where(
+            and_(
+                Visit.provisional_week == week,
+                or_(Visit.planned_week.is_(None), ~Visit.researchers.any()),
+            )
+        )
+        voorlopig_visits = (await db.execute(voorlopig_stmt)).scalars().unique().all()
+
+        for v in voorlopig_visits:
+            if v.id in solver_seen_ids:
+                continue
+            from_d = getattr(v, "from_date", None)
+            to_d = getattr(v, "to_date", None)
+            window_overlaps = (
+                from_d is not None
+                and to_d is not None
+                and from_d <= week_friday
+                and to_d >= week_monday
+            )
+            if not window_overlaps:
+                reason_code = "venster_buiten_week"
+                reason_nl = (
+                    f"Het uitvoeringsvenster ({from_d} t/m {to_d}) overlapt niet "
+                    f"met werkweek {week} ({week_monday} t/m {week_friday})."
+                )
+            else:
+                reason_code = "protocol_frequentie"
+                reason_nl = (
+                    "Bezoek tijdelijk geblokkeerd: een eerder bezoek van hetzelfde "
+                    "protocol staat al ingepland en de minimale tussentijd is nog "
+                    "niet verstreken."
+                )
+            db.add(
+                ActivityLog(
+                    action="planning_week_skipped",
+                    target_type="planning_week",
+                    target_id=week,
+                    details={
+                        "visit_id": v.id,
+                        "week": week,
+                        "reason_code": reason_code,
+                        "reason_nl": reason_nl,
+                    },
+                    batch_id=batch,
+                )
+            )
 
     if db:
         await db.commit()
