@@ -117,11 +117,12 @@ async def list_activity_logs(
         Paginated :class:`ActivityLogListResponse` with recent entries.
     """
 
-    count_stmt = select(func.count()).select_from(ActivityLog)
+    count_stmt = select(func.count()).select_from(ActivityLog).where(ActivityLog.actor_id.is_not(None))
     total = int((await db.execute(count_stmt)).scalar_one())
 
     stmt: Select[tuple[ActivityLog]] = (
         select(ActivityLog)
+        .where(ActivityLog.actor_id.is_not(None))
         .options(selectinload(ActivityLog.actor), selectinload(ActivityLog.actors))
         .order_by(ActivityLog.created_at.desc())
         .offset((page - 1) * page_size)

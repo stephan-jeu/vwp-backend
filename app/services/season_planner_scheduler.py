@@ -7,6 +7,7 @@ from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
+from app.services.activity_log_service import log_activity
 from app.services.admin_email_service import send_admin_alert_email
 from app.services.season_planning_service import SeasonPlanningService
 from core.settings import get_settings
@@ -77,6 +78,14 @@ async def _execute_season_planner(session: AsyncSession) -> None:
         session,
         date.today(),
         timeout_seconds=_settings.season_planner_timeout_thorough_seconds,
+    )
+    await log_activity(
+        session,
+        actor_id=None,
+        action="seasonal_planner_run",
+        target_type="system",
+        target_id=0,
+        details={"method": "scheduled"},
     )
 
 
