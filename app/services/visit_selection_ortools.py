@@ -16,11 +16,20 @@ from core.settings import get_settings
 _logger = logging.getLogger("uvicorn.error")
 
 
+class WeeklyPlanningDiagnostic(NamedTuple):
+    """Diagnostic entry for a visit skipped during weekly planning."""
+
+    visit_id: int
+    reason_code: str  # e.g. "geen_dagdeel", "geen_gekwalificeerde_onderzoekers"
+    reason_nl: str    # Human-readable Dutch explanation
+
+
 class VisitSelectionResult(NamedTuple):
     selected: list[Visit]
     skipped: list[Visit]
     remaining_caps: dict[str, int]  # Global daypart caps (approximate)
     day_assignments: dict[int, date] | None = None  # visit_id -> date
+    diagnostics: list[WeeklyPlanningDiagnostic] = []  # Per-visit skip reasons
 
 
 def _generate_greedy_planning_solution(
@@ -153,6 +162,41 @@ def _generate_greedy_planning_solution(
     return scheduled_indices, visit_days, visit_assigns
 
 
+def _build_weekly_skip_reason_nl(v: Visit, reason_code: str, week_monday: date) -> str:
+    """Build a Dutch human-readable explanation for why a visit was skipped."""
+    week_num = week_monday.isocalendar().week
+    from_d = getattr(v, "from_date", None)
+    to_d = getattr(v, "to_date", None)
+    part = getattr(v, "part_of_day", None) or "?"
+
+    if reason_code == "geen_dagdeel":
+        return "Geen dagdeel (Ochtend/Dag/Avond) ingesteld op dit bezoek."
+
+    if reason_code == "protocol_volgorde":
+        return (
+            "Een eerder bezoek in de protocolvolgorde voor dit cluster moet "
+            "eerst worden ingepland."
+        )
+
+    if reason_code == "geen_dag_in_venster":
+        return (
+            f"Het uitvoeringsvenster ({from_d} t/m {to_d}) "
+            f"valt niet op een werkdag in week {week_num}."
+        )
+
+    if reason_code == "geen_gekwalificeerde_onderzoekers":
+        return (
+            f"Geen gekwalificeerde onderzoekers beschikbaar voor dit bezoek "
+            f"(dagdeel: {part})."
+        )
+
+    # capaciteitsgebrek (default)
+    return (
+        f"Onvoldoende '{part}'-capaciteit beschikbaar in week {week_num}. "
+        "Hogere-prioriteitsbezoeken hebben de beschikbare capaciteit opgebruikt."
+    )
+
+
 async def select_visits_cp_sat(
     db: AsyncSession,
     week_monday: date,
@@ -227,12 +271,16 @@ async def select_visits_cp_sat(
 
     clean_visits = []
     skipped_visits = []
+    # Maps visit_id -> reason_code for pre-solver skips
+    skip_reason: dict[int, str] = {}
 
     # 1. Group by Protocol + Cluster
     for v in visits:
         pod = getattr(v, "part_of_day", None)
         if not pod or pod not in DAYPART_TO_AVAIL_FIELD:
             skipped_visits.append(v)
+            if v.id is not None:
+                skip_reason[v.id] = "geen_dagdeel"
             continue
 
         # Check Protocol Windows
@@ -275,6 +323,8 @@ async def select_visits_cp_sat(
 
         if v.id in visits_to_reject_ids:
             skipped_visits.append(v)
+            if v.id is not None:
+                skip_reason[v.id] = "protocol_volgorde"
             _logger.info(
                 "Skipping out-of-order visit %s (Protocol constraint)",
                 getattr(v, "id", None),
@@ -1160,7 +1210,7 @@ async def select_visits_cp_sat(
 
     # 4. Extract Result
     selected_result = []
-    
+
     # New: Tracking chosen dates
     day_assignments: dict[int, date] = {}
     from datetime import timedelta
@@ -1172,20 +1222,20 @@ async def select_visits_cp_sat(
 
             # Clear existing researchers (simulation safety)
             v.researchers = []
-            
+
             # --- Extract Day ---
             chosen_day_idx = -1
             for d in range(5):
                 if solver.Value(visit_day[i, d]):
                     chosen_day_idx = d
                     break
-            
+
             if chosen_day_idx != -1:
                 # Calculate actual date: week_monday + days
                 actual_date = week_monday + timedelta(days=chosen_day_idx)
                 if v.id is not None:
                      day_assignments[v.id] = actual_date
-                
+
                 # Also set on object for immediate use if needed (legacy compat remains planned_week)
                 if get_settings().feature_daily_planning:
                     v.planned_date = actual_date
@@ -1203,11 +1253,35 @@ async def select_visits_cp_sat(
 
             selected_result.append(v)
         else:
+            # Post-hoc reason analysis for visits the solver didn't schedule
+            if v.id is not None and v.id not in skip_reason:
+                allowed = _allowed_day_indices_for_visit(week_monday, v, today=today)
+                if not allowed:
+                    skip_reason[v.id] = "geen_dag_in_venster"
+                elif not any((i, j) in x for j in u_map):
+                    skip_reason[v.id] = "geen_gekwalificeerde_onderzoekers"
+                else:
+                    skip_reason[v.id] = "capaciteitsgebrek"
             skipped_visits.append(v)
+
+    # 5. Build diagnostics
+    diagnostics: list[WeeklyPlanningDiagnostic] = []
+    for v in skipped_visits:
+        vid = v.id
+        if vid is None:
+            continue
+        reason_code = skip_reason.get(vid, "capaciteitsgebrek")
+        reason_nl = _build_weekly_skip_reason_nl(v, reason_code, week_monday)
+        diagnostics.append(WeeklyPlanningDiagnostic(
+            visit_id=vid,
+            reason_code=reason_code,
+            reason_nl=reason_nl,
+        ))
 
     return VisitSelectionResult(
         selected=selected_result,
         skipped=skipped_visits,
         remaining_caps={},  # Caller mostly ignores this for 'effective' logic
         day_assignments=day_assignments,
+        diagnostics=diagnostics,
     )

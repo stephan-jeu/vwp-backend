@@ -5,9 +5,13 @@ from datetime import date, timedelta
 from typing import Iterable
 import logging
 
-from sqlalchemy import select, and_, or_
+from uuid import uuid4
+
+from sqlalchemy import delete, select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+from app.models.activity_log import ActivityLog
 
 from app.db.utils import select_active
 from app.models.visit import Visit
@@ -1290,12 +1294,41 @@ async def select_visits_for_week(
     effective_selected = result.selected
     effective_skipped = result.skipped
     day_assignments = result.day_assignments or {}
+    week = week_monday.isocalendar().week
+
+    # Persist planning diagnostics (why each visit was skipped) to ActivityLog.
+    # Delete previous diagnostics for this week before writing fresh ones.
+    if db and isinstance(db, AsyncSession):
+        await db.execute(
+            delete(ActivityLog).where(
+                and_(
+                    ActivityLog.action == "planning_week_skipped",
+                    ActivityLog.target_id == week,
+                )
+            )
+        )
+        if result.diagnostics:
+            batch = str(uuid4())
+            for d in result.diagnostics:
+                db.add(
+                    ActivityLog(
+                        action="planning_week_skipped",
+                        target_type="planning_week",
+                        target_id=week,
+                        details={
+                            "visit_id": d.visit_id,
+                            "week": week,
+                            "reason_code": d.reason_code,
+                            "reason_nl": d.reason_nl,
+                        },
+                        batch_id=batch,
+                    )
+                )
 
     if db:
         await db.commit()
 
     # Re-calculate remaining global capacity for reporting purposes (UI)
-    week = week_monday.isocalendar().week
     caps = await _load_week_capacity(db, week)
 
     for v in effective_selected:

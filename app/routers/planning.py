@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, HTTPException, status
 from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
+from app.models.activity_log import ActivityLog
 from app.models.visit import Visit
 from app.models.cluster import Cluster
 from app.models.user import User
@@ -183,6 +184,32 @@ async def generate_planning(
     )
 
     return result
+
+
+@router.get("/planning-reasons", response_model=dict[str, str])
+async def get_week_planning_reasons(
+    _: AdminDep, db: DbDep, week: int = Query(..., ge=1, le=53)
+) -> dict[str, str]:
+    """Return the latest planning diagnostics for a week (visit_id -> reason_nl)."""
+    stmt = (
+        select(ActivityLog)
+        .where(
+            and_(
+                ActivityLog.action == "planning_week_skipped",
+                ActivityLog.target_id == week,
+            )
+        )
+        .order_by(ActivityLog.created_at.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    reasons: dict[str, str] = {}
+    for row in rows:
+        details = row.details or {}
+        vid = details.get("visit_id")
+        reason_nl = details.get("reason_nl", "Reden onbekend.")
+        if vid is not None:
+            reasons[str(vid)] = reason_nl
+    return reasons
 
 
 @router.post("/clear")
