@@ -41,6 +41,14 @@ _DEBUG_SEASON_PLANNING = os.getenv("SEASON_PLANNING_DEBUG", "").lower() in (
     "yes",
 )
 
+# Set SEASON_PLANNING_DIFFICULTY_REWARDS=false to disable the scheduling-difficulty
+# soft rewards (sequence length, sequence pressure, window tightness) for A/B comparison.
+_DIFFICULTY_REWARDS_ENABLED = os.getenv("SEASON_PLANNING_DIFFICULTY_REWARDS", "true").lower() not in (
+    "false",
+    "0",
+    "no",
+)
+
 _DEBUG_SEASON_PLANNING_VISIT_ID_RAW = os.getenv("SEASON_PLANNING_DEBUG_VISIT_ID")
 try:
     _DEBUG_SEASON_PLANNING_VISIT_ID = (
@@ -846,6 +854,12 @@ class SeasonPlanningService:
         visit_protocols: dict[int, dict[int, Protocol]] = {}
         cluster_visits: dict[int, list[Visit]] = {}
         successor_risk_terms: list[cp_model.IntVar] = []
+        sequence_length_reward_vars: list[cp_model.BoolVar] = []
+        sequence_length_reward_weights: list[int] = []
+        sequence_pressure_reward_vars: list[cp_model.BoolVar] = []
+        sequence_pressure_reward_weights: list[int] = []
+        tightness_reward_vars: list[cp_model.BoolVar] = []
+        tightness_reward_weights: list[int] = []
 
         for v in visits:
             if not v.protocol_visit_windows:
@@ -954,6 +968,83 @@ class SeasonPlanningService:
                         model.Add(risk == 0).OnlyEnforceIf(a1.Not())
                         model.Add(risk == 0).OnlyEnforceIf(a2.Not())
                         successor_risk_terms.append(risk)
+
+        # 3b-extra: Sequence length & sequence pressure rewards
+        # Separate pass over cluster_visits to compute scheduling-difficulty bonuses.
+        # Disable by setting SEASON_PLANNING_DIFFICULTY_REWARDS=false.
+        if _DIFFICULTY_REWARDS_ENABLED:
+            _SEQUENCE_BONUS_PER_EXTRA = 15_000   # bonus per visit above the standard 2-visit baseline
+            _PRESSURE_THRESHOLD_WEEKS = 6        # avg weeks per visit in sequence below which pressure bonus applies
+            _PRESSURE_BONUS_PER_WEEK = 5_000     # bonus per week shorter than pressure threshold
+
+            for cluster_id, c_visits in cluster_visits.items():
+                all_pids: set[int] = set()
+                for v in c_visits:
+                    all_pids.update(visit_protocols.get(v.id, {}).keys())
+
+                for pid in all_pids:
+                    seq_visits = [v for v in c_visits if pid in visit_protocols.get(v.id, {})]
+                    n = len(seq_visits)
+
+                    # 2a: Sequence length bonus — extra visits beyond the standard 2 get a bonus
+                    if n > 2:
+                        extra = n - 2
+                        for v in seq_visits:
+                            if v.id in visit_active_vars:
+                                sequence_length_reward_vars.append(visit_active_vars[v.id])
+                                sequence_length_reward_weights.append(extra * _SEQUENCE_BONUS_PER_EXTRA)
+
+                    # 2b: Sequence pressure bonus — total sequence span is tight relative to number of visits
+                    pvws_in_seq = [
+                        pvw
+                        for v in seq_visits
+                        for pvw in (v.protocol_visit_windows or [])
+                        if getattr(pvw, "protocol_id", None) == pid
+                        and getattr(pvw, "window_from", None) is not None
+                        and getattr(pvw, "window_to", None) is not None
+                    ]
+                    if not pvws_in_seq:
+                        continue
+                    earliest = min(pvw.window_from for pvw in pvws_in_seq)
+                    latest = max(pvw.window_to for pvw in pvws_in_seq)
+                    total_span_weeks = math.ceil(((latest - earliest).days + 1) / 7)
+                    avg_weeks_per_visit = total_span_weeks / n
+                    if avg_weeks_per_visit < _PRESSURE_THRESHOLD_WEEKS:
+                        pressure_bonus = int(
+                            (_PRESSURE_THRESHOLD_WEEKS - avg_weeks_per_visit) * _PRESSURE_BONUS_PER_WEEK
+                        )
+                        for v in seq_visits:
+                            if v.id in visit_active_vars:
+                                sequence_pressure_reward_vars.append(visit_active_vars[v.id])
+                                sequence_pressure_reward_weights.append(pressure_bonus)
+
+            # 3b-extra: Individual window tightness reward
+            # Visits with a narrow execution window get a bonus to prioritise them over
+            # visits that can easily be rescheduled to any week.
+            _TIGHTNESS_THRESHOLD_WEEKS = 6   # windows >= 6 weeks receive no bonus
+            _TIGHTNESS_BONUS_PER_WEEK = 5_000
+
+            for v in visits:
+                if v.id not in visit_active_vars:
+                    continue
+                pvw_protocols = list(visit_protocols.get(v.id, {}).keys())
+                if pvw_protocols:
+                    valid_windows = [
+                        w for w in (
+                            _protocol_window_weeks(v, pid) for pid in pvw_protocols
+                        ) if w is not None
+                    ]
+                    min_window = min(valid_windows) if valid_windows else None
+                else:
+                    if v.from_date and v.to_date:
+                        min_window = math.ceil(((v.to_date - v.from_date).days + 1) / 7)
+                    else:
+                        min_window = None
+                if min_window is None or min_window >= _TIGHTNESS_THRESHOLD_WEEKS:
+                    continue
+                bonus = (_TIGHTNESS_THRESHOLD_WEEKS - min_window) * _TIGHTNESS_BONUS_PER_WEEK
+                tightness_reward_vars.append(visit_active_vars[v.id])
+                tightness_reward_weights.append(bonus)
 
         # 3c. Sleutel (Hard) & Coupling (Soft) Constraints
         # Junior: Junior OR Flex
@@ -1362,6 +1453,17 @@ class SeasonPlanningService:
             scaled_load_terms.append(scaled)
         p_load = cp_model.LinearExpr.Sum(scaled_load_terms) * -1
 
+        # Scheduling-difficulty rewards (soft hints)
+        sequence_length_reward = cp_model.LinearExpr.WeightedSum(
+            sequence_length_reward_vars, sequence_length_reward_weights
+        )
+        sequence_pressure_reward = cp_model.LinearExpr.WeightedSum(
+            sequence_pressure_reward_vars, sequence_pressure_reward_weights
+        )
+        tightness_reward = cp_model.LinearExpr.WeightedSum(
+            tightness_reward_vars, tightness_reward_weights
+        )
+
         total_obj = (
             reward_term
             + urgent_reward_term
@@ -1374,6 +1476,9 @@ class SeasonPlanningService:
             + p_successor_risk
             + p_large_teams
             + p_load
+            + sequence_length_reward
+            + sequence_pressure_reward
+            + tightness_reward
         )
         model.Maximize(total_obj)
 
