@@ -377,7 +377,7 @@ async def list_visits(
         cluster = v.cluster
         project = getattr(cluster, "project", None)
         project_code = project.code if project else ""
-        project_location = project.location if project else ""
+        project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
         status = status_map.get(v.id, VisitStatusCode.CREATED)
 
         items.append(
@@ -556,7 +556,7 @@ async def export_visits(
             cluster = v.cluster
             project = getattr(cluster, "project", None)
             project_code = project.code if project else ""
-            project_location = project.location if project else ""
+            project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
             status = status_map.get(v.id, VisitStatusCode.CREATED)
             
             date_str = ""
@@ -646,7 +646,7 @@ async def get_visit_detail(
     cluster = visit.cluster
     project: Project | None = getattr(cluster, "project", None)
     project_code = project.code if project else ""
-    project_location = project.location if project else ""
+    project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
     project_customer = project.customer if project else None
     project_google_drive_folder = project.google_drive_folder if project else None
 
@@ -860,7 +860,7 @@ async def list_advertised_visits(
         cluster = v.cluster
         project: Project | None = getattr(cluster, "project", None)
         project_code = project.code if project else ""
-        project_location = project.location if project else ""
+        project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
         status = status_map.get(v.id, VisitStatusCode.CREATED)
 
         log = advertised_by_map.get(v.id)
@@ -1467,7 +1467,7 @@ async def list_visits_for_audit(
         cluster = v.cluster
         project: Project | None = getattr(cluster, "project", None)
         project_code = project.code if project else ""
-        project_location = project.location if project else ""
+        project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
         status = status_map.get(v.id, VisitStatusCode.CREATED)
 
         execution_date = None
