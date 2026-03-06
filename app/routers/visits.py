@@ -5,6 +5,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import and_, delete, func, insert, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.cluster import Cluster
