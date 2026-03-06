@@ -856,6 +856,7 @@ class SeasonPlanningService:
         visit_protocols: dict[int, dict[int, Protocol]] = {}
         cluster_visits: dict[int, list[Visit]] = {}
         successor_risk_terms: list[cp_model.IntVar] = []
+        predecessor_room_risk_terms: list[cp_model.IntVar] = []
         sequence_length_reward_vars: list[cp_model.BoolVar] = []
         sequence_length_reward_weights: list[int] = []
         sequence_pressure_reward_vars: list[cp_model.BoolVar] = []
@@ -952,6 +953,30 @@ class SeasonPlanningService:
                         model.Add(w2 > w1).OnlyEnforceIf([a1, a2])
                         if gap_weeks > 0:
                             model.Add(w2 >= w1 + gap_weeks).OnlyEnforceIf([a1, a2])
+
+                        # Predecessor room: discourage placing V2 so early that V1 has
+                        # very few valid weeks to choose from.  This is the mirror image
+                        # of successor_risk_terms: instead of penalising V1 being too
+                        # late, we penalise V2 being too early.
+                        #
+                        # If V1's earliest valid week is `v1_min` and the gap is G,
+                        # V2 should ideally be >= v1_min + G + CUSHION so that V1 has
+                        # at least CUSHION weeks of breathing room.
+                        if gap_weeks > 0:
+                            _PRED_CUSHION = 2  # desired extra weeks of room for V1
+                            v1_eff_min = forced_active_week_by_visit_id.get(earlier.id)
+                            if v1_eff_min is None:
+                                cands = [w for w, _ in visit_candidates.get(earlier.id, []) if w > 0]
+                                v1_eff_min = min(cands) if cands else None
+                            if v1_eff_min is not None:
+                                desired_min_w2 = v1_eff_min + gap_weeks + _PRED_CUSHION
+                                pred_room_risk = model.NewIntVar(
+                                    0, 53, f"pred_room_{earlier.id}_{later.id}_{pid}"
+                                )
+                                model.Add(pred_room_risk >= desired_min_w2 - w2).OnlyEnforceIf([a1, a2])
+                                model.Add(pred_room_risk == 0).OnlyEnforceIf(a1.Not())
+                                model.Add(pred_room_risk == 0).OnlyEnforceIf(a2.Not())
+                                predecessor_room_risk_terms.append(pred_room_risk)
 
                         window_weeks = _protocol_window_weeks(later, pid)
                         if window_weeks is None or window_weeks > 2:
@@ -1446,6 +1471,7 @@ class SeasonPlanningService:
         p_supervisor = cp_model.LinearExpr.Sum(supervisor_shortfall_terms) * -100
         p_diversity = cp_model.LinearExpr.Sum(diversity_penalty_terms) * -10
         p_successor_risk = cp_model.LinearExpr.Sum(successor_risk_terms) * -500
+        p_predecessor_room_risk = cp_model.LinearExpr.Sum(predecessor_room_risk_terms) * -1_000
         p_large_teams = cp_model.LinearExpr.Sum(large_team_penalty_terms) * -10
 
         scaled_load_terms = []
@@ -1476,6 +1502,7 @@ class SeasonPlanningService:
             + p_supervisor
             + p_diversity
             + p_successor_risk
+            + p_predecessor_room_risk
             + p_large_teams
             + p_load
             + sequence_length_reward
