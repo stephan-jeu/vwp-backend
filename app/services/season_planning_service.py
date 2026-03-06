@@ -220,9 +220,11 @@ class SeasonPlanningService:
 
         # Vlinder cluster
         # _get_required_user_flag maps "vlinder", "grote vos", "iepenpage" -> "Vlinder"
-        # User has `vlinder` and `teunisbloempijlstaart`.
-        if u.vlinder or u.teunisbloempijlstaart:
+        if u.vlinder:
             skills.add("Vlinder")
+        # Teunisbloempijlstaart is its own family (id=11), separate from Vlinder (id=9)
+        if u.teunisbloempijlstaart:
+            skills.add("Teunisbloempijlstaart")
 
         # General Families
         # User model has simple booleans for many families
