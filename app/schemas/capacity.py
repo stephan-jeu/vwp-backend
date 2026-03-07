@@ -35,6 +35,14 @@ class WeekView(BaseModel):
     rows: dict[str, dict[str, WeekResultCell]]
 
 
+class UnschedulableVisitInfo(BaseModel):
+    """A visit that could not be scheduled, with a reason."""
+
+    visit_id: int
+    reason_nl: str
+    reason_code: str
+
+
 class CapacitySimulationResponse(BaseModel):
     """Response model for long-term family capacity simulations.
 
@@ -45,6 +53,8 @@ class CapacitySimulationResponse(BaseModel):
             Deadline Week (ISO week e.g. "2025-W48").
             Each leaf value is a :class:`FamilyDaypartCapacity`.
         week_view: Optional new view grouped by execution week.
+        unschedulable_visits: Visits that could not be scheduled, with reasons.
+            Populated from live diagnostics (simulate=true) or last solver run.
     """
 
     horizon_start: date
@@ -53,5 +63,6 @@ class CapacitySimulationResponse(BaseModel):
     updated_at: datetime | None = None
     grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]]
     week_view: WeekView | None = None
+    unschedulable_visits: list[UnschedulableVisitInfo] = []
 
     model_config = {"from_attributes": True}

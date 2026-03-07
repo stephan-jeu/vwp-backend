@@ -30,7 +30,7 @@ from app.services.visit_planning_selection import (
     _any_function_contains,
 )
 from app.services.planning_run_errors import PlanningRunError
-from app.schemas.capacity import CapacitySimulationResponse
+from app.schemas.capacity import CapacitySimulationResponse, UnschedulableVisitInfo
 from ortools.sat.python import cp_model
 from core.settings import get_settings
 
@@ -395,20 +395,9 @@ class SeasonPlanningService:
         # Structure: supply[skill][week] = int total_days
         supply = {}
 
-        # 2b. extended Supply: Add 'Intern' and 'Supervisor' pseudo-skills
-        # Map: supply['Intern'][w] = total_intern_days
-        supply_intern = {}
-        supply_supervisor = {}
-
         for u in users:
             contract = SeasonPlanningService._get_contract_value(u)
             exp = (getattr(u, "experience_bat", "") or "").lower()
-
-            is_intern = contract == "intern"
-            # Supervisor: Senior/medior, OR an intern who is not a junior
-            is_supervisor = exp in {"senior", "medior"} or (
-                contract == "intern" and exp != "junior"
-            )
 
             for w in horizon_weeks:
                 # Availability
@@ -447,15 +436,6 @@ class SeasonPlanningService:
                         s["n"] += aw.nighttime_days or 0
                         s["f"] += aw.flex_days or 0
 
-                    if is_intern:
-                        if w not in supply_intern:
-                            supply_intern[w] = 0
-                        supply_intern[w] += total_days
-
-                    if is_supervisor:
-                        if w not in supply_supervisor:
-                            supply_supervisor[w] = 0
-                        supply_supervisor[w] += total_days
 
         if _DEBUG_SEASON_PLANNING and _DEBUG_SEASON_PLANNING_VISIT_ID is not None:
             logger.debug(
@@ -863,6 +843,7 @@ class SeasonPlanningService:
         sequence_pressure_reward_weights: list[int] = []
         tightness_reward_vars: list[cp_model.BoolVar] = []
         tightness_reward_weights: list[int] = []
+        stability_drift_terms: list[cp_model.IntVar] = []
 
         for v in visits:
             if not v.protocol_visit_windows:
@@ -1073,49 +1054,37 @@ class SeasonPlanningService:
                 tightness_reward_vars.append(visit_active_vars[v.id])
                 tightness_reward_weights.append(bonus)
 
-        # 3c. Sleutel (Hard) & Coupling (Soft) Constraints
-        # Junior: Junior OR Flex
-        # Supervisor: Senior OR (Intern AND Not Junior)
-        junior_indices = []
-        supervisor_indices = []
-
-        for j, u in enumerate(users):
-            contract = SeasonPlanningService._get_contract_value(u)
-            exp = (getattr(u, "experience_bat", "") or "").lower()
-
-            is_junior = exp == "junior" or contract == "flex"
-            is_supervisor = exp == "senior" or (
-                contract == "intern" and exp != "junior"
-            )
-
-            if is_junior:
-                junior_indices.append(j)
-            if is_supervisor:
-                supervisor_indices.append(j)
-
-        # Pre-calculate project grouping for diversity penalty (project_id -> list of visit indices)
-        project_visits_indices = {}
-
-        for i, v in enumerate(visits):
-            if v.id not in visit_week_vars:
+        # Stability: penalise moving visits away from their current provisional_week.
+        # Prevents arbitrary solver drift between runs. Small enough that a genuine
+        # capacity need (100k reward) easily overrides it, but large enough that the
+        # solver won't reshuffle for minor slack savings (10 pts/week).
+        # Per-week cost: 500 pts. Moving a visit 5 weeks earlier for slack saves
+        # 5*10=50 pts — far less than the 5*500=2500 stability cost, so it won't.
+        # Visits that are forced (planned_week / provisional_locked) are excluded.
+        # Visits with no previous provisional_week are also excluded (free to assign).
+        for v in visits:
+            if v.id not in visit_active_vars:
                 continue
+            if v.id in forced_active_week_by_visit_id:
+                continue
+            prev_week = getattr(v, "provisional_week", None)
+            if prev_week is None:
+                continue
+            vw = visit_week_vars.get(v.id)
+            if vw is None:
+                continue
+            a = visit_active_vars[v.id]
+            # diff = (week_var - prev_week) when active, 0 when inactive
+            diff = model.NewIntVar(-53, 53, f"stab_diff_{v.id}")
+            drift = model.NewIntVar(0, 53, f"stab_drift_{v.id}")
+            model.Add(diff == vw - prev_week).OnlyEnforceIf(a)
+            model.Add(diff == 0).OnlyEnforceIf(a.Not())
+            model.AddAbsEquality(drift, diff)
+            stability_drift_terms.append(drift)
 
-            vw = visit_week_vars[v.id]
-
-            pid = getattr(getattr(v, "cluster", None), "project_id", None)
-            if pid:
-                if pid not in project_visits_indices:
-                    project_visits_indices[pid] = []
-                project_visits_indices[pid].append(i)
-
-        # 4. Cumulative Daily Capacity Constraints (EXTENDED)
+        # 4. Cumulative Daily Capacity Constraints
         # For each Week W, per Skill S
         overflow_penalty_terms = []
-        quadratic_load_terms = []
-
-        intern_shortfall_terms = []
-        supervisor_shortfall_terms = []
-        diversity_penalty_terms = []
         large_team_penalty_terms = []
 
         # Map: Week -> Skill -> List of (v, overlap, is_active)
@@ -1142,10 +1111,6 @@ class SeasonPlanningService:
             # 4a. Skill Demand
             skill_map = visits_per_week_candidate.get(w, {})
 
-            week_assignments_cost = []  # For load balancing
-            week_intern_demand = []
-            week_supervisor_demand = []
-            week_proj_counts = {}  # pid -> list of bools
             week_large_team_demand = []
             week_total_demand_terms = []
             week_daypart_demand_terms = {"m": [], "d": [], "n": []}
@@ -1169,42 +1134,6 @@ class SeasonPlanningService:
                     model.AddImplication(b, is_active)
 
                     assigned_bools.append(b)
-
-                    # Track for BALANCING
-                    cost = v.required_researchers or 1
-                    week_assignments_cost.append(b * cost)
-
-                    # --- SLEUTEL (Intern) ---
-                    if getattr(v, "sleutel", False):
-                        window_weight = math.ceil(5 / overlap)
-                        week_intern_demand.append(b * window_weight)
-
-                    # --- COUPLING (Supervisor) ---
-                    if (v.required_researchers or 1) > 1:
-                        fam_name = (
-                            str(
-                                getattr(
-                                    getattr(v, "species", [None])[0], "family", None
-                                )
-                                and getattr(
-                                    getattr(v.species[0], "family", None), "name", ""
-                                )
-                                or ""
-                            )
-                            .strip()
-                            .lower()
-                        )
-                        if fam_name == "vleermuis":
-                            # Soft Coupling: Demand Supervisor for multi-person Vleermuis
-                            window_weight = math.ceil(5 / overlap)
-                            week_supervisor_demand.append(b * window_weight)
-
-                    # --- DIVERSITY ---
-                    pid = getattr(getattr(v, "cluster", None), "project_id", None)
-                    if pid:
-                        if pid not in week_proj_counts:
-                            week_proj_counts[pid] = []
-                        week_proj_counts[pid].append(b)
 
                     # --- LARGE TEAM VISITS ---
                     if get_settings().constraint_large_team_penalty:
@@ -1316,40 +1245,7 @@ class SeasonPlanningService:
                             )
                             slack_by_week_skill_daypart[(w, skill, part_key)] = slack_dp
 
-            # 4b. Load Balancing
-            if week_assignments_cost:
-                load_w = model.NewIntVar(0, 10000, f"load_{w}")
-                model.Add(load_w == sum(week_assignments_cost))
-                sq_load = model.NewIntVar(0, 100000000, f"sq_load_{w}")
-                model.AddMultiplicationEquality(sq_load, [load_w, load_w])
-                quadratic_load_terms.append(sq_load)
-
-            # 4c. Intern Shortfall
-            if week_intern_demand:
-                total_intern = supply_intern.get(w, 0)
-                sf_int = model.NewIntVar(0, 10000, f"short_intern_{w}")
-                intern_shortfall_terms.append(sf_int)
-                model.Add(sum(week_intern_demand) <= total_intern + sf_int)
-
-            # 4d. Supervisor Shortfall
-            if week_supervisor_demand:
-                total_sup = supply_supervisor.get(w, 0)
-                sf_sup = model.NewIntVar(0, 10000, f"short_sup_{w}")
-                supervisor_shortfall_terms.append(sf_sup)
-                model.Add(sum(week_supervisor_demand) <= total_sup + sf_sup)
-
-            # 4e. Diversity (Penalty)
-            for pid, bools in week_proj_counts.items():
-                if len(bools) > 1:
-                    # Count assigned
-                    c = model.NewIntVar(0, len(bools), f"p_count_{w}_{pid}")
-                    model.Add(c == sum(bools))
-
-                    excess = model.NewIntVar(0, len(bools), f"p_excess_{w}_{pid}")
-                    model.Add(excess >= c - 1)
-                    diversity_penalty_terms.append(excess)
-
-            # 4f. Large Team Spread
+            # 4b. Large Team Spread
             if week_large_team_demand:
                 large_count = model.NewIntVar(0, 1000, f"large_count_{w}")
                 model.Add(large_count == sum(week_large_team_demand))
@@ -1467,19 +1363,9 @@ class SeasonPlanningService:
         # Constraint penalties: 200k per overflow unit so one overflow outweighs two active-visit rewards,
         # making it preferable to leave a visit unassigned rather than violate capacity.
         p_overflow = cp_model.LinearExpr.Sum(overflow_penalty_terms) * -200000
-        p_intern = cp_model.LinearExpr.Sum(intern_shortfall_terms) * -200000
-        p_supervisor = cp_model.LinearExpr.Sum(supervisor_shortfall_terms) * -100
-        p_diversity = cp_model.LinearExpr.Sum(diversity_penalty_terms) * -10
         p_successor_risk = cp_model.LinearExpr.Sum(successor_risk_terms) * -500
         p_predecessor_room_risk = cp_model.LinearExpr.Sum(predecessor_room_risk_terms) * -1_000
         p_large_teams = cp_model.LinearExpr.Sum(large_team_penalty_terms) * -10
-
-        scaled_load_terms = []
-        for idx, term in enumerate(quadratic_load_terms):
-            scaled = model.NewIntVar(0, 100000000, f"sq_load_scaled_{idx}")
-            model.AddDivisionEquality(scaled, term, 10)
-            scaled_load_terms.append(scaled)
-        p_load = cp_model.LinearExpr.Sum(scaled_load_terms) * -1
 
         # Scheduling-difficulty rewards (soft hints)
         sequence_length_reward = cp_model.LinearExpr.WeightedSum(
@@ -1492,22 +1378,22 @@ class SeasonPlanningService:
             tightness_reward_vars, tightness_reward_weights
         )
 
+        # Stability: -500 pts per week a visit deviates from its previous provisional_week.
+        p_stability = cp_model.LinearExpr.Sum(stability_drift_terms) * -500
+
         total_obj = (
             reward_term
             + urgent_reward_term
             + priority_reward_term
             + slack_penalty
             + p_overflow
-            + p_intern
-            + p_supervisor
-            + p_diversity
             + p_successor_risk
             + p_predecessor_room_risk
             + p_large_teams
-            + p_load
             + sequence_length_reward
             + sequence_pressure_reward
             + tightness_reward
+            + p_stability
         )
         model.Maximize(total_obj)
 
@@ -1954,6 +1840,13 @@ class SeasonPlanningService:
                                         "window_to_week": w_max,
                                     },
                                 ))
+                                # Best-effort fallback: assign the earliest candidate week so
+                                # this visit remains visible in the weekly planner inbox.
+                                # The diagnostic above marks it as unscheduled (at-risk), so
+                                # the frontend can show it with a warning indicator.
+                                # This does NOT affect solver capacity — it is purely a UI hint.
+                                if w_min is not None:
+                                    v.provisional_week = w_min
 
         return diagnostics
 
@@ -2011,12 +1904,22 @@ class SeasonPlanningService:
             db, start_date.year
         )
 
-        SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
+        diagnostics = SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
 
         result = SeasonPlanningService._build_capacity_grid(
             start_date, visits, users, avail_map
         )
         await db.rollback()
+
+        result.unschedulable_visits = [
+            UnschedulableVisitInfo(
+                visit_id=d.visit_id,
+                reason_nl=d.details.get("reason_nl", "Reden onbekend"),
+                reason_code=d.details.get("reason_code", "onbekend"),
+            )
+            for d in diagnostics
+            if d.action == "planning_season_unscheduled"
+        ]
         return result
 
     @staticmethod
