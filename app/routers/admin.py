@@ -145,21 +145,20 @@ async def list_activity_logs(
 async def get_family_capacity(
     _: AdminDep,
     db: DbDep,
-    include_quotes: Annotated[bool, Query()] = False,
     simulate: Annotated[bool, Query()] = False,
+    quote_project_ids: Annotated[list[int], Query()] = [],
 ) -> CapacitySimulationResponse:
     """
     Get persisted Season Planning result.
     This replaces the legacy simulation. It reads validation weeks from visits.
     """
-    # Simply read the grid. Start date defaults to today or start of year?
-    # Simulation usually defaults to today.
+    effective_quote_ids = quote_project_ids if quote_project_ids else None
     if simulate:
         return await SeasonPlanningService.simulate_capacity_grid(
-            db, date.today(), include_quotes=include_quotes
+            db, date.today(), quote_project_ids=effective_quote_ids
         )
     return await SeasonPlanningService.get_capacity_grid(
-        db, date.today(), include_quotes=include_quotes
+        db, date.today(), quote_project_ids=effective_quote_ids
     )
 
 
@@ -167,14 +166,15 @@ async def get_family_capacity(
 async def regenerate_family_capacity(
     admin: AdminDep,
     db: DbDep,
-    include_quotes: Annotated[bool, Query()] = False,
     simulate: Annotated[bool, Query()] = False,
+    quote_project_ids: Annotated[list[int], Query()] = [],
 ) -> CapacitySimulationResponse:
     """Run the Season Solver (Global Planning)."""
 
+    effective_quote_ids = quote_project_ids if quote_project_ids else None
     if simulate:
         return await SeasonPlanningService.simulate_capacity_grid(
-            db, date.today(), include_quotes=include_quotes
+            db, date.today(), quote_project_ids=effective_quote_ids
         )
 
     # Run Solver

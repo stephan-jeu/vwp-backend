@@ -30,7 +30,7 @@ from app.services.visit_planning_selection import (
     _any_function_contains,
 )
 from app.services.planning_run_errors import PlanningRunError
-from app.schemas.capacity import CapacitySimulationResponse, UnschedulableVisitInfo
+from app.schemas.capacity import CapacitySimulationResponse, DeadlineSummaryRow, UnschedulableVisitInfo
 from ortools.sat.python import cp_model
 from core.settings import get_settings
 
@@ -1856,6 +1856,7 @@ class SeasonPlanningService:
         start_date: date,
         *,
         include_quotes: bool = False,
+        quote_project_ids: list[int] | None = None,
     ) -> CapacitySimulationResponse:
         """
         Returns the Season Plan as a capacity grid.
@@ -1865,11 +1866,12 @@ class SeasonPlanningService:
         Args:
             db: Async SQLAlchemy session.
             start_date: Simulation start date.
-            include_quotes: When True, include quote projects in the demand grid.
+            include_quotes: When True, include all quote projects in the demand grid.
+            quote_project_ids: When provided, include only these specific quote projects.
         """
         # Load visits and users
         visits = await SeasonPlanningService._load_all_active_visits(
-            db, start_date, include_quotes=include_quotes
+            db, start_date, include_quotes=include_quotes, quote_project_ids=quote_project_ids
         )
         users = await SeasonPlanningService._load_all_users(db)
 
@@ -1885,19 +1887,21 @@ class SeasonPlanningService:
         start_date: date,
         *,
         include_quotes: bool = False,
+        quote_project_ids: list[int] | None = None,
     ) -> CapacitySimulationResponse:
         """Simulate the seasonal planner without persisting provisional weeks.
 
         Args:
             db: Async SQLAlchemy session.
             start_date: Simulation start date.
-            include_quotes: When True, include quote projects in the solver input.
+            include_quotes: When True, include all quote projects in the solver input.
+            quote_project_ids: When provided, include only these specific quote projects.
 
         Returns:
             Simulated capacity grid.
         """
         visits = await SeasonPlanningService._load_all_active_visits(
-            db, start_date, include_quotes=include_quotes
+            db, start_date, include_quotes=include_quotes, quote_project_ids=quote_project_ids
         )
         users = await SeasonPlanningService._load_all_users(db)
         avail_map = await SeasonPlanningService._load_availability_map(
@@ -1911,15 +1915,24 @@ class SeasonPlanningService:
         )
         await db.rollback()
 
-        result.unschedulable_visits = [
-            UnschedulableVisitInfo(
+        visit_by_id = {v.id: v for v in visits}
+        result.unschedulable_visits = []
+        for d in diagnostics:
+            if d.action != "planning_season_unscheduled":
+                continue
+            v = visit_by_id.get(d.visit_id)
+            cluster = getattr(v, "cluster", None) if v else None
+            project = getattr(cluster, "project", None) if cluster else None
+            result.unschedulable_visits.append(UnschedulableVisitInfo(
                 visit_id=d.visit_id,
                 reason_nl=d.details.get("reason_nl", "Reden onbekend"),
                 reason_code=d.details.get("reason_code", "onbekend"),
-            )
-            for d in diagnostics
-            if d.action == "planning_season_unscheduled"
-        ]
+                project_code=getattr(project, "code", None),
+                cluster_address=getattr(cluster, "address", None),
+                to_date=getattr(v, "to_date", None) if v else None,
+                part_of_day=getattr(v, "part_of_day", None) if v else None,
+                family=SeasonPlanningService._get_required_user_flag(v) if v else None,
+            ))
         return result
 
     @staticmethod
@@ -2212,6 +2225,37 @@ class SeasonPlanningService:
                     0, demand - part_supply
                 )
 
+        # --- Deadline Summary: per family/part/deadline, count planned/provisional/not_scheduled ---
+        _ds: dict[tuple[str, str, str | None], dict[str, int]] = {}
+        for v in visits:
+            if v.custom_function_name or v.custom_species_name:
+                continue
+            _skill = SeasonPlanningService._get_required_user_flag(v)
+            _part = (v.part_of_day or "Onbekend").strip()
+            _dl_key: str | None = v.to_date.isoformat() if v.to_date else None
+            _key = (_skill, _part, _dl_key)
+            if _key not in _ds:
+                _ds[_key] = {"planned": 0, "provisional": 0, "not_scheduled": 0}
+            if v.planned_week is not None:
+                _ds[_key]["planned"] += 1
+            elif v.provisional_week is not None:
+                _ds[_key]["provisional"] += 1
+            else:
+                _ds[_key]["not_scheduled"] += 1
+
+        deadline_summary = [
+            DeadlineSummaryRow(
+                family=_skill,
+                part_of_day=_part,
+                deadline=date.fromisoformat(_dl_key) if _dl_key else None,
+                **counts,
+            )
+            for (_skill, _part, _dl_key), counts in sorted(
+                _ds.items(),
+                key=lambda x: (x[0][2] or "9999-99-99", x[0][0], x[0][1]),
+            )
+        ]
+
         return CapacitySimulationResponse(
             horizon_start=start_date,
             horizon_end=date(year, 12, 31),
@@ -2220,6 +2264,7 @@ class SeasonPlanningService:
                 "weeks": [f"{year}-W{w:02d}" for w in horizon_weeks],
                 "rows": week_view_rows,
             },
+            deadline_summary=deadline_summary,
         )
 
     @staticmethod
@@ -2228,6 +2273,7 @@ class SeasonPlanningService:
         start_date: date,
         *,
         include_quotes: bool = True,
+        quote_project_ids: list[int] | None = None,
     ) -> list[Visit]:
         """
         Load visits relevant for season planning.
@@ -2241,7 +2287,9 @@ class SeasonPlanningService:
         Args:
             db: Async SQLAlchemy session.
             start_date: Start date for the planning horizon.
-            include_quotes: When True, include quote projects.
+            include_quotes: When True, include all quote projects.
+            quote_project_ids: When provided, include only these specific quote project IDs
+                (overrides include_quotes).
 
         Returns:
             List of visits matching the criteria.
@@ -2266,7 +2314,16 @@ class SeasonPlanningService:
                 .selectinload(Protocol.species),
             )
         )
-        if not include_quotes:
+        if quote_project_ids is not None:
+            # Include only specific quote projects
+            stmt = stmt.where(
+                or_(
+                    Project.quote.is_(False),
+                    Project.quote.is_(None),
+                    Project.id.in_(quote_project_ids),
+                )
+            )
+        elif not include_quotes:
             stmt = stmt.where(or_(Project.quote.is_(False), Project.quote.is_(None)))
         return (await db.execute(stmt)).scalars().unique().all()
 

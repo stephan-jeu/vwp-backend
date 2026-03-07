@@ -41,6 +41,32 @@ class UnschedulableVisitInfo(BaseModel):
     visit_id: int
     reason_nl: str
     reason_code: str
+    # Display fields (populated when visit object is available)
+    project_code: str | None = None
+    cluster_address: str | None = None
+    to_date: date | None = None
+    part_of_day: str | None = None
+    family: str | None = None
+
+
+class DeadlineSummaryRow(BaseModel):
+    """Aggregated visit counts per family, part-of-day and deadline date.
+
+    Attributes:
+        family: Researcher skill/family group (e.g. "Vleermuiskundige").
+        part_of_day: Part of day (e.g. "Ochtend", "Avond").
+        deadline: Visit end date (to_date), or None if no deadline.
+        planned: Number of visits with a planned_week set.
+        provisional: Number of visits with only a provisional_week set.
+        not_scheduled: Number of visits with neither.
+    """
+
+    family: str
+    part_of_day: str
+    deadline: date | None
+    planned: int
+    provisional: int
+    not_scheduled: int
 
 
 class CapacitySimulationResponse(BaseModel):
@@ -64,5 +90,6 @@ class CapacitySimulationResponse(BaseModel):
     grid: dict[str, dict[str, dict[str, FamilyDaypartCapacity]]]
     week_view: WeekView | None = None
     unschedulable_visits: list[UnschedulableVisitInfo] = []
+    deadline_summary: list[DeadlineSummaryRow] = []
 
     model_config = {"from_attributes": True}
