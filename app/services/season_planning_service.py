@@ -1933,8 +1933,11 @@ class SeasonPlanningService:
 
         diagnostics = SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
 
+        unschedulable_ids = frozenset(
+            d.visit_id for d in diagnostics if d.action == "planning_season_unscheduled"
+        )
         result = SeasonPlanningService._build_capacity_grid(
-            start_date, visits, users, avail_map
+            start_date, visits, users, avail_map, unschedulable_ids=unschedulable_ids
         )
 
         visit_by_id = {v.id: v for v in visits}
@@ -1965,6 +1968,7 @@ class SeasonPlanningService:
         visits: list[Visit],
         users: list[User],
         avail_map: dict[tuple[int, int], AvailabilityWeek],
+        unschedulable_ids: frozenset[int] | None = None,
     ) -> CapacitySimulationResponse:
         """Build a capacity grid based on visits and availability.
 
@@ -2260,7 +2264,9 @@ class SeasonPlanningService:
             _key = (_skill, _part, _dl_key)
             if _key not in _ds:
                 _ds[_key] = {"planned": 0, "provisional": 0, "not_scheduled": 0}
-            if v.planned_week is not None:
+            if unschedulable_ids and v.id in unschedulable_ids:
+                _ds[_key]["not_scheduled"] += 1
+            elif v.planned_week is not None:
                 _ds[_key]["planned"] += 1
             elif v.provisional_week is not None:
                 _ds[_key]["provisional"] += 1
