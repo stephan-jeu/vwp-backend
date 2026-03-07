@@ -1913,7 +1913,6 @@ class SeasonPlanningService:
         result = SeasonPlanningService._build_capacity_grid(
             start_date, visits, users, avail_map
         )
-        await db.rollback()
 
         visit_by_id = {v.id: v for v in visits}
         result.unschedulable_visits = []
@@ -1933,6 +1932,8 @@ class SeasonPlanningService:
                 part_of_day=getattr(v, "part_of_day", None) if v else None,
                 family=SeasonPlanningService._get_required_user_flag(v) if v else None,
             ))
+
+        await db.rollback()
         return result
 
     @staticmethod
