@@ -1086,6 +1086,7 @@ class SeasonPlanningService:
         # For each Week W, per Skill S
         overflow_penalty_terms = []
         large_team_penalty_terms = []
+        weekly_load_penalty_terms: list[cp_model.IntVar] = []
 
         # Map: Week -> Skill -> List of (v, overlap, is_active)
         # We constructed 'visits_per_week_candidate' earlier.
@@ -1277,6 +1278,21 @@ class SeasonPlanningService:
                     <= global_supply_w + overflow_global
                 )
 
+            # 4c. Quadratic load distribution penalty
+            # Penalises packing too many visits into one week by squaring total demand.
+            # Quadratic cost naturally encourages even spread: 2×(5²) < 1×(10²).
+            if get_settings().constraint_quadratic_load_penalty and (
+                week_total_demand_terms or fixed_custom_demand
+            ):
+                total_demand_w = model.NewIntVar(0, 10000, f"total_demand_{w}")
+                model.Add(
+                    total_demand_w
+                    == cp_model.LinearExpr.Sum(week_total_demand_terms) + fixed_custom_demand
+                )
+                sq_demand_w = model.NewIntVar(0, 100_000_000, f"sq_demand_{w}")
+                model.AddMultiplicationEquality(sq_demand_w, [total_demand_w, total_demand_w])
+                weekly_load_penalty_terms.append(sq_demand_w)
+
             for part_key in ("m", "d", "n"):
                 fixed_custom_daypart = custom_fixed_demand_by_week_daypart.get(
                     (w, part_key), 0
@@ -1381,6 +1397,12 @@ class SeasonPlanningService:
         # Stability: -500 pts per week a visit deviates from its previous provisional_week.
         p_stability = cp_model.LinearExpr.Sum(stability_drift_terms) * -500
 
+        # Quadratic load spread: penalises overloading a single week.
+        p_quadratic_load = (
+            cp_model.LinearExpr.Sum(weekly_load_penalty_terms)
+            * -get_settings().constraint_quadratic_load_penalty_weight
+        )
+
         total_obj = (
             reward_term
             + urgent_reward_term
@@ -1394,6 +1416,7 @@ class SeasonPlanningService:
             + sequence_pressure_reward
             + tightness_reward
             + p_stability
+            + p_quadratic_load
         )
         model.Maximize(total_obj)
 

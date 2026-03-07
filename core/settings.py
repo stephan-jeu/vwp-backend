@@ -62,6 +62,14 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("CONSTRAINT_LARGE_TEAM_PENALTY", "true").lower() in {"1", "true", "yes"}
     )
 
+    # Constraint: Quadratic weekly load spread penalty (discourages packing visits into a single week)
+    constraint_quadratic_load_penalty: bool = Field(
+        default_factory=lambda: os.getenv("CONSTRAINT_QUADRATIC_LOAD_PENALTY", "true").lower() in {"1", "true", "yes"}
+    )
+    constraint_quadratic_load_penalty_weight: int = Field(
+        default_factory=lambda: int(os.getenv("CONSTRAINT_QUADRATIC_LOAD_PENALTY_WEIGHT", "5"))
+    )
+
     # Constraint: Max Travel Time (Minutes)
     constraint_max_travel_time_minutes: int = Field(
         default_factory=lambda: int(os.getenv("CONSTRAINT_MAX_TRAVEL_TIME_MINUTES", "75"))
