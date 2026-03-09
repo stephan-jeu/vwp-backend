@@ -844,6 +844,10 @@ class SeasonPlanningService:
         tightness_reward_vars: list[cp_model.BoolVar] = []
         tightness_reward_weights: list[int] = []
         stability_drift_terms: list[cp_model.IntVar] = []
+        overflow_penalty_terms: list[cp_model.IntVar] = []
+        large_team_penalty_terms: list[cp_model.BoolVar] = []
+        weekly_load_penalty_terms: list[cp_model.IntVar] = []
+        slack_reward_terms: list[cp_model.IntVar] = []
 
         for v in visits:
             if not v.protocol_visit_windows:

@@ -36,6 +36,7 @@ from app.services.trash_service import (
 from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
 from app.services.address_validation import is_valid_address
 from core.settings import get_settings
+from app.core.logging import logger
 
 
 router = APIRouter()
@@ -196,6 +197,7 @@ async def regenerate_family_capacity(
             ),
         ) from exc
     except Exception as exc:
+        logger.exception("Error in season solver")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
