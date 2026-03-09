@@ -944,24 +944,38 @@ class SeasonPlanningService:
                         # of successor_risk_terms: instead of penalising V1 being too
                         # late, we penalise V2 being too early.
                         #
-                        # If V1's earliest valid week is `v1_min` and the gap is G,
-                        # V2 should ideally be >= v1_min + G + CUSHION so that V1 has
-                        # at least CUSHION weeks of breathing room.
+                        # We only add a penalty when V1 truly risks being squeezed:
+                        # - Compute v1_eff_min (earliest valid week for V1) and
+                        #   v1_eff_max (latest valid week for V1, ignoring V2).
+                        # - V1's available room when V2 is placed at w2 is:
+                        #     room = (w2 - gap_weeks) - v1_eff_min
+                        # - We only penalise if that room would be < _PRED_THRESHOLD,
+                        #   meaning V1 has fewer than THRESHOLD weeks to choose from.
+                        # - Skip entirely if v1's own window is already <= gap_weeks
+                        #   (sowieso krap — penalty helpt niet en verstoort spreiding).
                         if gap_weeks > 0:
-                            _PRED_CUSHION = 2  # desired extra weeks of room for V1
+                            _PRED_THRESHOLD = 2  # V1 needs at least this many weeks of room
                             v1_eff_min = forced_active_week_by_visit_id.get(earlier.id)
                             if v1_eff_min is None:
                                 cands = [w for w, _ in visit_candidates.get(earlier.id, []) if w > 0]
                                 v1_eff_min = min(cands) if cands else None
-                            if v1_eff_min is not None:
-                                desired_min_w2 = v1_eff_min + gap_weeks + _PRED_CUSHION
-                                pred_room_risk = model.NewIntVar(
-                                    0, 53, f"pred_room_{earlier.id}_{later.id}_{pid}"
-                                )
-                                model.Add(pred_room_risk >= desired_min_w2 - w2).OnlyEnforceIf([a1, a2])
-                                model.Add(pred_room_risk == 0).OnlyEnforceIf(a1.Not())
-                                model.Add(pred_room_risk == 0).OnlyEnforceIf(a2.Not())
-                                predecessor_room_risk_terms.append(pred_room_risk)
+                            v1_eff_max = forced_active_week_by_visit_id.get(earlier.id)
+                            if v1_eff_max is None:
+                                cands_max = [w for w, _ in visit_candidates.get(earlier.id, []) if w > 0]
+                                v1_eff_max = max(cands_max) if cands_max else None
+                            if v1_eff_min is not None and v1_eff_max is not None:
+                                v1_own_window = v1_eff_max - v1_eff_min + 1
+                                # Skip if V1's own window is already tight — no room to help
+                                if v1_own_window > gap_weeks:
+                                    # desired_min_w2: V2 must be at least here so V1 has THRESHOLD weeks
+                                    desired_min_w2 = v1_eff_min + gap_weeks + _PRED_THRESHOLD
+                                    pred_room_risk = model.NewIntVar(
+                                        0, 53, f"pred_room_{earlier.id}_{later.id}_{pid}"
+                                    )
+                                    model.Add(pred_room_risk >= desired_min_w2 - w2).OnlyEnforceIf([a1, a2])
+                                    model.Add(pred_room_risk == 0).OnlyEnforceIf(a1.Not())
+                                    model.Add(pred_room_risk == 0).OnlyEnforceIf(a2.Not())
+                                    predecessor_room_risk_terms.append(pred_room_risk)
 
                         window_weeks = _protocol_window_weeks(later, pid)
                         if window_weeks is None or window_weeks > 2:
@@ -1392,7 +1406,12 @@ class SeasonPlanningService:
         # making it preferable to leave a visit unassigned rather than violate capacity.
         p_overflow = cp_model.LinearExpr.Sum(overflow_penalty_terms) * -200000
         p_successor_risk = cp_model.LinearExpr.Sum(successor_risk_terms) * -500
-        p_predecessor_room_risk = cp_model.LinearExpr.Sum(predecessor_room_risk_terms) * -1_000
+        # Weight reduced from -1_000 to -75: the hard gap constraint (w2 >= w1 + gap)
+        # already guarantees correctness; this soft penalty only nudges V2 later when
+        # V1 has genuinely few weeks left.  At -75 it is ~7× stronger than the
+        # early-placement bonus (10 pts/week) — enough to matter when room is truly
+        # tight, but no longer dominant over the whole window.
+        p_predecessor_room_risk = cp_model.LinearExpr.Sum(predecessor_room_risk_terms) * -75
         p_large_teams = cp_model.LinearExpr.Sum(large_team_penalty_terms) * -10
 
         # Scheduling-difficulty rewards (soft hints)
