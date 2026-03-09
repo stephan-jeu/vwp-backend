@@ -1062,31 +1062,39 @@ class SeasonPlanningService:
         # 5*10=50 pts — far less than the 5*500=2500 stability cost, so it won't.
         # Visits that are forced (planned_week / provisional_locked) are excluded.
         # Visits with no previous provisional_week are also excluded (free to assign).
-        for v in visits:
-            if v.id not in visit_active_vars:
-                continue
-            if v.id in forced_active_week_by_visit_id:
-                continue
-            prev_week = getattr(v, "provisional_week", None)
-            if prev_week is None:
-                continue
-            vw = visit_week_vars.get(v.id)
-            if vw is None:
-                continue
-            a = visit_active_vars[v.id]
-            # diff = (week_var - prev_week) when active, 0 when inactive
-            diff = model.NewIntVar(-53, 53, f"stab_diff_{v.id}")
-            drift = model.NewIntVar(0, 53, f"stab_drift_{v.id}")
-            model.Add(diff == vw - prev_week).OnlyEnforceIf(a)
-            model.Add(diff == 0).OnlyEnforceIf(a.Not())
-            model.AddAbsEquality(drift, diff)
-            stability_drift_terms.append(drift)
-
-        # 4. Cumulative Daily Capacity Constraints
-        # For each Week W, per Skill S
-        overflow_penalty_terms = []
-        large_team_penalty_terms = []
-        weekly_load_penalty_terms: list[cp_model.IntVar] = []
+        # This is only applied if provisional_week_stickiness_enabled is True.
+        settings = get_settings()
+        if settings.provisional_week_stickiness_enabled:
+            for v in visits:
+                if v.id not in visit_active_vars:
+                    continue
+                if v.id in forced_active_week_by_visit_id:
+                    continue
+                prev_week = getattr(v, "provisional_week", None)
+                if prev_week is None:
+                    continue
+                vw = visit_week_vars.get(v.id)
+                if vw is None:
+                    continue
+                try:
+                    prev_week_int = int(prev_week)
+                except (ValueError, TypeError):
+                    continue
+                
+                # Create a variable to represent the absolute difference |vw - prev_week|
+                drift_var = model.NewIntVar(0, 53, f"drift_{v.id}")
+                
+                # drift_var >= vw - prev_week
+                model.Add(drift_var >= vw - prev_week_int)
+                # drift_var >= prev_week - vw
+                model.Add(drift_var >= prev_week_int - vw)
+                
+                # Only apply drift penalty if the visit is actively scheduled
+                # We do this by multiplying the drift by the active boolean
+                active_drift = model.NewIntVar(0, 53, f"active_drift_{v.id}")
+                model.AddMultiplicationEquality(active_drift, [drift_var, visit_active_vars[v.id]])
+                
+                stability_drift_terms.append(active_drift)
 
         # Map: Week -> Skill -> List of (v, overlap, is_active)
         # We constructed 'visits_per_week_candidate' earlier.

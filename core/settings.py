@@ -121,6 +121,14 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
     )
 
+    # Provisional week stickiness
+    provisional_week_stickiness_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "PROVISIONAL_WEEK_STICKINESS_ENABLED", "true"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+
     # Holiday reset scheduler (runs Jan 1 to reset org unavailabilities)
     holiday_reset_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(
