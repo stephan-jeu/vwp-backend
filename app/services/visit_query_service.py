@@ -50,7 +50,7 @@ def apply_visit_filters(
         )
 
     if cluster_number is not None:
-        stmt = stmt.where(Cluster.cluster_number == cluster_number)
+        stmt = stmt.where(Cluster.cluster_number.ilike(f"%{cluster_number}%"))
 
     joined_functions = False
     joined_species = False
