@@ -35,7 +35,8 @@ def send_email(to: str, subject: str, body: str) -> None:
         print(f"Failed to send email to {to}: {e}")
 
 def send_activation_email(email: str, token: str) -> None:
-    activ_url = f"http://localhost:3000/auth/reset-password?token={token}&type=activation"
+    settings = get_settings()
+    activ_url = f"{settings.frontend_url}/auth/reset-password?token={token}&type=activation"
     logger.info("Activation link for %s: %s", email, activ_url)
 
     subject = "Account Activation - Veldwerkplanning"
@@ -49,7 +50,8 @@ def send_activation_email(email: str, token: str) -> None:
 
 
 def send_reset_password_email(email: str, token: str) -> None:
-    reset_url = f"http://localhost:3000/auth/reset-password?token={token}&type=reset"
+    settings = get_settings()
+    reset_url = f"{settings.frontend_url}/auth/reset-password?token={token}&type=reset"
     logger.info("Password reset link for %s: %s", email, reset_url)
 
     subject = "Password Reset - Veldwerkplanning"

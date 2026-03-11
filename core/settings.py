@@ -211,7 +211,7 @@ class Settings(BaseModel):
     )
     ms365_redirect_uri: str = Field(
         default_factory=lambda: os.getenv(
-            "MS365_REDIRECT_URI", "http://localhost:3000/auth/callback-ms365"
+            "MS365_REDIRECT_URI", "http://localhost:3000/auth/callback/ms365"
         )
     )
 
