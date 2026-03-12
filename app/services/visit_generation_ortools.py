@@ -317,7 +317,9 @@ def _add_global_constraints(
     model: cp_model.CpModel,
     requests: list[Any],
     req_parts: list[cp_model.IntVar],
-    req_start: list[cp_model.IntVar],
+    req_to_visit: dict[tuple[int, int], cp_model.BoolVarT],
+    visit_window_start: list[cp_model.IntVar],
+    max_visits: int,
     min_date_ord: int,
     period_miss_vars: list[cp_model.IntVar],
 ) -> None:
@@ -369,9 +371,10 @@ def _add_global_constraints(
                 bools = []
                 for rx in r_idxs:
                     b = model.NewBoolVar(f"p{p_id}_r{rx}_{label}")
-                    model.AddLinearExpressionInDomain(
-                        req_start[rx], domain_obj
-                    ).OnlyEnforceIf(b)
+                    for v in range(max_visits):
+                        model.AddLinearExpressionInDomain(
+                            visit_window_start[v], domain_obj
+                        ).OnlyEnforceIf([req_to_visit[(rx, v)], b])
                     bools.append(b)
 
                 if _VISIT_GEN_PERIOD_MODE == "soft":
@@ -687,7 +690,9 @@ async def generate_visits_cp_sat(
         model=model,
         requests=requests,
         req_parts=req_parts,
-        req_start=req_start,
+        req_to_visit=req_to_visit,
+        visit_window_start=visit_window_start,
+        max_visits=max_visits,
         min_date_ord=min_date_ord,
         period_miss_vars=period_miss_vars,
     )
