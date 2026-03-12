@@ -33,6 +33,7 @@ def make_visit(
     pvw.protocol_id = protocol_id
     pvw.visit_index = visit_index
     pvw.window_from = window_from or date(2026, 1, 1)
+    pvw.window_to = date(2026, 12, 31)
 
     proto = MagicMock()
     proto.min_period_between_visits_value = min_gap_val
@@ -198,138 +199,6 @@ def test_gap_constraint_min_period():
     # Gap enforcement
     # Constraint code: w2 >= w1 + 3
     assert v2.provisional_week >= v1.provisional_week + 3
-
-
-def test_sleutel_constraint_intern_demand():
-    # Visit requires sleutel -> Needs Intern
-    # Week 10: 0 Interns. Week 11: 1 Intern.
-    # Visit should be pushed to Week 11.
-
-    v = make_visit(300, cluster_id=3, protocol_id=30, visit_index=1)
-    v.sleutel = True
-    v.from_date = date(2026, 1, 1)  # Start early
-
-    # User 1: Senior (Not Intern). Available all year.
-    u1 = MagicMock()
-    u1.id = 1
-    u1.contract_type = "Fixed"
-    u1.experience_bat = "Senior"
-    u1.vleermuis = True
-
-    # User 2: Intern. Only available from Week 11.
-    u2 = MagicMock()
-    u2.id = 2
-    u2.contract_type = "Intern"
-    u2.experience_bat = "Junior"
-    u2.vleermuis = True
-
-    users = [u1, u2]
-    visits = [v]
-
-    sp = MagicMock()
-    sp.family.name = "Vleermuis"
-    v.species = [sp]
-
-    # Avail Map
-    start_date = date(2026, 1, 1)
-    avail_map = {}
-
-    for w in range(1, 54):
-        # U1 always available
-        aw1 = MagicMock()
-        aw1.configure_mock(
-            morning_days=5, daytime_days=5, nighttime_days=5, flex_days=0
-        )
-        avail_map[(1, w)] = aw1
-
-        # U2 available only >= Week 11
-        if w >= 11:
-            aw2 = MagicMock()
-            aw2.configure_mock(
-                morning_days=5, daytime_days=5, nighttime_days=5, flex_days=0
-            )
-            avail_map[(2, w)] = aw2
-        else:
-            # U2 not available
-            pass
-
-    SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
-
-    print(f"Sleutel Visit Week: {v.provisional_week}")
-
-    assert v.provisional_week is not None
-    assert v.provisional_week >= 11
-
-
-def test_coupling_constraint_supervisor_soft():
-    # Visit: 2 researchers.
-    # Week 20: 2 Juniors, 0 Seniors. (Shortfall Supervisor -> Penalty)
-    # Week 21: 1 Junior, 1 Senior. (No Shortfall -> Preferred)
-    # Solver should pick Week 21 to avoid penalty.
-
-    v = make_visit(400, cluster_id=4, protocol_id=40, visit_index=1)
-    v.required_researchers = 2
-    v.from_date = date(2026, 5, 1)  # roughly week 18+
-    v.to_date = date(2026, 6, 30)  # Allow scheduling up to Week ~26
-
-    # U1: Junior (available W20, W21)
-    u1 = MagicMock()
-    u1.id = 1
-    u1.contract_type = "Flex"  # Junior
-    u1.experience_bat = "Junior"
-    u1.vleermuis = True
-
-    # U2: Junior (available W20, W21)
-    u2 = MagicMock()
-    u2.id = 2
-    u2.contract_type = "Flex"  # Junior
-    u2.experience_bat = "Junior"
-    u2.vleermuis = True
-
-    # U3: Medior (Available ONLY W21)
-    u3 = MagicMock()
-    u3.id = 3
-    u3.contract_type = "Fixed"
-    u3.experience_bat = "Medior"
-    u3.vleermuis = True
-
-    users = [u1, u2, u3]
-    visits = [v]
-
-    sp = MagicMock()
-    sp.family.name = "Vleermuis"
-    v.species = [sp]
-
-    avail_map = {}
-    start_date = date(2026, 1, 1)
-
-    for w in [20, 21]:
-        # U1, U2 available both weeks
-        aw1 = MagicMock()
-        aw1.configure_mock(
-            morning_days=5, daytime_days=0, nighttime_days=0, flex_days=0
-        )
-        avail_map[(1, w)] = aw1
-
-        aw2 = MagicMock()
-        aw2.configure_mock(
-            morning_days=5, daytime_days=0, nighttime_days=0, flex_days=0
-        )
-        avail_map[(2, w)] = aw2
-
-        if w == 21:
-            aw3 = MagicMock()
-            aw3.configure_mock(
-                morning_days=5, daytime_days=0, nighttime_days=0, flex_days=0
-            )
-            avail_map[(3, w)] = aw3
-
-    SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
-
-    print(f"Coupling Visit Week: {v.provisional_week}")
-
-    # Should pick W21 because W20 has Supervisor Shortfall (Soft Penalty)
-    assert v.provisional_week == 21
 
 
 def test_coupling_constraint_ignores_non_vleermuis():

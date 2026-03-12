@@ -296,7 +296,10 @@ class SeasonPlanningService:
             # Replace old planning diagnostics with fresh ones from this run
             await db.execute(
                 delete(ActivityLog).where(
-                    ActivityLog.action.like("planning_season_%")
+                    or_(
+                        ActivityLog.action.like("planning_season_%"),
+                        ActivityLog.action == "planning_week_skipped"
+                    )
                 )
             )
             if diagnostics:

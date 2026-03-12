@@ -1001,6 +1001,12 @@ async def update_visit(
     if "planned_week" in data and data["planned_week"] is None:
         if "planned_date" not in data:
             data["planned_date"] = None
+
+    # Consistency check: If planned_date is set without a planned_week, derive the
+    # ISO week number from the date so the planning board filters work.
+    if "planned_date" in data and data["planned_date"] is not None:
+        if data.get("planned_week") is None:
+            data["planned_week"] = data["planned_date"].isocalendar().week
     
     advertized_update = data.pop("advertized", None)
 
@@ -1285,7 +1291,12 @@ async def set_admin_planning_status(
                 ),
             )
 
-        visit.planned_week = payload.planned_week
+        # When planned_date is provided without a planned_week, derive the
+        # ISO week number from the date so the planning board filters work.
+        planned_week = payload.planned_week
+        if planned_week is None and payload.planned_date is not None:
+            planned_week = payload.planned_date.isocalendar().week
+        visit.planned_week = planned_week
         visit.planned_date = payload.planned_date
         await db.execute(
             delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
@@ -1298,7 +1309,6 @@ async def set_admin_planning_status(
                     for rid in payload.researcher_ids
                 ],
             )
-        planned_week = payload.planned_week
         researcher_ids = list(payload.researcher_ids)
 
     cluster = visit.cluster
