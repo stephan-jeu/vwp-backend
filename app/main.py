@@ -113,7 +113,8 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
             "http://127.0.0.1:3000",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
-            "https://vwp.onrender.com",
+            "https://vwp.habitus.nl",
+            "https://vwp.bureau-viridis.nl",
             "https://viridis-demo.nextaimove.com",
             "https://habitus-vwp.nextaimove.com",
         ]
