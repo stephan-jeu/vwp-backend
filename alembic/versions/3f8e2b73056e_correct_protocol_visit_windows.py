@@ -5,6 +5,7 @@ Revises: 2c4596e9fd0b
 Create Date: 2026-02-09 16:04:02.878165
 
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '3f8e2b73056e'
-down_revision = '2c4596e9fd0b'
+revision = "3f8e2b73056e"
+down_revision = "2c4596e9fd0b"
 branch_labels = None
 depends_on = None
 

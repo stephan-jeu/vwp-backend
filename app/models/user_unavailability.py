@@ -36,6 +36,12 @@ class UserUnavailability(TimestampMixin, SoftDeleteMixin, Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
 
-    morning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    daytime: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    nighttime: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    morning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    daytime: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    nighttime: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )

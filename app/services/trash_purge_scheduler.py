@@ -34,9 +34,7 @@ async def _run_trash_purge_job() -> None:
     """
 
     if _job_lock.locked():
-        logger.warning(
-            "Trash purge scheduler skipped: previous run still in progress."
-        )
+        logger.warning("Trash purge scheduler skipped: previous run still in progress.")
         return
 
     async with _job_lock:
@@ -46,7 +44,10 @@ async def _run_trash_purge_job() -> None:
                 count = await purge_old_trash(
                     session, retention_days=_settings.trash_purge_retention_days
                 )
-                logger.info("Trash purge scheduler completed successfully. Purged %d items.", count)
+                logger.info(
+                    "Trash purge scheduler completed successfully. Purged %d items.",
+                    count,
+                )
             except Exception:
                 detail = traceback.format_exc()
                 try:

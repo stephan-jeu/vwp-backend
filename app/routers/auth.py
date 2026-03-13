@@ -83,9 +83,13 @@ async def get_login_options(
     """Check if user is activated or needs activation email."""
     settings = get_settings()
     if not settings.enable_email_login:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email login disabled")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Email login disabled"
+        )
 
-    result = await db.execute(select(User).where(User.email == email, User.deleted_at == None))
+    result = await db.execute(
+        select(User).where(User.email == email, User.deleted_at == None)
+    )
     user = result.scalar_one_or_none()
 
     if user and user.hashed_password:
@@ -117,9 +121,18 @@ async def login_google(
     """Return Google OAuth2 authorization URL to start login flow."""
 
     settings = get_settings()
+    chosen_redirect_uri = redirect_uri or settings.google_redirect_uri
+    if (
+        settings.effective_google_redirect_uris
+        and chosen_redirect_uri not in settings.effective_google_redirect_uris
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid redirect_uri",
+        )
     params = {
         "client_id": settings.google_client_id,
-        "redirect_uri": redirect_uri or settings.google_redirect_uri,
+        "redirect_uri": chosen_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
@@ -136,7 +149,9 @@ async def login_ms365(
     """Return MS365 OAuth2 authorization URL."""
     settings = get_settings()
     if not settings.enable_ms365_login:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MS365 login disabled")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="MS365 login disabled"
+        )
 
     params = {
         "client_id": settings.ms365_client_id,
@@ -159,17 +174,25 @@ async def login_password(
     """Login with email and password."""
     settings = get_settings()
     if not settings.enable_email_login:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Password login disabled")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Password login disabled"
+        )
 
-    result = await db.execute(select(User).where(User.email == payload.email, User.deleted_at == None))
+    result = await db.execute(
+        select(User).where(User.email == payload.email, User.deleted_at == None)
+    )
     user = result.scalar_one_or_none()
-    
+
     if not user or not user.hashed_password:
         # Return generic error
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-        
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        )
+
     if not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        )
 
     access = create_access_token(subject=user.email)
     refresh = create_refresh_token(subject=user.email)
@@ -191,12 +214,21 @@ async def oauth_callback(
     """
 
     settings = get_settings()
+    chosen_redirect_uri = callback_request.redirect_uri or settings.google_redirect_uri
+    if (
+        settings.effective_google_redirect_uris
+        and chosen_redirect_uri not in settings.effective_google_redirect_uris
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid redirect_uri",
+        )
     token_endpoint = "https://oauth2.googleapis.com/token"
     data = {
         "code": callback_request.code,
         "client_id": settings.google_client_id,
         "client_secret": settings.google_client_secret.get_secret_value(),
-        "redirect_uri": settings.google_redirect_uri,
+        "redirect_uri": chosen_redirect_uri,
         "grant_type": "authorization_code",
     }
     async with httpx.AsyncClient(timeout=15) as client:
@@ -249,7 +281,7 @@ async def ms365_callback(
 ) -> dict[str, str]:
     """Exchange MS365 code for tokens."""
     settings = get_settings()
-    
+
     token_endpoint = f"https://login.microsoftonline.com/{settings.ms365_tenant_id}/oauth2/v2.0/token"
     # Note: client_secret must be a string for httpx payload
     data = {
@@ -259,40 +291,50 @@ async def ms365_callback(
         "redirect_uri": settings.ms365_redirect_uri,
         "grant_type": "authorization_code",
     }
-    
+
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(token_endpoint, data=data)
-        
+
     if resp.status_code != 200:
         logging.error(f"MS365 Token Error: {resp.text}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MS365 code")
-        
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MS365 code"
+        )
+
     token_payload = resp.json()
     access_token = token_payload.get("access_token")
-    
+
     # Get user profile from Graph API
     async with httpx.AsyncClient(timeout=15) as client:
         user_resp = await client.get(
             "https://graph.microsoft.com/v1.0/me",
-            headers={"Authorization": f"Bearer {access_token}"}
+            headers={"Authorization": f"Bearer {access_token}"},
         )
-        
+
     if user_resp.status_code != 200:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Failed to fetch MS365 profile")
-        
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Failed to fetch MS365 profile",
+        )
+
     profile = user_resp.json()
     email = profile.get("mail") or profile.get("userPrincipalName")
-    
+
     if not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No email found in MS365 profile")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No email found in MS365 profile",
+        )
 
     # Check user existence
     result = await db.execute(select(User).where(User.email == email))
     db_user = result.scalar_one_or_none()
-    
+
     if not db_user:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User has no access")
-        
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="User has no access"
+        )
+
     access = create_access_token(subject=email)
     refresh = create_refresh_token(subject=email)
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
@@ -305,25 +347,29 @@ async def forgot_password(
 ):
     """Trigger password reset flow."""
     # Always return success to avoid enumeration
-    result = await db.execute(select(User).where(User.email == payload.email, User.deleted_at == None))
+    result = await db.execute(
+        select(User).where(User.email == payload.email, User.deleted_at == None)
+    )
     user = result.scalar_one_or_none()
-    
+
     if user:
         if user.hashed_password or user.activation_token:
             # If they have a password OR they are active (or pending activation), send reset
             # Logic: If pending activation, we might want to resend activation or send reset?
             # sending reset token is fine, it allows setting password.
-            
+
             token = generate_random_token()
             user.reset_password_token = token
-            user.reset_password_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            user.reset_password_token_expires_at = datetime.now(
+                timezone.utc
+            ) + timedelta(hours=24)
             await db.commit()
-            
+
             try:
                 send_reset_password_email(user.email, token)
             except Exception as e:
                 logging.error(f"Failed to send reset email: {e}")
-                
+
     return {"message": "If this email exists, a password reset link has been sent."}
 
 
@@ -335,8 +381,10 @@ async def reset_password(
     """Finish password reset or activation."""
     user = await get_user_by_reset_token(db, payload.token)
     if not user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
-        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token"
+        )
+
     # Check expiry
     if user.reset_password_token == payload.token:
         # Check expiry for reset token
@@ -346,7 +394,9 @@ async def reset_password(
             if expiry.tzinfo is None:
                 expiry = expiry.replace(tzinfo=timezone.utc)
             if expiry < datetime.now(timezone.utc):
-                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token expired")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Token expired"
+                )
 
     await set_user_password(db, user, payload.new_password)
     return {"message": "Password set successfully. You can now login."}

@@ -30,7 +30,11 @@ from app.services.visit_planning_selection import (
     _any_function_contains,
 )
 from app.services.planning_run_errors import PlanningRunError
-from app.schemas.capacity import CapacitySimulationResponse, DeadlineSummaryRow, UnschedulableVisitInfo
+from app.schemas.capacity import (
+    CapacitySimulationResponse,
+    DeadlineSummaryRow,
+    UnschedulableVisitInfo,
+)
 from ortools.sat.python import cp_model
 from core.settings import get_settings
 
@@ -43,7 +47,9 @@ _DEBUG_SEASON_PLANNING = os.getenv("SEASON_PLANNING_DEBUG", "").lower() in (
 
 # Set SEASON_PLANNING_DIFFICULTY_REWARDS=false to disable the scheduling-difficulty
 # soft rewards (sequence length, sequence pressure, window tightness) for A/B comparison.
-_DIFFICULTY_REWARDS_ENABLED = os.getenv("SEASON_PLANNING_DIFFICULTY_REWARDS", "true").lower() not in (
+_DIFFICULTY_REWARDS_ENABLED = os.getenv(
+    "SEASON_PLANNING_DIFFICULTY_REWARDS", "true"
+).lower() not in (
     "false",
     "0",
     "no",
@@ -64,8 +70,14 @@ def _visit_label(v: "Visit") -> str:
     """Return a human-readable label for a visit: '<project code> / <cluster number> bezoek <nr>'."""
     cluster = getattr(v, "cluster", None)
     project = getattr(cluster, "project", None)
-    project_code = getattr(project, "code", None) or f"project-{getattr(cluster, 'project_id', '?')}"
-    cluster_nr = getattr(cluster, "cluster_number", None) or f"cluster-{getattr(v, 'cluster_id', '?')}"
+    project_code = (
+        getattr(project, "code", None)
+        or f"project-{getattr(cluster, 'project_id', '?')}"
+    )
+    cluster_nr = (
+        getattr(cluster, "cluster_number", None)
+        or f"cluster-{getattr(v, 'cluster_id', '?')}"
+    )
     visit_nr = getattr(v, "visit_nr", None)
     nr_suffix = f" bezoek {visit_nr}" if visit_nr is not None else ""
     return f"{project_code}/{cluster_nr}{nr_suffix} (id={v.id})"
@@ -86,7 +98,9 @@ class PlanningDiagnostic(NamedTuple):
     """Diagnostic entry collected during a season planning run."""
 
     visit_id: int
-    action: str  # e.g. "planning_season_unscheduled", "planning_season_protocol_violation"
+    action: (
+        str  # e.g. "planning_season_unscheduled", "planning_season_protocol_violation"
+    )
     details: dict  # JSON-serializable, must include "reason_nl" key
 
 
@@ -201,7 +215,7 @@ class SeasonPlanningService:
             skills.add("SMP Huismus")
         if u.smp_huismus:
             skills.add("SMP Huismus")  # Covers smp_zangvogel/standard
-        
+
         # VOG
         if getattr(u, "vog", False):
             skills.add("VOG")
@@ -298,7 +312,7 @@ class SeasonPlanningService:
                 delete(ActivityLog).where(
                     or_(
                         ActivityLog.action.like("planning_season_%"),
-                        ActivityLog.action == "planning_week_skipped"
+                        ActivityLog.action == "planning_week_skipped",
                     )
                 )
             )
@@ -376,8 +390,7 @@ class SeasonPlanningService:
             part_key = {"Ochtend": "m", "Dag": "d", "Avond": "n"}.get(part_of_day)
             # Actual demand: real researcher-days consumed (no window_weight amplification).
             custom_fixed_demand_by_week[int(target_week)] = (
-                custom_fixed_demand_by_week.get(int(target_week), 0)
-                + cost
+                custom_fixed_demand_by_week.get(int(target_week), 0) + cost
             )
             if part_key is not None:
                 custom_fixed_demand_by_week_daypart[(int(target_week), part_key)] = (
@@ -438,7 +451,6 @@ class SeasonPlanningService:
                         s["d"] += aw.daytime_days or 0
                         s["n"] += aw.nighttime_days or 0
                         s["f"] += aw.flex_days or 0
-
 
         if _DEBUG_SEASON_PLANNING and _DEBUG_SEASON_PLANNING_VISIT_ID is not None:
             logger.debug(
@@ -906,7 +918,11 @@ class SeasonPlanningService:
                             )
                             if violates:
                                 proto_obj = protocols_1.get(pid)
-                                proto_lbl = _protocol_label(proto_obj) if proto_obj is not None else str(pid)
+                                proto_lbl = (
+                                    _protocol_label(proto_obj)
+                                    if proto_obj is not None
+                                    else str(pid)
+                                )
                                 logger.warning(
                                     "SeasonPlanning: protocolvolgorde niet haalbaar — "
                                     "%s (week %s) moet minstens %s week(en) vóór %s (week %s) staan "
@@ -925,19 +941,21 @@ class SeasonPlanningService:
                                     f"De volgorderesbeperking is geskipt — controleer de vastgepinde weken."
                                 )
                                 for affected_id in (earlier.id, later.id):
-                                    diagnostics.append(PlanningDiagnostic(
-                                        visit_id=affected_id,
-                                        action="planning_season_protocol_violation",
-                                        details={
-                                            "reason_nl": reason_nl,
-                                            "earlier_visit_id": earlier.id,
-                                            "later_visit_id": later.id,
-                                            "gap_required_weeks": gap_weeks,
-                                            "earlier_week": forced_w1,
-                                            "later_week": forced_w2,
-                                            "protocol": proto_lbl,
-                                        },
-                                    ))
+                                    diagnostics.append(
+                                        PlanningDiagnostic(
+                                            visit_id=affected_id,
+                                            action="planning_season_protocol_violation",
+                                            details={
+                                                "reason_nl": reason_nl,
+                                                "earlier_visit_id": earlier.id,
+                                                "later_visit_id": later.id,
+                                                "gap_required_weeks": gap_weeks,
+                                                "earlier_week": forced_w1,
+                                                "later_week": forced_w2,
+                                                "protocol": proto_lbl,
+                                            },
+                                        )
+                                    )
                                 continue
                         model.Add(w2 > w1).OnlyEnforceIf([a1, a2])
                         if gap_weeks > 0:
@@ -958,27 +976,47 @@ class SeasonPlanningService:
                         # - Skip entirely if v1's own window is already <= gap_weeks
                         #   (sowieso krap — penalty helpt niet en verstoort spreiding).
                         if gap_weeks > 0:
-                            _PRED_THRESHOLD = 2  # V1 needs at least this many weeks of room
+                            _PRED_THRESHOLD = (
+                                2  # V1 needs at least this many weeks of room
+                            )
                             v1_eff_min = forced_active_week_by_visit_id.get(earlier.id)
                             if v1_eff_min is None:
-                                cands = [w for w, _ in visit_candidates.get(earlier.id, []) if w > 0]
+                                cands = [
+                                    w
+                                    for w, _ in visit_candidates.get(earlier.id, [])
+                                    if w > 0
+                                ]
                                 v1_eff_min = min(cands) if cands else None
                             v1_eff_max = forced_active_week_by_visit_id.get(earlier.id)
                             if v1_eff_max is None:
-                                cands_max = [w for w, _ in visit_candidates.get(earlier.id, []) if w > 0]
+                                cands_max = [
+                                    w
+                                    for w, _ in visit_candidates.get(earlier.id, [])
+                                    if w > 0
+                                ]
                                 v1_eff_max = max(cands_max) if cands_max else None
                             if v1_eff_min is not None and v1_eff_max is not None:
                                 v1_own_window = v1_eff_max - v1_eff_min + 1
                                 # Skip if V1's own window is already tight — no room to help
                                 if v1_own_window > gap_weeks:
                                     # desired_min_w2: V2 must be at least here so V1 has THRESHOLD weeks
-                                    desired_min_w2 = v1_eff_min + gap_weeks + _PRED_THRESHOLD
-                                    pred_room_risk = model.NewIntVar(
-                                        0, 53, f"pred_room_{earlier.id}_{later.id}_{pid}"
+                                    desired_min_w2 = (
+                                        v1_eff_min + gap_weeks + _PRED_THRESHOLD
                                     )
-                                    model.Add(pred_room_risk >= desired_min_w2 - w2).OnlyEnforceIf([a1, a2])
-                                    model.Add(pred_room_risk == 0).OnlyEnforceIf(a1.Not())
-                                    model.Add(pred_room_risk == 0).OnlyEnforceIf(a2.Not())
+                                    pred_room_risk = model.NewIntVar(
+                                        0,
+                                        53,
+                                        f"pred_room_{earlier.id}_{later.id}_{pid}",
+                                    )
+                                    model.Add(
+                                        pred_room_risk >= desired_min_w2 - w2
+                                    ).OnlyEnforceIf([a1, a2])
+                                    model.Add(pred_room_risk == 0).OnlyEnforceIf(
+                                        a1.Not()
+                                    )
+                                    model.Add(pred_room_risk == 0).OnlyEnforceIf(
+                                        a2.Not()
+                                    )
                                     predecessor_room_risk_terms.append(pred_room_risk)
 
                         window_weeks = _protocol_window_weeks(later, pid)
@@ -1003,9 +1041,15 @@ class SeasonPlanningService:
         # Separate pass over cluster_visits to compute scheduling-difficulty bonuses.
         # Disable by setting SEASON_PLANNING_DIFFICULTY_REWARDS=false.
         if _DIFFICULTY_REWARDS_ENABLED:
-            _SEQUENCE_BONUS_PER_EXTRA = 15_000   # bonus per visit above the standard 2-visit baseline
-            _PRESSURE_THRESHOLD_WEEKS = 6        # avg weeks per visit in sequence below which pressure bonus applies
-            _PRESSURE_BONUS_PER_WEEK = 5_000     # bonus per week shorter than pressure threshold
+            _SEQUENCE_BONUS_PER_EXTRA = (
+                15_000  # bonus per visit above the standard 2-visit baseline
+            )
+            _PRESSURE_THRESHOLD_WEEKS = (
+                6  # avg weeks per visit in sequence below which pressure bonus applies
+            )
+            _PRESSURE_BONUS_PER_WEEK = (
+                5_000  # bonus per week shorter than pressure threshold
+            )
 
             for cluster_id, c_visits in cluster_visits.items():
                 all_pids: set[int] = set()
@@ -1013,7 +1057,9 @@ class SeasonPlanningService:
                     all_pids.update(visit_protocols.get(v.id, {}).keys())
 
                 for pid in all_pids:
-                    seq_visits = [v for v in c_visits if pid in visit_protocols.get(v.id, {})]
+                    seq_visits = [
+                        v for v in c_visits if pid in visit_protocols.get(v.id, {})
+                    ]
                     n = len(seq_visits)
 
                     # 2a: Sequence length bonus — extra visits beyond the standard 2 get a bonus
@@ -1021,8 +1067,12 @@ class SeasonPlanningService:
                         extra = n - 2
                         for v in seq_visits:
                             if v.id in visit_active_vars:
-                                sequence_length_reward_vars.append(visit_active_vars[v.id])
-                                sequence_length_reward_weights.append(extra * _SEQUENCE_BONUS_PER_EXTRA)
+                                sequence_length_reward_vars.append(
+                                    visit_active_vars[v.id]
+                                )
+                                sequence_length_reward_weights.append(
+                                    extra * _SEQUENCE_BONUS_PER_EXTRA
+                                )
 
                     # 2b: Sequence pressure bonus — total sequence span is tight relative to number of visits
                     pvws_in_seq = [
@@ -1041,17 +1091,20 @@ class SeasonPlanningService:
                     avg_weeks_per_visit = total_span_weeks / n
                     if avg_weeks_per_visit < _PRESSURE_THRESHOLD_WEEKS:
                         pressure_bonus = int(
-                            (_PRESSURE_THRESHOLD_WEEKS - avg_weeks_per_visit) * _PRESSURE_BONUS_PER_WEEK
+                            (_PRESSURE_THRESHOLD_WEEKS - avg_weeks_per_visit)
+                            * _PRESSURE_BONUS_PER_WEEK
                         )
                         for v in seq_visits:
                             if v.id in visit_active_vars:
-                                sequence_pressure_reward_vars.append(visit_active_vars[v.id])
+                                sequence_pressure_reward_vars.append(
+                                    visit_active_vars[v.id]
+                                )
                                 sequence_pressure_reward_weights.append(pressure_bonus)
 
             # 3b-extra: Individual window tightness reward
             # Visits with a narrow execution window get a bonus to prioritise them over
             # visits that can easily be rescheduled to any week.
-            _TIGHTNESS_THRESHOLD_WEEKS = 6   # windows >= 6 weeks receive no bonus
+            _TIGHTNESS_THRESHOLD_WEEKS = 6  # windows >= 6 weeks receive no bonus
             _TIGHTNESS_BONUS_PER_WEEK = 5_000
 
             for v in visits:
@@ -1060,9 +1113,11 @@ class SeasonPlanningService:
                 pvw_protocols = list(visit_protocols.get(v.id, {}).keys())
                 if pvw_protocols:
                     valid_windows = [
-                        w for w in (
+                        w
+                        for w in (
                             _protocol_window_weeks(v, pid) for pid in pvw_protocols
-                        ) if w is not None
+                        )
+                        if w is not None
                     ]
                     min_window = min(valid_windows) if valid_windows else None
                 else:
@@ -1072,7 +1127,9 @@ class SeasonPlanningService:
                         min_window = None
                 if min_window is None or min_window >= _TIGHTNESS_THRESHOLD_WEEKS:
                     continue
-                bonus = (_TIGHTNESS_THRESHOLD_WEEKS - min_window) * _TIGHTNESS_BONUS_PER_WEEK
+                bonus = (
+                    _TIGHTNESS_THRESHOLD_WEEKS - min_window
+                ) * _TIGHTNESS_BONUS_PER_WEEK
                 tightness_reward_vars.append(visit_active_vars[v.id])
                 tightness_reward_weights.append(bonus)
 
@@ -1102,20 +1159,22 @@ class SeasonPlanningService:
                     prev_week_int = int(prev_week)
                 except (ValueError, TypeError):
                     continue
-                
+
                 # Create a variable to represent the absolute difference |vw - prev_week|
                 drift_var = model.NewIntVar(0, 53, f"drift_{v.id}")
-                
+
                 # drift_var >= vw - prev_week
                 model.Add(drift_var >= vw - prev_week_int)
                 # drift_var >= prev_week - vw
                 model.Add(drift_var >= prev_week_int - vw)
-                
+
                 # Only apply drift penalty if the visit is actively scheduled
                 # We do this by multiplying the drift by the active boolean
                 active_drift = model.NewIntVar(0, 53, f"active_drift_{v.id}")
-                model.AddMultiplicationEquality(active_drift, [drift_var, visit_active_vars[v.id]])
-                
+                model.AddMultiplicationEquality(
+                    active_drift, [drift_var, visit_active_vars[v.id]]
+                )
+
                 stability_drift_terms.append(active_drift)
 
         # Map: Week -> Skill -> List of (v, overlap, is_active)
@@ -1197,7 +1256,7 @@ class SeasonPlanningService:
                     # full-week visit can be spread freely (weight=1). This is the right lens
                     # for concentration risk, but using it as the actual capacity demand caused
                     # weeks to appear much fuller than they really were.
-                    demand_terms = []       # actual researcher-days
+                    demand_terms = []  # actual researcher-days
                     conc_demand_terms = []  # concentration risk (window_weight scaled)
                     for i, b in enumerate(assigned_bools):
                         v_cand = candidates[i][0]
@@ -1303,7 +1362,7 @@ class SeasonPlanningService:
             if week_large_team_demand:
                 large_count = model.NewIntVar(0, 1000, f"large_count_{w}")
                 model.Add(large_count == sum(week_large_team_demand))
-                
+
                 sq_large = model.NewIntVar(0, 1000000, f"sq_large_{w}")
                 model.AddMultiplicationEquality(sq_large, [large_count, large_count])
                 large_team_penalty_terms.append(sq_large)
@@ -1340,10 +1399,13 @@ class SeasonPlanningService:
                 total_demand_w = model.NewIntVar(0, 10000, f"total_demand_{w}")
                 model.Add(
                     total_demand_w
-                    == cp_model.LinearExpr.Sum(week_total_demand_terms) + fixed_custom_demand
+                    == cp_model.LinearExpr.Sum(week_total_demand_terms)
+                    + fixed_custom_demand
                 )
                 sq_demand_w = model.NewIntVar(0, 100_000_000, f"sq_demand_{w}")
-                model.AddMultiplicationEquality(sq_demand_w, [total_demand_w, total_demand_w])
+                model.AddMultiplicationEquality(
+                    sq_demand_w, [total_demand_w, total_demand_w]
+                )
                 weekly_load_penalty_terms.append(sq_demand_w)
 
             for part_key in ("m", "d", "n"):
@@ -1443,7 +1505,9 @@ class SeasonPlanningService:
         # V1 has genuinely few weeks left.  At -75 it is ~7× stronger than the
         # early-placement bonus (10 pts/week) — enough to matter when room is truly
         # tight, but no longer dominant over the whole window.
-        p_predecessor_room_risk = cp_model.LinearExpr.Sum(predecessor_room_risk_terms) * -75
+        p_predecessor_room_risk = (
+            cp_model.LinearExpr.Sum(predecessor_room_risk_terms) * -75
+        )
         p_large_teams = cp_model.LinearExpr.Sum(large_team_penalty_terms) * -10
 
         # Scheduling-difficulty rewards (soft hints)
@@ -1875,17 +1939,19 @@ class SeasonPlanningService:
                             v.provisional_week = None
                         # Collect diagnostic: why was this visit not scheduled?
                         if v.id in no_window_visit_ids:
-                            diagnostics.append(PlanningDiagnostic(
-                                visit_id=v.id,
-                                action="planning_season_unscheduled",
-                                details={
-                                    "reason_nl": (
-                                        f"Geen geldig uitvoeringsvenster gevonden voor dit seizoen "
-                                        f"(uitvoeringsvenster: {getattr(v, 'from_date', None)} t/m {getattr(v, 'to_date', None)})."
-                                    ),
-                                    "reason_code": "geen_venster",
-                                },
-                            ))
+                            diagnostics.append(
+                                PlanningDiagnostic(
+                                    visit_id=v.id,
+                                    action="planning_season_unscheduled",
+                                    details={
+                                        "reason_nl": (
+                                            f"Geen geldig uitvoeringsvenster gevonden voor dit seizoen "
+                                            f"(uitvoeringsvenster: {getattr(v, 'from_date', None)} t/m {getattr(v, 'to_date', None)})."
+                                        ),
+                                        "reason_code": "geen_venster",
+                                    },
+                                )
+                            )
                         else:
                             v_skill = SeasonPlanningService._get_required_user_flag(v)
                             candidates = visit_candidates.get(v.id, [])
@@ -1894,36 +1960,40 @@ class SeasonPlanningService:
                                 for w, _ in candidates
                             )
                             if not has_any_supply:
-                                diagnostics.append(PlanningDiagnostic(
-                                    visit_id=v.id,
-                                    action="planning_season_unscheduled",
-                                    details={
-                                        "reason_nl": (
-                                            f"Geen medewerkers met de vereiste kwalificatie '{v_skill}' "
-                                            f"beschikbaar in het uitvoeringsvenster."
-                                        ),
-                                        "reason_code": "geen_kwalificatie",
-                                        "skill_required": v_skill,
-                                    },
-                                ))
+                                diagnostics.append(
+                                    PlanningDiagnostic(
+                                        visit_id=v.id,
+                                        action="planning_season_unscheduled",
+                                        details={
+                                            "reason_nl": (
+                                                f"Geen medewerkers met de vereiste kwalificatie '{v_skill}' "
+                                                f"beschikbaar in het uitvoeringsvenster."
+                                            ),
+                                            "reason_code": "geen_kwalificatie",
+                                            "skill_required": v_skill,
+                                        },
+                                    )
+                                )
                             else:
                                 cand_weeks = sorted(w for w, _ in candidates)
                                 w_min = cand_weeks[0] if cand_weeks else None
                                 w_max = cand_weeks[-1] if cand_weeks else None
-                                diagnostics.append(PlanningDiagnostic(
-                                    visit_id=v.id,
-                                    action="planning_season_unscheduled",
-                                    details={
-                                        "reason_nl": (
-                                            f"Onvoldoende '{v_skill}' capaciteit beschikbaar "
-                                            f"in het uitvoeringsvenster (week {w_min}–{w_max})."
-                                        ),
-                                        "reason_code": "capaciteitsgebrek",
-                                        "skill_required": v_skill,
-                                        "window_from_week": w_min,
-                                        "window_to_week": w_max,
-                                    },
-                                ))
+                                diagnostics.append(
+                                    PlanningDiagnostic(
+                                        visit_id=v.id,
+                                        action="planning_season_unscheduled",
+                                        details={
+                                            "reason_nl": (
+                                                f"Onvoldoende '{v_skill}' capaciteit beschikbaar "
+                                                f"in het uitvoeringsvenster (week {w_min}–{w_max})."
+                                            ),
+                                            "reason_code": "capaciteitsgebrek",
+                                            "skill_required": v_skill,
+                                            "window_from_week": w_min,
+                                            "window_to_week": w_max,
+                                        },
+                                    )
+                                )
                                 # Best-effort fallback: assign the earliest candidate week so
                                 # this visit remains visible in the weekly planner inbox.
                                 # The diagnostic above marks it as unscheduled (at-risk), so
@@ -1955,7 +2025,10 @@ class SeasonPlanningService:
         """
         # Load visits and users
         visits = await SeasonPlanningService._load_all_active_visits(
-            db, start_date, include_quotes=include_quotes, quote_project_ids=quote_project_ids
+            db,
+            start_date,
+            include_quotes=include_quotes,
+            quote_project_ids=quote_project_ids,
         )
         users = await SeasonPlanningService._load_all_users(db)
 
@@ -1985,14 +2058,19 @@ class SeasonPlanningService:
             Simulated capacity grid.
         """
         visits = await SeasonPlanningService._load_all_active_visits(
-            db, start_date, include_quotes=include_quotes, quote_project_ids=quote_project_ids
+            db,
+            start_date,
+            include_quotes=include_quotes,
+            quote_project_ids=quote_project_ids,
         )
         users = await SeasonPlanningService._load_all_users(db)
         avail_map = await SeasonPlanningService._load_availability_map(
             db, start_date.year
         )
 
-        diagnostics = SeasonPlanningService.solve_season(start_date, visits, users, avail_map)
+        diagnostics = SeasonPlanningService.solve_season(
+            start_date, visits, users, avail_map
+        )
 
         unschedulable_ids = frozenset(
             d.visit_id for d in diagnostics if d.action == "planning_season_unscheduled"
@@ -2009,16 +2087,20 @@ class SeasonPlanningService:
             v = visit_by_id.get(d.visit_id)
             cluster = getattr(v, "cluster", None) if v else None
             project = getattr(cluster, "project", None) if cluster else None
-            result.unschedulable_visits.append(UnschedulableVisitInfo(
-                visit_id=d.visit_id,
-                reason_nl=d.details.get("reason_nl", "Reden onbekend"),
-                reason_code=d.details.get("reason_code", "onbekend"),
-                project_code=getattr(project, "code", None),
-                cluster_address=getattr(cluster, "address", None),
-                to_date=getattr(v, "to_date", None) if v else None,
-                part_of_day=getattr(v, "part_of_day", None) if v else None,
-                family=SeasonPlanningService._get_required_user_flag(v) if v else None,
-            ))
+            result.unschedulable_visits.append(
+                UnschedulableVisitInfo(
+                    visit_id=d.visit_id,
+                    reason_nl=d.details.get("reason_nl", "Reden onbekend"),
+                    reason_code=d.details.get("reason_code", "onbekend"),
+                    project_code=getattr(project, "code", None),
+                    cluster_address=getattr(cluster, "address", None),
+                    to_date=getattr(v, "to_date", None) if v else None,
+                    part_of_day=getattr(v, "part_of_day", None) if v else None,
+                    family=SeasonPlanningService._get_required_user_flag(v)
+                    if v
+                    else None,
+                )
+            )
 
         await db.rollback()
         return result
@@ -2464,7 +2546,10 @@ class SeasonPlanningService:
         stmt = select_active(AvailabilityPattern)
         all_patterns = (await db.execute(stmt)).scalars().all()
 
-        stmt_u = select(UserUnavailability).where(UserUnavailability.start_date <= date(year, 12, 31), UserUnavailability.end_date >= date(year, 1, 1))
+        stmt_u = select(UserUnavailability).where(
+            UserUnavailability.start_date <= date(year, 12, 31),
+            UserUnavailability.end_date >= date(year, 1, 1),
+        )
         all_unavail = (await db.execute(stmt_u)).scalars().all()
 
         stmt_org = select(OrganizationUnavailability).where(
@@ -2517,6 +2602,7 @@ class SeasonPlanningService:
             Mapping from (user_id, week) to an availability record.
         """
         from core.settings import get_settings
+
         if get_settings().feature_strict_availability:
             return await SeasonPlanningService._load_availability_map_strict(db, year)
 

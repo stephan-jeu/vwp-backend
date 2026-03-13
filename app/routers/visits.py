@@ -378,7 +378,11 @@ async def list_visits(
         cluster = v.cluster
         project = getattr(cluster, "project", None)
         project_code = project.code if project else ""
-        project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
+        project_location = (
+            (cluster.location if cluster and cluster.location else None)
+            or (project.location if project else "")
+            or ""
+        )
         status = status_map.get(v.id, VisitStatusCode.CREATED)
 
         items.append(
@@ -557,9 +561,13 @@ async def export_visits(
             cluster = v.cluster
             project = getattr(cluster, "project", None)
             project_code = project.code if project else ""
-            project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
+            project_location = (
+                (cluster.location if cluster and cluster.location else None)
+                or (project.location if project else "")
+                or ""
+            )
             status = status_map.get(v.id, VisitStatusCode.CREATED)
-            
+
             date_str = ""
             if v.planned_date:
                 date_str = v.planned_date.strftime("%d-%m-%Y")
@@ -578,23 +586,29 @@ async def export_visits(
 
             period_str = ""
             if v.from_date and v.to_date:
-                period_str = f"{v.from_date.strftime('%d-%m')} / {v.to_date.strftime('%d-%m')}"
-            
-            researchers_str = ", ".join([r.full_name or f"User {r.id}" for r in v.researchers])
+                period_str = (
+                    f"{v.from_date.strftime('%d-%m')} / {v.to_date.strftime('%d-%m')}"
+                )
 
-            writer.writerow([
-                project_code,
-                project_location,
-                cluster.cluster_number if cluster else "",
-                v.visit_nr or "",
-                status,
-                date_str,
-                functions_str,
-                species_str,
-                period_str,
-                v.part_of_day or "",
-                researchers_str
-            ])
+            researchers_str = ", ".join(
+                [r.full_name or f"User {r.id}" for r in v.researchers]
+            )
+
+            writer.writerow(
+                [
+                    project_code,
+                    project_location,
+                    cluster.cluster_number if cluster else "",
+                    v.visit_nr or "",
+                    status,
+                    date_str,
+                    functions_str,
+                    species_str,
+                    period_str,
+                    v.part_of_day or "",
+                    researchers_str,
+                ]
+            )
             yield output.getvalue()
             output.seek(0)
             output.truncate(0)
@@ -647,7 +661,11 @@ async def get_visit_detail(
     cluster = visit.cluster
     project: Project | None = getattr(cluster, "project", None)
     project_code = project.code if project else ""
-    project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
+    project_location = (
+        (cluster.location if cluster and cluster.location else None)
+        or (project.location if project else "")
+        or ""
+    )
     project_customer = project.customer if project else None
     project_google_drive_folder = project.google_drive_folder if project else None
 
@@ -861,7 +879,11 @@ async def list_advertised_visits(
         cluster = v.cluster
         project: Project | None = getattr(cluster, "project", None)
         project_code = project.code if project else ""
-        project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
+        project_location = (
+            (cluster.location if cluster and cluster.location else None)
+            or (project.location if project else "")
+            or ""
+        )
         status = status_map.get(v.id, VisitStatusCode.CREATED)
 
         log = advertised_by_map.get(v.id)
@@ -927,7 +949,9 @@ async def list_advertised_visits(
                 quote=v.quote,
                 advertized_by=advertised_by,
                 can_accept=can_accept,
-                visit_code=compute_visit_code(v) if settings.enable_visit_code else None,
+                visit_code=compute_visit_code(v)
+                if settings.enable_visit_code
+                else None,
             )
         )
 
@@ -1007,7 +1031,7 @@ async def update_visit(
     if "planned_date" in data and data["planned_date"] is not None:
         if data.get("planned_week") is None:
             data["planned_week"] = data["planned_date"].isocalendar().week
-    
+
     advertized_update = data.pop("advertized", None)
 
     for field, value in data.items():
@@ -1286,8 +1310,7 @@ async def set_admin_planning_status(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "planned_date or planned_week is required when "
-                    "mode is 'planned'"
+                    "planned_date or planned_week is required when mode is 'planned'"
                 ),
             )
 
@@ -1478,7 +1501,11 @@ async def list_visits_for_audit(
         cluster = v.cluster
         project: Project | None = getattr(cluster, "project", None)
         project_code = project.code if project else ""
-        project_location = (cluster.location if cluster and cluster.location else None) or (project.location if project else "") or ""
+        project_location = (
+            (cluster.location if cluster and cluster.location else None)
+            or (project.location if project else "")
+            or ""
+        )
         status = status_map.get(v.id, VisitStatusCode.CREATED)
 
         execution_date = None
@@ -1540,7 +1567,9 @@ async def list_visits_for_audit(
                 ],
                 advertized=v.advertized,
                 quote=v.quote,
-                visit_code=compute_visit_code(v) if settings.enable_visit_code else None,
+                visit_code=compute_visit_code(v)
+                if settings.enable_visit_code
+                else None,
             )
         )
 

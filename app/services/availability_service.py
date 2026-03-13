@@ -37,13 +37,15 @@ async def list_by_week_range(
     users_stmt: Select[tuple[User]] = select_active(User).order_by(User.full_name)
     users: Sequence[User] = (await db.execute(users_stmt)).scalars().all()
 
-    
     # Check feature flag
     from core.settings import get_settings
+
     settings = get_settings()
 
     if settings.feature_strict_availability:
-        return await _list_by_week_range_strict(db, week_start=week_start, week_end=week_end, users=users)
+        return await _list_by_week_range_strict(
+            db, week_start=week_start, week_end=week_end, users=users
+        )
 
     # Load all availability rows in the requested scope
     av_stmt: Select[tuple[AvailabilityWeek]] = select_active(AvailabilityWeek).where(
@@ -150,19 +152,19 @@ async def _list_by_week_range_strict(
 ) -> AvailabilityListResponse:
     from app.models.availability_pattern import AvailabilityPattern
     from datetime import date, timedelta
-    
+
     # 1. Fetch all patterns for all users that overlap with the date range of these weeks
     # For simplicity, we fetch all patterns for now or do a broad query.
     # To do it right: calculate start_date of week_start and end_date of week_end.
-    
-    # Rough approximation of current year for ISO weeks. 
+
+    # Rough approximation of current year for ISO weeks.
     # NOTE: This implies we only support current year planning for now or need year input.
-    # The existing API `list_by_week_range` takes `week_start` (int) without year. 
-    # The frontend usually assumes "current/relevant" year. 
+    # The existing API `list_by_week_range` takes `week_start` (int) without year.
+    # The frontend usually assumes "current/relevant" year.
     # We will assume the year of "today" for the week calculation to find the date range.
     today = date.today()
     year = today.year
-    
+
     # Calculate date range for the weeks
     # ISO week 1 starts on the Monday of the week containing Jan 4th.
     def get_start_of_iso_week(y, w):
@@ -183,9 +185,10 @@ async def _list_by_week_range_strict(
         )
     )
     patterns = (await db.execute(patterns_stmt)).scalars().all()
-    
+
     # Fetch unavailabilities
     from app.models.user_unavailability import UserUnavailability
+
     unavail_stmt = select_active(UserUnavailability).where(
         and_(
             UserUnavailability.start_date <= end_date,
@@ -193,7 +196,7 @@ async def _list_by_week_range_strict(
         )
     )
     unavailabilities = (await db.execute(unavail_stmt)).scalars().all()
-    
+
     # Organise patterns by user
     patterns_by_user: dict[int, list[AvailabilityPattern]] = {}
     for p in patterns:
@@ -226,39 +229,44 @@ async def _list_by_week_range_strict(
     assignments_result = await db.execute(assignments_stmt)
     assigned_by_key: dict[tuple[int, int], dict[str, int]] = {}
     for user_id, week, part_of_day, cnt in assignments_result.all():
-         if user_id is None or week is None or part_of_day is None:
+        if user_id is None or week is None or part_of_day is None:
             continue
-         key = (int(user_id), int(week))
-         bucket = assigned_by_key.setdefault(key, {"morning": 0, "daytime": 0, "evening": 0})
-         label = str(part_of_day).strip()
-         count_int = int(cnt or 0)
-         if label == "Ochtend": bucket["morning"] += count_int
-         elif label == "Dag": bucket["daytime"] += count_int
-         elif label == "Avond": bucket["evening"] += count_int
+        key = (int(user_id), int(week))
+        bucket = assigned_by_key.setdefault(
+            key, {"morning": 0, "daytime": 0, "evening": 0}
+        )
+        label = str(part_of_day).strip()
+        count_int = int(cnt or 0)
+        if label == "Ochtend":
+            bucket["morning"] += count_int
+        elif label == "Dag":
+            bucket["daytime"] += count_int
+        elif label == "Avond":
+            bucket["evening"] += count_int
 
     from app.services.visit_planning_selection import _compute_strict_daypart_caps
 
     users_payload: list[UserAvailability] = []
-    
+
     for u in users:
         user_patterns = patterns_by_user.get(u.id, [])
         user_unavail = unavail_by_user.get(u.id, [])
         weeks_data: list[AvailabilityCompact] = []
-        
+
         for w in range(week_start, week_end + 1):
             morning_cap, daytime_cap, nighttime_cap, _ = _compute_strict_daypart_caps(
                 user_patterns, user_unavail, w, year
             )
-            
+
             assigned = assigned_by_key.get((u.id, w), {})
-            
+
             weeks_data.append(
                 AvailabilityCompact(
                     week=w,
                     morning_days=morning_cap,
                     daytime_days=daytime_cap,
                     nighttime_days=nighttime_cap,
-                    flex_days=0, # No flex in strict mode
+                    flex_days=0,  # No flex in strict mode
                     assigned_morning=int(assigned.get("morning", 0)),
                     assigned_daytime=int(assigned.get("daytime", 0)),
                     assigned_evening=int(assigned.get("evening", 0)),
@@ -266,7 +274,9 @@ async def _list_by_week_range_strict(
             )
 
         users_payload.append(
-            UserAvailability(id=u.id, name=u.full_name or u.email, availability=weeks_data)
+            UserAvailability(
+                id=u.id, name=u.full_name or u.email, availability=weeks_data
+            )
         )
 
     return AvailabilityListResponse(users=list(users_payload))

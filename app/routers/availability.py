@@ -35,7 +35,7 @@ async def get_my_availability(
     """
     start = week_start if week_start is not None else 1
     end = week_end if week_end is not None else 53
-    
+
     # Simple validation swap if needed
     if start > end:
         start, end = end, start

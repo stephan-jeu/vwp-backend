@@ -9,7 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.utils import select_active
 
 from app.models.user_unavailability import UserUnavailability
-from app.schemas.user_unavailability import UserUnavailabilityCreate, UserUnavailabilityUpdate
+from app.schemas.user_unavailability import (
+    UserUnavailabilityCreate,
+    UserUnavailabilityUpdate,
+)
 
 
 async def list_unavailabilities(
@@ -61,12 +64,18 @@ async def update_unavailability(
         return None
 
     # Determine effective new range
-    new_start = payload.start_date if payload.start_date is not None else unavailability.start_date
-    new_end = payload.end_date if payload.end_date is not None else unavailability.end_date
+    new_start = (
+        payload.start_date
+        if payload.start_date is not None
+        else unavailability.start_date
+    )
+    new_end = (
+        payload.end_date if payload.end_date is not None else unavailability.end_date
+    )
 
     if new_start != unavailability.start_date or new_end != unavailability.end_date:
         if new_end < new_start:
-             raise ValueError("End date must be after start date")
+            raise ValueError("End date must be after start date")
 
         await _check_overlap(
             db,

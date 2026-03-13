@@ -16,6 +16,7 @@ def start_smtp_session() -> smtplib.SMTP:
     server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
     return server
 
+
 def send_email(to: str, subject: str, body: str) -> None:
     settings = get_settings()
     msg = EmailMessage()
@@ -34,9 +35,12 @@ def send_email(to: str, subject: str, body: str) -> None:
     except Exception as e:
         print(f"Failed to send email to {to}: {e}")
 
+
 def send_activation_email(email: str, token: str) -> None:
     settings = get_settings()
-    activ_url = f"{settings.frontend_url}/auth/reset-password?token={token}&type=activation"
+    activ_url = (
+        f"{settings.frontend_url}/auth/reset-password?token={token}&type=activation"
+    )
     logger.info("Activation link for %s: %s", email, activ_url)
 
     subject = "Account Activation - Veldwerkplanning"

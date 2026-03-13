@@ -38,15 +38,19 @@ async def is_valid_address(address: str) -> bool | None:
             resp = await client.get(GOOGLE_GEOCODING_URL, params=params)
             resp.raise_for_status()
             data = resp.json()
-            
+
             # https://developers.google.com/maps/documentation/geocoding/requests-geocoding#StatusCodes
             status = data.get("status")
             if status == "OK":
                 return True
             if status == "ZERO_RESULTS":
                 return False
-                
-            _logger.warning("Unexpected Google Geocoding status: %s for address: %s", status, address)
+
+            _logger.warning(
+                "Unexpected Google Geocoding status: %s for address: %s",
+                status,
+                address,
+            )
             return None
     except Exception as exc:
         _logger.error("Address validation lookup failed: %s", exc)

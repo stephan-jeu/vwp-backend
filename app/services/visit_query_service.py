@@ -111,7 +111,9 @@ def get_visit_selection_stmt() -> Select:
     return stmt
 
 
-def get_visit_loading_stmt(visit_ids: list[int], include_archived: bool = False) -> Select:
+def get_visit_loading_stmt(
+    visit_ids: list[int], include_archived: bool = False
+) -> Select:
     """Return the statement to load full visit objects for given IDs."""
     return (
         select_active(Visit, include_archived=include_archived)

@@ -61,20 +61,31 @@ async def create_unavailability(
 
 
 async def update_unavailability(
-    db: AsyncSession, *, unavailability_id: int, payload: OrganizationUnavailabilityUpdate
+    db: AsyncSession,
+    *,
+    unavailability_id: int,
+    payload: OrganizationUnavailabilityUpdate,
 ) -> OrganizationUnavailability | None:
     """Update an organization unavailability. Raises ValueError on overlap."""
     unavailability = await get_unavailability(db, unavailability_id=unavailability_id)
     if not unavailability:
         return None
 
-    new_start = payload.start_date if payload.start_date is not None else unavailability.start_date
-    new_end = payload.end_date if payload.end_date is not None else unavailability.end_date
+    new_start = (
+        payload.start_date
+        if payload.start_date is not None
+        else unavailability.start_date
+    )
+    new_end = (
+        payload.end_date if payload.end_date is not None else unavailability.end_date
+    )
 
     if new_start != unavailability.start_date or new_end != unavailability.end_date:
         if new_end < new_start:
             raise ValueError("End date must be after start date")
-        await _check_overlap(db, start=new_start, end=new_end, exclude_id=unavailability_id)
+        await _check_overlap(
+            db, start=new_start, end=new_end, exclude_id=unavailability_id
+        )
         unavailability.start_date = new_start
         unavailability.end_date = new_end
 
@@ -102,7 +113,9 @@ async def delete_unavailability(db: AsyncSession, *, unavailability_id: int) -> 
     return result.rowcount > 0
 
 
-async def reset_and_seed_year(db: AsyncSession, *, year: int) -> list[OrganizationUnavailability]:
+async def reset_and_seed_year(
+    db: AsyncSession, *, year: int
+) -> list[OrganizationUnavailability]:
     """Delete all existing entries and seed Dutch public holidays for the given year.
 
     Returns the list of seeded entries.
@@ -178,6 +191,7 @@ def _easter_sunday(year: int) -> date:
 def _koningsdag(year: int) -> date:
     """April 27, moved to April 26 when April 27 falls on a Sunday."""
     from datetime import MINYEAR
+
     d = date(year, 4, 27)
     if d.weekday() == 6:  # Sunday
         return date(year, 4, 26)

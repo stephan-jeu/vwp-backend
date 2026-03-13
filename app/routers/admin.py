@@ -63,7 +63,7 @@ async def validate_address(
     _: AdminDep, address: str = Query(..., description="The address to validate")
 ) -> dict[str, bool | None]:
     """Validate an address via Google Maps Geocoding API.
-    
+
     Returns:
         {"valid": True} if valid, {"valid": False} if invalid, {"valid": None} on error or no API key.
     """
@@ -118,7 +118,11 @@ async def list_activity_logs(
         Paginated :class:`ActivityLogListResponse` with recent entries.
     """
 
-    count_stmt = select(func.count()).select_from(ActivityLog).where(ActivityLog.actor_id.is_not(None))
+    count_stmt = (
+        select(func.count())
+        .select_from(ActivityLog)
+        .where(ActivityLog.actor_id.is_not(None))
+    )
     total = int((await db.execute(count_stmt)).scalar_one())
 
     stmt: Select[tuple[ActivityLog]] = (

@@ -70,7 +70,9 @@ async def list_clusters(
 
     stmt: Select[tuple[Cluster]]
     if project_id is None:
-        stmt = select_active(Cluster).order_by(Cluster.project_id, Cluster.cluster_number)
+        stmt = select_active(Cluster).order_by(
+            Cluster.project_id, Cluster.cluster_number
+        )
     else:
         stmt = (
             select_active(Cluster)
@@ -164,7 +166,9 @@ async def list_clusters_flat(
 
     stmt: Select[tuple[Cluster]]
     if project_id is None:
-        stmt = select_active(Cluster).order_by(Cluster.project_id, Cluster.cluster_number)
+        stmt = select_active(Cluster).order_by(
+            Cluster.project_id, Cluster.cluster_number
+        )
     else:
         stmt = (
             select_active(Cluster)
@@ -574,7 +578,9 @@ async def delete_cluster(admin: AdminDep, db: DbDep, cluster_id: int) -> Respons
     project_code: str | None = None
     project_id = getattr(cluster, "project_id", None)
     if project_id is not None:
-        stmt: Select[tuple[Project]] = select_active(Project).where(Project.id == project_id)
+        stmt: Select[tuple[Project]] = select_active(Project).where(
+            Project.id == project_id
+        )
         project = (await db.execute(stmt)).scalars().first()
         if project is not None:
             project_code = getattr(project, "code", None)

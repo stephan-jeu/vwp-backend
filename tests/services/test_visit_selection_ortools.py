@@ -234,36 +234,45 @@ async def test_cp_sat_allows_single_researcher_vleermuis_junior_only():
 @pytest.mark.asyncio
 async def test_cp_sat_enforces_dutch_buddy_for_english(monkeypatch):
     """Ensure English speakers are paired with Dutch speakers when constraint is enabled.
-    
+
     Returns:
         None.
     """
     # Enable constraint
     monkeypatch.setenv("CONSTRAINT_ENGLISH_DUTCH_TEAMING", "true")
     from core.settings import get_settings
+
     # Force reload settings to pick up env var
     get_settings().constraint_english_dutch_teaming = True
 
     # Arrange
     # Visit requires 2 people
     visit = make_visit(vid=4, family_name="Vleermuis", required_researchers=2)
-    
+
     # Users:
     # 1. EN
     # 2. EN
     # 3. NL
     users = [
-        make_user(uid=1, contract="Flex", experience_bat="Medior", family_flag="vleermuis"),
-        make_user(uid=2, contract="Flex", experience_bat="Medior", family_flag="vleermuis"),
-        make_user(uid=3, contract="Flex", experience_bat="Medior", family_flag="vleermuis"),
+        make_user(
+            uid=1, contract="Flex", experience_bat="Medior", family_flag="vleermuis"
+        ),
+        make_user(
+            uid=2, contract="Flex", experience_bat="Medior", family_flag="vleermuis"
+        ),
+        make_user(
+            uid=3, contract="Flex", experience_bat="Medior", family_flag="vleermuis"
+        ),
     ]
     users[0].language = "EN"
     users[1].language = "EN"
     users[2].language = "NL"
-    
+
     # Caps to allow all
     user_caps = {1: 1, 2: 1, 3: 1}
-    user_daypart_caps = {u.id: {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0} for u in users}
+    user_daypart_caps = {
+        u.id: {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0} for u in users
+    }
 
     # Act
     # Using existing function
@@ -277,22 +286,22 @@ async def test_cp_sat_enforces_dutch_buddy_for_english(monkeypatch):
         include_travel_time=False,
         today=date(2026, 5, 4),
     )
-    
+
     # Assert
     # Selected team should be [EN, NL] or [NL, EN] to avoid penalty
     # [EN, EN] incurs penalty logic
-    # Wait, simple test: 
+    # Wait, simple test:
     # If [EN, EN] -> Penalty. If [EN, NL] -> No Penalty.
-    # Solver maximizes objective. 
+    # Solver maximizes objective.
     # With only 1 visit and enough capacity, it should pick the team that maximizes score (minimizes penalty).
     # [EN, EN] -> Penalty=50.
     # [EN, NL] -> Penalty=0.
     # So it MUST pick [EN, NL].
-    
+
     assert result.selected == [visit]
     assigned = getattr(visit, "researchers", [])
     assert len(assigned) == 2
-    
+
     # Check languages
     langs = [getattr(u, "language", "NL") for u in assigned]
     assert "NL" in langs, f"Expected at least one NL speaker, got {langs}"
@@ -301,19 +310,20 @@ async def test_cp_sat_enforces_dutch_buddy_for_english(monkeypatch):
 @pytest.mark.asyncio
 async def test_cp_sat_ignores_language_when_disabled(monkeypatch):
     """Ensure language constraint is ignored when disabled.
-    
+
     Returns:
         None.
     """
     # Disable constraint
     monkeypatch.setenv("CONSTRAINT_ENGLISH_DUTCH_TEAMING", "false")
     from core.settings import get_settings
+
     get_settings().constraint_english_dutch_teaming = False
 
     # Arrange
     # Visit requires 2 people
     visit = make_visit(vid=5, family_name="Vleermuis", required_researchers=2)
-    
+
     # Users:
     # 1. EN
     # 2. EN
@@ -321,16 +331,22 @@ async def test_cp_sat_ignores_language_when_disabled(monkeypatch):
     # Actually, if disabled, [EN, EN] is valid and has NO penalty.
     # To prove it ignores, we need a setup where [EN, EN] is preferred for other reasons (e.g. travel time, or list order luck).
     # OR we just check that [EN, EN] is *allowed*.
-    
+
     users = [
-        make_user(uid=1, contract="Flex", experience_bat="Medior", family_flag="vleermuis"),
-        make_user(uid=2, contract="Flex", experience_bat="Medior", family_flag="vleermuis"),
+        make_user(
+            uid=1, contract="Flex", experience_bat="Medior", family_flag="vleermuis"
+        ),
+        make_user(
+            uid=2, contract="Flex", experience_bat="Medior", family_flag="vleermuis"
+        ),
     ]
     users[0].language = "EN"
     users[1].language = "EN"
-    
+
     user_caps = {1: 1, 2: 1}
-    user_daypart_caps = {u.id: {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0} for u in users}
+    user_daypart_caps = {
+        u.id: {"Ochtend": 1, "Dag": 0, "Avond": 0, "Flex": 0} for u in users
+    }
 
     # Act
     result = await select_visits_cp_sat(
@@ -343,7 +359,7 @@ async def test_cp_sat_ignores_language_when_disabled(monkeypatch):
         include_travel_time=False,
         today=date(2026, 5, 4),
     )
-    
+
     # Assert
     # Should schedule even though it's [EN, EN]
     assert result.selected == [visit]

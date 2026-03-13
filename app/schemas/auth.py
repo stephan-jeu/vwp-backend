@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class GoogleCallbackRequest(BaseModel):
     code: str
+    redirect_uri: str | None = None
 
 
 class MS365CallbackRequest(BaseModel):

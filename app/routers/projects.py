@@ -151,8 +151,7 @@ async def bulk_archive_projects(
 
     # Verify projects exist and get their cluster IDs
     stmt_clusters = select(Cluster.id).where(
-        Cluster.project_id.in_(payload.project_ids),
-        Cluster.deleted_at.is_(None)
+        Cluster.project_id.in_(payload.project_ids), Cluster.deleted_at.is_(None)
     )
     cluster_result = await db.execute(stmt_clusters)
     cluster_ids = [row[0] for row in cluster_result.all()]

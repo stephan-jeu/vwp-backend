@@ -69,7 +69,11 @@ def compute_visit_code(visit: Visit) -> str | None:
                 function = function_by_id.get(protocol.function_id)
                 if function is None:
                     continue
-                func_letter = "Z" if function.name == "Kraamverblijfplaats" else (function.name[0].upper() if function.name else "?")
+                func_letter = (
+                    "Z"
+                    if function.name == "Kraamverblijfplaats"
+                    else (function.name[0].upper() if function.name else "?")
+                )
                 codes.append(f"V{func_letter}{daypart}{visit_index}")
             elif abbreviation:
                 codes.append(f"{abbreviation}{visit_index}")
@@ -77,15 +81,17 @@ def compute_visit_code(visit: Visit) -> str | None:
         # Fallback: no PVWs linked, use visit.species + visit.visit_nr
         visit_index = getattr(visit, "visit_nr", None) or 1
         for species in visit.species or []:
-            family_name = getattr(
-                getattr(species, "family", None), "name", None
-            )
+            family_name = getattr(getattr(species, "family", None), "name", None)
             abbreviation = species.abbreviation
             is_vleermuis = family_name == _VLEERMUIS_FAMILY
 
             if is_vleermuis:
                 for function in visit.functions or []:
-                    func_letter = "Z" if function.name == "Kraamverblijfplaats" else (function.name[0].upper() if function.name else "?")
+                    func_letter = (
+                        "Z"
+                        if function.name == "Kraamverblijfplaats"
+                        else (function.name[0].upper() if function.name else "?")
+                    )
                     codes.append(f"V{func_letter}{daypart}{visit_index}")
             elif abbreviation:
                 codes.append(f"{abbreviation}{visit_index}")

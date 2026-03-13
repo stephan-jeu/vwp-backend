@@ -66,13 +66,11 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
     """
     # Serialize and defensively coerce enums to their DB labels
     data = payload.model_dump(mode="json")
-    
+
     # Validation: Check if email already exists
-    existing = await db.execute(
-        select_active(User).where(User.email == data["email"])
-    )
+    existing = await db.execute(select_active(User).where(User.email == data["email"]))
     if existing.scalar_one_or_none():
-         raise HTTPException(
+        raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="email_already_exists"
         )
 
@@ -120,7 +118,7 @@ async def update_user(db: AsyncSession, user_id: int, payload: UserUpdate) -> Us
             select_active(User).where(User.email == data["email"])
         )
         if existing.scalar_one_or_none():
-             raise HTTPException(
+            raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="email_already_exists"
             )
 
@@ -166,18 +164,18 @@ async def delete_user(db: AsyncSession, user_id: int) -> None:
 
 async def get_user_by_reset_token(db: AsyncSession, token: str) -> User | None:
     """Find user by reset or activation token."""
-    # We use the same field or logic? 
+    # We use the same field or logic?
     # Model has `activation_token` and `reset_password_token`.
     # Let's check both for simplicity or separate methods?
     # Context suggests we might use one endpoint for both.
-    
+
     # Check activation token first
     stmt = select_active(User).where(User.activation_token == token)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if user:
         return user
-        
+
     # Check reset token
     # TODO: Check expiry
     stmt = select_active(User).where(User.reset_password_token == token)
@@ -187,11 +185,11 @@ async def get_user_by_reset_token(db: AsyncSession, token: str) -> User | None:
 
 async def set_user_password(db: AsyncSession, user: User, password: str) -> None:
     from app.services.auth_service import get_password_hash
-    
+
     user.hashed_password = get_password_hash(password)
     user.activation_token = None
     user.reset_password_token = None
     user.reset_password_token_expires_at = None
-    
+
     await db.commit()
     await db.refresh(user)

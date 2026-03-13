@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 def _work_week_bounds(current_year: int, iso_week: int) -> tuple[date, date]:
     first_day = date.fromisocalendar(current_year, iso_week, 1)
-    # The week is Mon-Sun, but planning is typically Mon-Fri. 
+    # The week is Mon-Sun, but planning is typically Mon-Fri.
     # Let's cover the whole week just in case.
     last_day = first_day + timedelta(days=6)
     return first_day, last_day
@@ -34,11 +34,11 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
     Sends an email to each researcher who has visits planned in the specified week.
     Returns a summary dict: {'total': int, 'sent': int, 'failed': int, 'skipped': int}.
     """
-    
+
     # 1. Fetch relevant visits
     # Similar query logic as in planning.py::get_planning but we need to ensure we get all visits for the week
     week_start, week_end = _work_week_bounds(year, week)
-    
+
     # We want visits active (not soft deleted), assigned to researchers, for this week.
     stmt = (
         select(Visit)
@@ -50,7 +50,7 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
             selectinload(Visit.cluster).selectinload(Cluster.project),
         )
         .where(
-             # Has at least one researcher
+            # Has at least one researcher
             Visit.researchers.any()
         )
         .where(
@@ -62,9 +62,9 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
             )
         )
     )
-    
+
     visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
-    
+
     if not visits:
         return {"total": 0, "sent": 0, "failed": 0, "skipped": 0}
 
@@ -75,8 +75,8 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
     for visit in visits:
         for researcher in visit.researchers:
             if not researcher.email:
-                continue # Skip researchers without email
-            
+                continue  # Skip researchers without email
+
             visits_by_researcher[researcher.id].append(visit)
             researchers_map[researcher.id] = researcher
 
@@ -85,73 +85,117 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
 
     settings = get_settings()
     frontend_url = settings.frontend_url
-    
+
     for researcher_id, researcher_visits in visits_by_researcher.items():
         researcher = researchers_map[researcher_id]
-        
+
         try:
             # Sort visits by date/time
-            researcher_visits.sort(key=lambda v: (v.planned_date or date.max, v.start_time_text or ""))
-            
+            researcher_visits.sort(
+                key=lambda v: (v.planned_date or date.max, v.start_time_text or "")
+            )
+
             subject = f"Planning Week {week} - Veldwerkplanning"
-            html_body = _generate_email_body(researcher, researcher_visits, week, frontend_url)
-            
+            html_body = _generate_email_body(
+                researcher, researcher_visits, week, frontend_url
+            )
+
             # Use the HTML sending capability (we need to update send_email to support HTML or just send as plain text/html hybrid)
             # The current send_email in email_service.py uses `msg.set_content(body)` which implies text/plain.
             # We should probably extend email_service or use a local helper here that does HTML.
             # For now, let's create a local helper to send HTML email.
             _send_html_email(researcher.email, subject, html_body)
-            
+
             stats["sent"] += 1
-            
+
         except Exception as e:
-            logger.exception(f"Failed to send planning email to {researcher.email}: {e}")
+            logger.exception(
+                f"Failed to send planning email to {researcher.email}: {e}"
+            )
             stats["failed"] += 1
 
     return stats
 
 
-def _generate_email_body(user: User, visits: list[Visit], week: int, frontend_url: str) -> str:
+def _generate_email_body(
+    user: User, visits: list[Visit], week: int, frontend_url: str
+) -> str:
     # Basic HTML template
     rows = ""
     for v in visits:
-        project_code = v.cluster.project.code if v.cluster and v.cluster.project else "?"
+        project_code = (
+            v.cluster.project.code if v.cluster and v.cluster.project else "?"
+        )
         cluster_info = f"C{v.cluster.cluster_number}" if v.cluster else "?"
-        location = v.cluster.project.location if v.cluster and v.cluster.project else "?"
+        location = (
+            v.cluster.project.location if v.cluster and v.cluster.project else "?"
+        )
         address = v.cluster.address if v.cluster else ""
-        
+
         # Day and Date / Week
         day_str = ""
         part_of_day_str = v.part_of_day or "-"
-        
+
         settings = get_settings()
         if settings.feature_daily_planning:
             if v.planned_date:
-                days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+                days = [
+                    "Maandag",
+                    "Dinsdag",
+                    "Woensdag",
+                    "Donderdag",
+                    "Vrijdag",
+                    "Zaterdag",
+                    "Zondag",
+                ]
                 day_str = f"{days[v.planned_date.weekday()]} {v.planned_date.strftime('%d-%m')}"
         else:
             # Weekly planning logic
             if v.from_date and v.to_date:
                 # Calculate if the visit window is entirely within the planned week
                 week_start, week_end = _work_week_bounds(v.from_date.year, week)
-                
+
                 if v.from_date >= week_start and v.to_date <= week_end:
-                     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-                     if v.from_date == v.to_date:
-                          day_str = f"{days[v.from_date.weekday()]} {v.from_date.strftime('%d-%m')}"
-                     else:
-                          day_str = f"Vanaf {days[v.from_date.weekday()].lower()} {v.from_date.strftime('%d-%m')} t/m {days[v.to_date.weekday()].lower()} {v.to_date.strftime('%d-%m')}"
+                    days = [
+                        "Maandag",
+                        "Dinsdag",
+                        "Woensdag",
+                        "Donderdag",
+                        "Vrijdag",
+                        "Zaterdag",
+                        "Zondag",
+                    ]
+                    if v.from_date == v.to_date:
+                        day_str = f"{days[v.from_date.weekday()]} {v.from_date.strftime('%d-%m')}"
+                    else:
+                        day_str = f"Vanaf {days[v.from_date.weekday()].lower()} {v.from_date.strftime('%d-%m')} t/m {days[v.to_date.weekday()].lower()} {v.to_date.strftime('%d-%m')}"
                 elif v.from_date >= week_start:
-                     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-                     day_str = f"Vanaf {days[v.from_date.weekday()].lower()} {v.from_date.strftime('%d-%m')}"
+                    days = [
+                        "Maandag",
+                        "Dinsdag",
+                        "Woensdag",
+                        "Donderdag",
+                        "Vrijdag",
+                        "Zaterdag",
+                        "Zondag",
+                    ]
+                    day_str = f"Vanaf {days[v.from_date.weekday()].lower()} {v.from_date.strftime('%d-%m')}"
                 elif v.to_date <= week_end:
-                     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-                     day_str = f"Uiterlijk {days[v.to_date.weekday()].lower()} {v.to_date.strftime('%d-%m')}"
+                    days = [
+                        "Maandag",
+                        "Dinsdag",
+                        "Woensdag",
+                        "Donderdag",
+                        "Vrijdag",
+                        "Zaterdag",
+                        "Zondag",
+                    ]
+                    day_str = f"Uiterlijk {days[v.to_date.weekday()].lower()} {v.to_date.strftime('%d-%m')}"
                 else:
-                     day_str = "Hele week"
+                    day_str = "Hele week"
             else:
                 day_str = "Hele week"
-        
+
         # Functions & Species
         funcs = ", ".join([f.name for f in v.functions])
         specs = ", ".join([s.name for s in v.species])
@@ -162,10 +206,10 @@ def _generate_email_body(user: User, visits: list[Visit], week: int, frontend_ur
         # Team
         team = [r.full_name for r in v.researchers if r.id != user.id]
         team_str = ", ".join(team) if team else "-"
-        
+
         # Link
         link = f"{frontend_url}/visits/{v.id}"
-        
+
         rows += f"""
         <tr style="border-bottom: 1px solid #eee;">
             <td style="padding: 10px; vertical-align: top;">
@@ -193,7 +237,7 @@ def _generate_email_body(user: User, visits: list[Visit], week: int, frontend_ur
     <html>
     <body style="font-family: sans-serif; color: #333;">
         <h2>Planning Week {week}</h2>
-        <p>Beste {user.full_name or 'collega'},</p>
+        <p>Beste {user.full_name or "collega"},</p>
         <p>Hieronder vind je jouw geplande bezoeken voor week {week}.</p>
         
         <table style="width: 100%; border-collapse: collapse; text-align: left; margin-top: 20px;">
@@ -218,30 +262,34 @@ def _generate_email_body(user: User, visits: list[Visit], week: int, frontend_ur
     </html>
     """
 
+
 def _send_html_email(to: str, subject: str, html_body: str) -> None:
     settings = get_settings()
-    
+
     # Check if we are in a production-like environment regarding SMTP
     # If using the base email_service logic, it might just print if no host.
     # We duplicate the logic slightly here to ensure HTML support.
-    
+
     if not settings.smtp_host:
         print(f"SMTP not configured. Mock HTML email to {to}: {subject}")
         # print(html_body) # Optional: print body for debug
         return
 
     msg = EmailMessage()
-    msg.set_content("Bekijk deze e-mail in een e-mailclient die HTML ondersteunt.") # Fallback
-    msg.add_alternative(html_body, subtype='html')
-    
+    msg.set_content(
+        "Bekijk deze e-mail in een e-mailclient die HTML ondersteunt."
+    )  # Fallback
+    msg.add_alternative(html_body, subtype="html")
+
     msg["Subject"] = subject
     msg["From"] = settings.admin_email
     msg["To"] = to
 
     try:
         from app.services.email_service import start_smtp_session
+
         with start_smtp_session() as server:
-             server.send_message(msg)
+            server.send_message(msg)
     except Exception as e:
         # Re-raise to be caught by caller for stats
         raise e

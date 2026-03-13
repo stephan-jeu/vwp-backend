@@ -59,7 +59,9 @@ def _end_of_work_week(week_monday: date) -> date:
     return week_monday + timedelta(days=4)
 
 
-def _allowed_day_indices_for_visit(week_monday: date, visit: Visit, today: date | None = None) -> list[int]:
+def _allowed_day_indices_for_visit(
+    week_monday: date, visit: Visit, today: date | None = None
+) -> list[int]:
     """Return 0-based indices (Mon=0..Fri=4) for days the visit can occur.
 
     The indices are the intersection of the visit's [from_date, to_date] window
@@ -74,12 +76,12 @@ def _allowed_day_indices_for_visit(week_monday: date, visit: Visit, today: date 
     from_d = max(getattr(visit, "from_date", None) or date.min, week_monday)
     # Prevent assigning visits to days in the past during a mid-week run
     from_d = max(from_d, today)
-    
+
     # Too late to plan Ochtend or Dag visits on the current day itself
     part = getattr(visit, "part_of_day", None)
     if from_d == today and part in ("Ochtend", "Dag"):
         from_d = today + timedelta(days=1)
-        
+
     to_d = min(getattr(visit, "to_date", None) or date.max, week_friday)
 
     if from_d > to_d:
@@ -214,12 +216,14 @@ def _priority_key(week_monday: date, v: Visit) -> tuple:
 
 async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
     from core.settings import get_settings
-    
+
     if get_settings().feature_strict_availability:
         # Load strict capacities per user and sum them up
         user_daypart_caps = await _load_user_daypart_capacities_strict(db, week)
-        
-        total_morning = sum(caps.get("Ochtend", 0) for caps in user_daypart_caps.values())
+
+        total_morning = sum(
+            caps.get("Ochtend", 0) for caps in user_daypart_caps.values()
+        )
         total_daytime = sum(caps.get("Dag", 0) for caps in user_daypart_caps.values())
         total_night = sum(caps.get("Avond", 0) for caps in user_daypart_caps.values())
         total_flex = sum(caps.get("Flex", 0) for caps in user_daypart_caps.values())
@@ -235,7 +239,7 @@ async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
             )
         )
         rows = (await db.execute(stmt)).scalars().all()
-    
+
         total_morning = sum(r.morning_days or 0 for r in rows)
         total_daytime = sum(r.daytime_days or 0 for r in rows)
         total_night = sum(r.nighttime_days or 0 for r in rows)
@@ -689,6 +693,7 @@ async def _load_all_users(db: AsyncSession) -> list[User]:
 async def _load_user_capacities(db: AsyncSession, week: int) -> dict[int, int]:
     """Return per-user total capacity for the ISO week (sum of all dayparts + flex)."""
     from core.settings import get_settings
+
     if get_settings().feature_strict_availability:
         return await _load_user_capacities_strict(db, week)
     try:
@@ -736,6 +741,7 @@ async def _load_user_daypart_capacities(
     "Dag", "Avond") plus "Flex".
     """
     from core.settings import get_settings
+
     if get_settings().feature_strict_availability:
         return await _load_user_daypart_capacities_strict(db, week)
     try:
@@ -912,8 +918,13 @@ def _compute_strict_daypart_caps(
         return 0, 0, 0, {"Ochtend": [], "Dag": [], "Avond": []}
 
     day_names = [
-        "monday", "tuesday", "wednesday", "thursday", "friday",
-        "saturday", "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
     ]
     morning_days = 0
     daytime_days = 0
@@ -949,24 +960,35 @@ def _compute_strict_daypart_caps(
 
         slots = active.schedule.get(day_names[i], [])
 
-        morning_blocked = (active_unavail and getattr(active_unavail, "morning", True)) or \
-                          (active_org_unavail and getattr(active_org_unavail, "morning", True))
-        daytime_blocked = (active_unavail and getattr(active_unavail, "daytime", True)) or \
-                          (active_org_unavail and getattr(active_org_unavail, "daytime", True))
-        nighttime_blocked = (active_unavail and getattr(active_unavail, "nighttime", True)) or \
-                            (active_org_unavail and getattr(active_org_unavail, "nighttime", True))
+        morning_blocked = (
+            active_unavail and getattr(active_unavail, "morning", True)
+        ) or (active_org_unavail and getattr(active_org_unavail, "morning", True))
+        daytime_blocked = (
+            active_unavail and getattr(active_unavail, "daytime", True)
+        ) or (active_org_unavail and getattr(active_org_unavail, "daytime", True))
+        nighttime_blocked = (
+            active_unavail and getattr(active_unavail, "nighttime", True)
+        ) or (active_org_unavail and getattr(active_org_unavail, "nighttime", True))
 
         if "morning" in slots and not morning_blocked:
             morning_days += 1
-            if i < 5: specific_days["Ochtend"].append(i)
+            if i < 5:
+                specific_days["Ochtend"].append(i)
         if "daytime" in slots and not daytime_blocked:
             daytime_days += 1
-            if i < 5: specific_days["Dag"].append(i)
+            if i < 5:
+                specific_days["Dag"].append(i)
         if "nighttime" in slots and not nighttime_blocked:
             nighttime_days += 1
-            if i < 5: specific_days["Avond"].append(i)
+            if i < 5:
+                specific_days["Avond"].append(i)
 
-    return min(morning_days, max_mornings), min(daytime_days, 5), min(nighttime_days, max_evenings), specific_days
+    return (
+        min(morning_days, max_mornings),
+        min(daytime_days, 5),
+        min(nighttime_days, max_evenings),
+        specific_days,
+    )
 
 
 async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int, int]:
@@ -1003,6 +1025,7 @@ async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int,
 
     try:
         from app.models.user_unavailability import UserUnavailability
+
         stmt_u = (
             select(UserUnavailability)
             .join(User, UserUnavailability.user_id == User.id)
@@ -1017,13 +1040,14 @@ async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int,
         rows_u = (await db.execute(stmt_u)).scalars().all()
     except Exception:
         rows_u = []
-        
+
     unavail_by_user: dict[int, list] = {}
     for u in rows_u:
         unavail_by_user.setdefault(u.user_id, []).append(u)
 
     try:
         from app.models.organization_unavailability import OrganizationUnavailability
+
         stmt_org = select(OrganizationUnavailability).where(
             and_(
                 OrganizationUnavailability.deleted_at.is_(None),
@@ -1038,7 +1062,11 @@ async def _load_user_capacities_strict(db: AsyncSession, week: int) -> dict[int,
     caps: dict[int, int] = {}
     for uid, user_patterns in patterns_by_user.items():
         m, d, n, _ = _compute_strict_daypart_caps(
-            user_patterns, unavail_by_user.get(uid, []), week, year, list(org_unavail_rows)
+            user_patterns,
+            unavail_by_user.get(uid, []),
+            week,
+            year,
+            list(org_unavail_rows),
         )
         total = m + d + n
         caps[uid] = total
@@ -1082,6 +1110,7 @@ async def _load_user_daypart_capacities_strict(
 
     try:
         from app.models.user_unavailability import UserUnavailability
+
         stmt_u = (
             select(UserUnavailability)
             .join(User, UserUnavailability.user_id == User.id)
@@ -1096,13 +1125,14 @@ async def _load_user_daypart_capacities_strict(
         rows_u = (await db.execute(stmt_u)).scalars().all()
     except Exception:
         rows_u = []
-        
+
     unavail_by_user: dict[int, list] = {}
     for u in rows_u:
         unavail_by_user.setdefault(u.user_id, []).append(u)
 
     try:
         from app.models.organization_unavailability import OrganizationUnavailability
+
         stmt_org = select(OrganizationUnavailability).where(
             and_(
                 OrganizationUnavailability.deleted_at.is_(None),
@@ -1117,9 +1147,19 @@ async def _load_user_daypart_capacities_strict(
     per_user: dict[int, dict[str, int | dict[str, list[int]]]] = {}
     for uid, user_patterns in patterns_by_user.items():
         m, d, n, specific_days = _compute_strict_daypart_caps(
-            user_patterns, unavail_by_user.get(uid, []), week, year, list(org_unavail_rows)
+            user_patterns,
+            unavail_by_user.get(uid, []),
+            week,
+            year,
+            list(org_unavail_rows),
         )
-        per_user[uid] = {"Ochtend": m, "Dag": d, "Avond": n, "Flex": 0, "days": specific_days}
+        per_user[uid] = {
+            "Ochtend": m,
+            "Dag": d,
+            "Avond": n,
+            "Flex": 0,
+            "days": specific_days,
+        }
 
     return per_user
 
@@ -1330,7 +1370,9 @@ async def select_visits_for_week(
         # (filtered out before the solver ran, e.g. date-window mismatch or protocol
         # frequency block). Load all Voorlopig visits for this week and compare.
         week_friday = week_monday + timedelta(days=4)
-        solver_seen_ids = {v.id for v in result.selected} | {v.id for v in result.skipped}
+        solver_seen_ids = {v.id for v in result.selected} | {
+            v.id for v in result.skipped
+        }
 
         voorlopig_stmt = select_active(Visit).where(
             and_(

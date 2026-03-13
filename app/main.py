@@ -36,6 +36,7 @@ from app.services.holiday_reset_scheduler import (
 
 import logging
 
+
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return record.getMessage().find("GET /health") == -1
@@ -45,11 +46,13 @@ settings = get_settings()
 
 if settings.sentry_dsn:
     import sentry_sdk
+
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
         environment=settings.tenant_name,
         traces_sample_rate=1.0,
     )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -88,7 +91,7 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )
-    
+
     # Force uvicorn loggers to use the same config by propagating to root
     for logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
         logger = logging.getLogger(logger_name)
@@ -135,13 +138,28 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
     app.include_router(projects_router, prefix="/projects", tags=["projects"])
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
     app.include_router(admin_availability_router, prefix="/admin", tags=["admin"])
-    app.include_router(availability_router, prefix="/availability", tags=["availability"])
+    app.include_router(
+        availability_router, prefix="/availability", tags=["availability"]
+    )
     from app.routers.availability_patterns import router as availability_patterns_router
-    app.include_router(availability_patterns_router, prefix="/api", tags=["availability_patterns"])
+
+    app.include_router(
+        availability_patterns_router, prefix="/api", tags=["availability_patterns"]
+    )
     from app.routers.user_unavailabilities import router as unavailabilities_router
-    app.include_router(unavailabilities_router, prefix="/api", tags=["user_unavailabilities"])
-    from app.routers.organization_unavailabilities import router as org_unavailabilities_router
-    app.include_router(org_unavailabilities_router, prefix="/api", tags=["organization_unavailabilities"])
+
+    app.include_router(
+        unavailabilities_router, prefix="/api", tags=["user_unavailabilities"]
+    )
+    from app.routers.organization_unavailabilities import (
+        router as org_unavailabilities_router,
+    )
+
+    app.include_router(
+        org_unavailabilities_router,
+        prefix="/api",
+        tags=["organization_unavailabilities"],
+    )
     app.include_router(clusters_router, prefix="/clusters", tags=["clusters"])
 
     @app.get("/health")

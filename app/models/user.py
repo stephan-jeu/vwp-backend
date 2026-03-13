@@ -17,12 +17,14 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(320), index=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    
+
     # Auth fields
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     activation_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reset_password_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    reset_password_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reset_password_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index(

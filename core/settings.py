@@ -33,42 +33,49 @@ class Settings(BaseModel):
     tenant_name: str = Field(
         default_factory=lambda: os.getenv("TENANT_NAME", "Habitus")
     )
-    
+
     # Feature: Daily Planning (Granular Day Assignments)
     feature_daily_planning: bool = Field(
-        default_factory=lambda: os.getenv("FEATURE_DAILY_PLANNING", "false").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv("FEATURE_DAILY_PLANNING", "false").lower()
+        in {"1", "true", "yes"}
     )
-    
+
     # Feature: Strict Availability (Specific Day Restrictions)
     feature_strict_availability: bool = Field(
-        default_factory=lambda: os.getenv("FEATURE_STRICT_AVAILABILITY", "false").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv(
+            "FEATURE_STRICT_AVAILABILITY", "false"
+        ).lower()
+        in {"1", "true", "yes"}
     )
 
     # Feature: Advertise (Hulp gevraagd / Vraag iemand anders)
     feature_advertise: bool = Field(
-        default_factory=lambda: os.getenv("FEATURE_ADVERTISE", "true").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv("FEATURE_ADVERTISE", "true").lower()
+        in {"1", "true", "yes"}
     )
 
     # Feature: Visit Code (Condensed species/function/daypart codes on visits)
     enable_visit_code: bool = Field(
-        default_factory=lambda: os.getenv("ENABLE_VISIT_CODE", "false").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv("ENABLE_VISIT_CODE", "false").lower()
+        in {"1", "true", "yes"}
     )
-    
+
     # Feature: Auth Providers (google, azure_ad, email)
     auth_providers: list[str] = Field(
         default_factory=lambda: [
             p.strip() for p in os.getenv("AUTH_PROVIDERS", "google").split(",")
         ]
     )
-    
+
     # Observability
-    sentry_dsn: str | None = Field(
-        default_factory=lambda: os.getenv("SENTRY_DSN")
-    )
-    
+    sentry_dsn: str | None = Field(default_factory=lambda: os.getenv("SENTRY_DSN"))
+
     # Constraint: English/Dutch Teaming (English speakers need Dutch buddy)
     constraint_english_dutch_teaming: bool = Field(
-        default_factory=lambda: os.getenv("CONSTRAINT_ENGLISH_DUTCH_TEAMING", "false").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv(
+            "CONSTRAINT_ENGLISH_DUTCH_TEAMING", "false"
+        ).lower()
+        in {"1", "true", "yes"}
     )
 
     # Family-specific default required_researchers (overrides model default of 1, overridden by cluster setting)
@@ -81,28 +88,43 @@ class Settings(BaseModel):
 
     # Constraint: Large Team Penalty (Avoid >2 researchers per visit if possible)
     constraint_large_team_penalty: bool = Field(
-        default_factory=lambda: os.getenv("CONSTRAINT_LARGE_TEAM_PENALTY", "true").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv(
+            "CONSTRAINT_LARGE_TEAM_PENALTY", "true"
+        ).lower()
+        in {"1", "true", "yes"}
     )
 
     # Constraint: Quadratic weekly load spread penalty (discourages packing visits into a single week)
     constraint_quadratic_load_penalty: bool = Field(
-        default_factory=lambda: os.getenv("CONSTRAINT_QUADRATIC_LOAD_PENALTY", "true").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv(
+            "CONSTRAINT_QUADRATIC_LOAD_PENALTY", "true"
+        ).lower()
+        in {"1", "true", "yes"}
     )
     constraint_quadratic_load_penalty_weight: int = Field(
-        default_factory=lambda: int(os.getenv("CONSTRAINT_QUADRATIC_LOAD_PENALTY_WEIGHT", "5"))
+        default_factory=lambda: int(
+            os.getenv("CONSTRAINT_QUADRATIC_LOAD_PENALTY_WEIGHT", "5")
+        )
     )
 
     # Constraint: Max Travel Time (Minutes)
     constraint_max_travel_time_minutes: int = Field(
-        default_factory=lambda: int(os.getenv("CONSTRAINT_MAX_TRAVEL_TIME_MINUTES", "75"))
+        default_factory=lambda: int(
+            os.getenv("CONSTRAINT_MAX_TRAVEL_TIME_MINUTES", "75")
+        )
     )
 
     # Constraint: Consecutive Travel Penalty
     constraint_consecutive_travel_penalty: bool = Field(
-        default_factory=lambda: os.getenv("CONSTRAINT_CONSECUTIVE_TRAVEL_PENALTY", "true").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv(
+            "CONSTRAINT_CONSECUTIVE_TRAVEL_PENALTY", "true"
+        ).lower()
+        in {"1", "true", "yes"}
     )
     constraint_consecutive_travel_penalty_weight: int = Field(
-        default_factory=lambda: int(os.getenv("CONSTRAINT_CONSECUTIVE_TRAVEL_PENALTY_WEIGHT", "1"))
+        default_factory=lambda: int(
+            os.getenv("CONSTRAINT_CONSECUTIVE_TRAVEL_PENALTY_WEIGHT", "1")
+        )
     )
 
     # Seasonal planner scheduler
@@ -215,6 +237,13 @@ class Settings(BaseModel):
     google_client_secret: SecretStr = Field(
         default_factory=lambda: SecretStr(os.getenv("GOOGLE_CLIENT_SECRET", ""))
     )
+    google_redirect_uris: list[str] = Field(
+        default_factory=lambda: [
+            uri.strip()
+            for uri in os.getenv("GOOGLE_REDIRECT_URIS", "").split(",")
+            if uri.strip()
+        ]
+    )
     google_redirect_uri: str = Field(
         default_factory=lambda: os.getenv(
             "GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/callback"
@@ -237,14 +266,40 @@ class Settings(BaseModel):
         )
     )
 
+    @property
+    def effective_google_redirect_uris(self) -> list[str]:
+        """Return the effective list of allowed Google OAuth redirect URIs.
+
+        This combines the legacy single `GOOGLE_REDIRECT_URI` with the optional
+        comma-separated list `GOOGLE_REDIRECT_URIS` and de-duplicates entries
+        while preserving order.
+
+        Returns:
+            List of allowed redirect URIs.
+        """
+        uris = [uri for uri in self.google_redirect_uris if uri]
+        if self.google_redirect_uri:
+            uris.append(self.google_redirect_uri)
+        # Preserve order, de-duplicate
+        seen: set[str] = set()
+        out: list[str] = []
+        for uri in uris:
+            if uri in seen:
+                continue
+            seen.add(uri)
+            out.append(uri)
+        return out
+
     # Auth Features
     enable_email_login: bool = Field(
-        default_factory=lambda: os.getenv("ENABLE_EMAIL_LOGIN", "false").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv("ENABLE_EMAIL_LOGIN", "false").lower()
+        in {"1", "true", "yes"}
     )
     enable_ms365_login: bool = Field(
-        default_factory=lambda: os.getenv("ENABLE_MS365_LOGIN", "false").lower() in {"1", "true", "yes"}
+        default_factory=lambda: os.getenv("ENABLE_MS365_LOGIN", "false").lower()
+        in {"1", "true", "yes"}
     )
-    
+
     # JWT
     jwt_secret: SecretStr = Field(
         default_factory=lambda: SecretStr(

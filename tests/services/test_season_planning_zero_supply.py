@@ -275,8 +275,8 @@ def test_quadratic_load_distributes_evenly():
             sleutel=False,
             cluster=SimpleNamespace(project_id=vid),
             cluster_id=vid,
-            from_date=date(2025, 3, 3),   # week 10
-            to_date=date(2025, 3, 14),    # week 11
+            from_date=date(2025, 3, 3),  # week 10
+            to_date=date(2025, 3, 14),  # week 11
             planned_week=None,
             provisional_week=None,
             provisional_locked=False,
@@ -289,18 +289,35 @@ def test_quadratic_load_distributes_evenly():
         )
 
     u1 = SimpleNamespace(
-        id=1, vleermuis=True, smp_vleermuis=False, smp_gierzwaluw=False,
-        smp_huismus=False, vrfg=False, langoor=False, schijfhoren=False,
-        zwaluw=False, vlinder=False, teunisbloempijlstaart=False,
-        zangvogel=False, roofvogel=False, pad=False, biggenkruid=False,
-        contract_type="medewerker", experience_bat="medior", deleted_at=None,
+        id=1,
+        vleermuis=True,
+        smp_vleermuis=False,
+        smp_gierzwaluw=False,
+        smp_huismus=False,
+        vrfg=False,
+        langoor=False,
+        schijfhoren=False,
+        zwaluw=False,
+        vlinder=False,
+        teunisbloempijlstaart=False,
+        zangvogel=False,
+        roofvogel=False,
+        pad=False,
+        biggenkruid=False,
+        contract_type="medewerker",
+        experience_bat="medior",
+        deleted_at=None,
     )
 
     avail_map = {}
     for w in range(1, 54):
         avail_map[(1, w)] = SimpleNamespace(
-            user_id=1, week=w,
-            morning_days=20, daytime_days=0, nighttime_days=0, flex_days=0,
+            user_id=1,
+            week=w,
+            morning_days=20,
+            daytime_days=0,
+            nighttime_days=0,
+            flex_days=0,
         )
 
     # --- Met spread penalty (expliciet aan) ---
@@ -310,7 +327,10 @@ def test_quadratic_load_distributes_evenly():
     mock_settings_on.constraint_quadratic_load_penalty_weight = 5
     mock_settings_on.constraint_large_team_penalty = False
     mock_settings_on.provisional_week_stickiness_enabled = False
-    with patch("app.services.season_planning_service.get_settings", return_value=mock_settings_on):
+    with patch(
+        "app.services.season_planning_service.get_settings",
+        return_value=mock_settings_on,
+    ):
         SeasonPlanningService.solve_season(start_date, visits, [u1], avail_map)
     weeks_assigned = [v.provisional_week for v in visits if v.provisional_week]
     assert len(weeks_assigned) == 10
@@ -325,7 +345,9 @@ def test_quadratic_load_distributes_evenly():
     mock_settings.constraint_quadratic_load_penalty_weight = 0
     mock_settings.constraint_large_team_penalty = False
     mock_settings.provisional_week_stickiness_enabled = False
-    with patch("app.services.season_planning_service.get_settings", return_value=mock_settings):
+    with patch(
+        "app.services.season_planning_service.get_settings", return_value=mock_settings
+    ):
         SeasonPlanningService.solve_season(start_date, visits2, [u1], avail_map)
     weeks_no_spread = [v.provisional_week for v in visits2 if v.provisional_week]
     assert all(w == 10 for w in weeks_no_spread), (

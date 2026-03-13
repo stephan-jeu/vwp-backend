@@ -142,7 +142,7 @@ class Visit(TimestampMixin, SoftDeleteMixin, ArchivableMixin, Base):
     provisional_locked: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
-    
+
     # Daily Planning (Granular Assignment)
     # If FEATURE_DAILY_PLANNING is enabled, this is the primary planning field.
     planned_date: Mapped[date | None] = mapped_column(

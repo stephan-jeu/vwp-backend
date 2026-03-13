@@ -44,9 +44,7 @@ async def create_user_pattern(
     try:
         return await service.create_pattern(db, user_id=user_id, payload=payload)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.patch("/patterns/{pattern_id}", response_model=AvailabilityPatternOut)
@@ -58,14 +56,14 @@ async def update_pattern(
 ):
     """Update an availability pattern (Admin only)."""
     try:
-        updated = await service.update_pattern(db, pattern_id=pattern_id, payload=payload)
+        updated = await service.update_pattern(
+            db, pattern_id=pattern_id, payload=payload
+        )
         if not updated:
             raise HTTPException(status_code=404, detail="Pattern not found")
         return updated
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.delete("/patterns/{pattern_id}", status_code=status.HTTP_204_NO_CONTENT)

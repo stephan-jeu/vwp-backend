@@ -87,7 +87,11 @@ async def test_travel_time_scoring_picks_closest(
         return None
 
     async def fake_travel_minutes_batch(pairs, db=None) -> dict:
-        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+        return {
+            (o, d): await fake_travel_minutes(o, d)
+            for o, d in set(pairs)
+            if await fake_travel_minutes(o, d) is not None
+        }
 
     async def fake_load_dp_caps(_db, _week):
         return {
@@ -123,7 +127,9 @@ async def test_travel_time_scoring_picks_closest(
         "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
-    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday, today=week_monday)
+    result = await select_visits_for_week(
+        db=DummyDB(), week_monday=week_monday, today=week_monday
+    )
 
     # Expect user 1 (shorter travel) assigned
     assert result["selected_visit_ids"] == [1]
@@ -163,7 +169,11 @@ async def test_excludes_over_75_minutes(
         return 80 if origin == "Origin A" else 10
 
     async def fake_travel_minutes_batch(pairs, db=None) -> dict:
-        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+        return {
+            (o, d): await fake_travel_minutes(o, d)
+            for o, d in set(pairs)
+            if await fake_travel_minutes(o, d) is not None
+        }
 
     async def fake_load_dp_caps(_db, _week):
         return {
@@ -199,7 +209,9 @@ async def test_excludes_over_75_minutes(
         "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
-    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday, today=week_monday)
+    result = await select_visits_for_week(
+        db=DummyDB(), week_monday=week_monday, today=week_monday
+    )
 
     # User 1 excluded, so user 2 gets assigned
     assert result["selected_visit_ids"] == [2]
@@ -250,7 +262,11 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
         return 10
 
     async def fake_travel_minutes_batch(pairs, db=None) -> dict:
-        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+        return {
+            (o, d): await fake_travel_minutes(o, d)
+            for o, d in set(pairs)
+            if await fake_travel_minutes(o, d) is not None
+        }
 
     async def fake_load_dp_caps(_db, _week):
         return {
@@ -286,7 +302,9 @@ async def test_assigned_capacity_ratio_affects_second_assignment(
         "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch
     )
 
-    result = await select_visits_for_week(db=DummyDB(), week_monday=week_monday, today=week_monday)
+    result = await select_visits_for_week(
+        db=DummyDB(), week_monday=week_monday, today=week_monday
+    )
 
     # Expect user 1 gets v1, user 2 gets v2 due to lower already-assigned ratio
     assert result["selected_visit_ids"] == [10, 11]
@@ -341,7 +359,11 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
         return 0
 
     async def fake_travel_minutes_batch(pairs, db=None) -> dict:
-        return {(o, d): await fake_travel_minutes(o, d) for o, d in set(pairs) if await fake_travel_minutes(o, d) is not None}
+        return {
+            (o, d): await fake_travel_minutes(o, d)
+            for o, d in set(pairs)
+            if await fake_travel_minutes(o, d) is not None
+        }
 
     async def fake_eligible(db, wm):
         return [v1, v2]
@@ -359,6 +381,7 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
         return {u.id: {"Ochtend": 10, "Dag": 10, "Avond": 10, "Flex": 0} for u in users}
 
     from core.settings import get_settings
+
     monkeypatch.setattr(get_settings(), "constraint_large_team_penalty", True)
 
     # Monkeypatching
@@ -421,13 +444,18 @@ async def test_avoid_multiple_large_team_visits_soft_constraint(
         return 0
 
     async def fake_travel_minutes_batch_high(pairs, db=None) -> dict:
-        return {(o, d): await fake_travel_minutes_high(o, d) for o, d in set(pairs) if await fake_travel_minutes_high(o, d) is not None}
+        return {
+            (o, d): await fake_travel_minutes_high(o, d)
+            for o, d in set(pairs)
+            if await fake_travel_minutes_high(o, d) is not None
+        }
 
     monkeypatch.setattr(
         "app.services.travel_time.get_travel_minutes", fake_travel_minutes_high
     )
     monkeypatch.setattr(
-        "app.services.travel_time.get_travel_minutes_batch", fake_travel_minutes_batch_high
+        "app.services.travel_time.get_travel_minutes_batch",
+        fake_travel_minutes_batch_high,
     )
 
     # Must clear researchers to avoid 'planned' interference in this specific test setup

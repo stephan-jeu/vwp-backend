@@ -37,7 +37,10 @@ async def _run_holiday_reset_job() -> None:
         logger.info("Holiday reset scheduler started for year %d.", new_year)
         async with AsyncSessionLocal() as session:
             try:
-                from app.services.organization_unavailability_service import reset_and_seed_year
+                from app.services.organization_unavailability_service import (
+                    reset_and_seed_year,
+                )
+
                 seeded = await reset_and_seed_year(session, year=new_year)
                 logger.info(
                     "Holiday reset scheduler completed. Seeded %d holidays for %d.",

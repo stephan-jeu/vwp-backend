@@ -5,6 +5,7 @@ Revises: 7e85b56c5afc
 Create Date: 2026-02-15 13:00:50.609507
 
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '96ed5f6ba63c'
-down_revision = '7e85b56c5afc'
+revision = "96ed5f6ba63c"
+down_revision = "7e85b56c5afc"
 branch_labels = None
 depends_on = None
 
@@ -53,9 +54,7 @@ def upgrade() -> None:
         ["user_id"],
         unique=False,
     )
-    op.create_foreign_key(
-        None, "availability_patterns", "users", ["user_id"], ["id"]
-    )
+    op.create_foreign_key(None, "availability_patterns", "users", ["user_id"], ["id"])
 
 
 def downgrade() -> None:

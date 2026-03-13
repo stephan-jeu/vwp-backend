@@ -75,13 +75,17 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
         return
 
     protocols = (
-        await db.execute(
-            select(Protocol).where(
-                Protocol.function_id.in_(function_ids),
-                Protocol.species_id.in_(species_ids),
+        (
+            await db.execute(
+                select(Protocol).where(
+                    Protocol.function_id.in_(function_ids),
+                    Protocol.species_id.in_(species_ids),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     protocol_map: dict[tuple[int, int], Protocol] = {
         (p.function_id, p.species_id): p
@@ -94,12 +98,16 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
     # Preload all PVWs for relevant protocols to enable window-overlap matching.
     protocol_ids = {p.id for p in protocol_map.values()}
     all_pvws: list[ProtocolVisitWindow] = (
-        await db.execute(
-            select(ProtocolVisitWindow).where(
-                ProtocolVisitWindow.protocol_id.in_(protocol_ids)
+        (
+            await db.execute(
+                select(ProtocolVisitWindow).where(
+                    ProtocolVisitWindow.protocol_id.in_(protocol_ids)
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     protocol_pvws: dict[int, list[ProtocolVisitWindow]] = {}
     for pvw in all_pvws:
@@ -192,7 +200,9 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
         if not expected_ids:
             continue
 
-        existing_ids = {pvw.id for pvw in visit.protocol_visit_windows if pvw.id is not None}
+        existing_ids = {
+            pvw.id for pvw in visit.protocol_visit_windows if pvw.id is not None
+        }
 
         for pvw_id in expected_ids - existing_ids:
             inserts.append({"visit_id": visit.id, "protocol_visit_window_id": pvw_id})

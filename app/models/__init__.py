@@ -52,7 +52,7 @@ class SoftDeleteMixin:
 
 class ArchivableMixin:
     """Mixin that adds archiving support via an ``is_archived`` boolean.
-    
+
     Archived rows are hidden from standard application queries.
     """
 

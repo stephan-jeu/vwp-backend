@@ -275,11 +275,14 @@ async def notify_planning(
     from app.services.planning_notification_service import send_planning_emails_for_week
 
     result = await send_planning_emails_for_week(db, week, year)
-    
+
     if result["total"] == 0:
-        return {"message": "Geen onderzoekers met geplande bezoeken gevonden voor deze week.", "stats": result}
-        
+        return {
+            "message": "Geen onderzoekers met geplande bezoeken gevonden voor deze week.",
+            "stats": result,
+        }
+
     return {
         "message": f"Emails verstuurd: {result['sent']} van {result['total']} ({result['failed']} mislukt)",
-        "stats": result
+        "stats": result,
     }

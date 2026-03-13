@@ -23,11 +23,14 @@ router = APIRouter()
 async def list_organization_unavailabilities(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_admin)],
-    year: int = Query(default=None, description="Filter by year (defaults to current year)"),
+    year: int = Query(
+        default=None, description="Filter by year (defaults to current year)"
+    ),
 ):
     """List organization unavailabilities for a given year. (Admins only)"""
     if year is None:
         from datetime import date
+
         year = date.today().year
     return await service.list_unavailabilities(db, year=year)
 
@@ -87,7 +90,9 @@ async def delete_organization_unavailability(
     if not existing:
         raise HTTPException(status_code=404, detail="Unavailability not found")
 
-    success = await service.delete_unavailability(db, unavailability_id=unavailability_id)
+    success = await service.delete_unavailability(
+        db, unavailability_id=unavailability_id
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Unavailability not found")
 

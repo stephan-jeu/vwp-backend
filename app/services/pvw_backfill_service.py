@@ -107,12 +107,16 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
     all_pvws: list[ProtocolVisitWindow] = []
     if protocol_ids:
         all_pvws = (
-            await session.execute(
-                select(ProtocolVisitWindow).where(
-                    ProtocolVisitWindow.protocol_id.in_(protocol_ids)
+            (
+                await session.execute(
+                    select(ProtocolVisitWindow).where(
+                        ProtocolVisitWindow.protocol_id.in_(protocol_ids)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     protocol_pvws: dict[int, list[ProtocolVisitWindow]] = {}
     for pvw in all_pvws:
@@ -200,7 +204,9 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                         if best_pvw_id is not None:
                             pvw_id = best_pvw_id
                             if len(tied_pvws) > 1:
-                                claimed_tie_pvws.setdefault(protocol.id, set()).add(pvw_id)
+                                claimed_tie_pvws.setdefault(protocol.id, set()).add(
+                                    pvw_id
+                                )
 
                     # Fallback: positional ordering (original behaviour) for visits
                     # that lack date windows or whose window matches no pvw.

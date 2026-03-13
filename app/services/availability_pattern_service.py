@@ -7,7 +7,10 @@ from sqlalchemy import select, and_, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.availability_pattern import AvailabilityPattern
-from app.schemas.availability_pattern import AvailabilityPatternCreate, AvailabilityPatternUpdate
+from app.schemas.availability_pattern import (
+    AvailabilityPatternCreate,
+    AvailabilityPatternUpdate,
+)
 
 
 async def list_patterns(
@@ -59,12 +62,14 @@ async def update_pattern(
         return None
 
     # Determine effective new range
-    new_start = payload.start_date if payload.start_date is not None else pattern.start_date
+    new_start = (
+        payload.start_date if payload.start_date is not None else pattern.start_date
+    )
     new_end = payload.end_date if payload.end_date is not None else pattern.end_date
 
     if new_start != pattern.start_date or new_end != pattern.end_date:
         if new_end < new_start:
-             raise ValueError("End date must be after start date")
+            raise ValueError("End date must be after start date")
 
         await _check_overlap(
             db,
@@ -78,10 +83,10 @@ async def update_pattern(
 
     if payload.max_mornings_per_week is not None:
         pattern.max_mornings_per_week = payload.max_mornings_per_week
-    
+
     if payload.max_evenings_per_week is not None:
         pattern.max_evenings_per_week = payload.max_evenings_per_week
-    
+
     if payload.schedule is not None:
         pattern.schedule = payload.schedule
 
