@@ -74,6 +74,8 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
 
     for visit in visits:
         for researcher in visit.researchers:
+            if researcher.deleted_at is not None:
+                continue  # Skip soft-deleted researchers
             if not researcher.email:
                 continue  # Skip researchers without email
 

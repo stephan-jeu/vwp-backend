@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import random
+import re
 from datetime import date, timedelta
 from typing import Iterable
 import logging
@@ -1294,6 +1296,48 @@ async def _select_visits_for_week_core(
     return selected, skipped, caps
 
 
+def _apply_gz_remark(visit: Visit) -> None:
+    """Post-processing: add a personalized GZ-gedeelte remark for combined vleermuis/GZ zwaluw visits.
+
+    Randomly picks one researcher for the GZ-gedeelte so that it's not always
+    the same person. Removes any previous version of this remark before appending
+    the updated one, so re-running the planner won't duplicate it.
+    Only applies when more than one researcher is assigned.
+    """
+    has_vleermuis = any(
+        getattr(getattr(sp, "family", None), "name", "") == "Vleermuis"
+        for sp in (visit.species or [])
+    )
+    has_gz_zwaluw = any(
+        getattr(getattr(sp, "family", None), "name", "") == "Zwaluw"
+        and getattr(sp, "abbreviation", "") == "GZ"
+        for sp in (visit.species or [])
+    )
+    if not (has_vleermuis and has_gz_zwaluw):
+        return
+
+    researchers = list(visit.researchers or [])
+    if len(researchers) <= 1:
+        return
+
+    def _first_name(user: User) -> str:
+        return ((getattr(user, "full_name", None) or "").split() + ["?"])[0]
+
+    gz_researcher = random.choice(researchers)
+    others = [u for u in researchers if u is not gz_researcher]
+
+    gz_name = _first_name(gz_researcher)
+    other_names = [_first_name(u) for u in others]
+    others_str = " en ".join(other_names)
+    verb = "begint" if len(other_names) == 1 else "beginnen"
+    new_remark = f"{gz_name} voor GZ-gedeelte. {others_str} {verb} bij zonsondergang."
+
+    # Remove any existing GZ-gedeelte remark (old static or previous dynamic run)
+    existing = visit.remarks_field or ""
+    cleaned = re.sub(r"[^\n]*voor GZ-gedeelte[^\n]*\n?", "", existing).strip()
+    visit.remarks_field = (cleaned + "\n" + new_remark).strip() if cleaned else new_remark
+
+
 async def select_visits_for_week(
     db: AsyncSession,
     week_monday: date,
@@ -1420,6 +1464,10 @@ async def select_visits_for_week(
                     batch_id=batch,
                 )
             )
+
+    # Post-processing: add personalized GZ-gedeelte remark for combined visits.
+    for v in effective_selected:
+        _apply_gz_remark(v)
 
     if db:
         await db.commit()
