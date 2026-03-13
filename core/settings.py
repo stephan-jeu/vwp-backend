@@ -7,6 +7,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _parse_family_required_researchers(raw: str) -> dict[str, int]:
+    """Parse 'Vleermuis:2,Huismus:1' into {'Vleermuis': 2, 'Huismus': 1}."""
+    result: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" in part:
+            name, _, count = part.partition(":")
+            try:
+                result[name.strip()] = int(count.strip())
+            except ValueError:
+                pass
+    return result
+
+
 class Settings(BaseModel):
     # App
     app_name: str = Field(default="Veldwerkplanning API")
@@ -55,6 +69,14 @@ class Settings(BaseModel):
     # Constraint: English/Dutch Teaming (English speakers need Dutch buddy)
     constraint_english_dutch_teaming: bool = Field(
         default_factory=lambda: os.getenv("CONSTRAINT_ENGLISH_DUTCH_TEAMING", "false").lower() in {"1", "true", "yes"}
+    )
+
+    # Family-specific default required_researchers (overrides model default of 1, overridden by cluster setting)
+    # Format: "Vleermuis:2,Huismus:1"
+    family_default_required_researchers: dict[str, int] = Field(
+        default_factory=lambda: _parse_family_required_researchers(
+            os.getenv("FAMILY_DEFAULT_REQUIRED_RESEARCHERS", "")
+        )
     )
 
     # Constraint: Large Team Penalty (Avoid >2 researchers per visit if possible)

@@ -18,6 +18,7 @@ from app.models.protocol import Protocol
 from app.models.visit import Visit
 from app.models.user import User
 from app.services.planning_run_errors import PlanningRunError
+from core.settings import get_settings
 from app.services.visit_generation_common import (
     _generate_visit_requests,
     _build_compatibility_graph,
@@ -975,7 +976,19 @@ async def generate_visits_cp_sat(
         )
 
         # Apply defaults
-        new_visit.required_researchers = default_required_researchers
+        # Priority: cluster setting > family default (env var) > None
+        effective_required_researchers = default_required_researchers
+        if effective_required_researchers is None:
+            family_defaults = get_settings().family_default_required_researchers
+            if family_defaults:
+                for req in assigned_reqs:
+                    family_name = getattr(
+                        getattr(req.protocol.species, "family", None), "name", None
+                    )
+                    if family_name and family_name in family_defaults:
+                        effective_required_researchers = family_defaults[family_name]
+                        break
+        new_visit.required_researchers = effective_required_researchers
         new_visit.planned_week = default_planned_week
         new_visit.planning_locked = default_planning_locked
         new_visit.expertise_level = default_expertise_level

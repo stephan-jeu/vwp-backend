@@ -14,5 +14,9 @@ async def main():
         print("Geocoding Response:")
         print(resp.json())
 
+        resp = await client.get("https://maps.googleapis.com/maps/api/directions/json", params={"origin": "Amsterdam", "destination": "Utrecht", "mode": "driving", "key": api_key})
+        print("Directions Response:")
+        print(resp.json())
+
 if __name__ == "__main__":
     asyncio.run(main())
