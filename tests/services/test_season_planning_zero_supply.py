@@ -303,9 +303,15 @@ def test_quadratic_load_distributes_evenly():
             morning_days=20, daytime_days=0, nighttime_days=0, flex_days=0,
         )
 
-    # --- Met spread penalty (default aan) ---
+    # --- Met spread penalty (expliciet aan) ---
     visits = [make_spread_visit(i) for i in range(1, 11)]
-    SeasonPlanningService.solve_season(start_date, visits, [u1], avail_map)
+    mock_settings_on = MagicMock()
+    mock_settings_on.constraint_quadratic_load_penalty = True
+    mock_settings_on.constraint_quadratic_load_penalty_weight = 5
+    mock_settings_on.constraint_large_team_penalty = False
+    mock_settings_on.provisional_week_stickiness_enabled = False
+    with patch("app.services.season_planning_service.get_settings", return_value=mock_settings_on):
+        SeasonPlanningService.solve_season(start_date, visits, [u1], avail_map)
     weeks_assigned = [v.provisional_week for v in visits if v.provisional_week]
     assert len(weeks_assigned) == 10
     assert 10 in weeks_assigned and 11 in weeks_assigned, (
@@ -318,6 +324,7 @@ def test_quadratic_load_distributes_evenly():
     mock_settings.constraint_quadratic_load_penalty = False
     mock_settings.constraint_quadratic_load_penalty_weight = 0
     mock_settings.constraint_large_team_penalty = False
+    mock_settings.provisional_week_stickiness_enabled = False
     with patch("app.services.season_planning_service.get_settings", return_value=mock_settings):
         SeasonPlanningService.solve_season(start_date, visits2, [u1], avail_map)
     weeks_no_spread = [v.provisional_week for v in visits2 if v.provisional_week]

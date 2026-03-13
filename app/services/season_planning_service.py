@@ -372,12 +372,12 @@ class SeasonPlanningService:
                 cost = len(researchers)
             else:
                 cost = getattr(v, "required_researchers", None) or 1
-            window_weight = math.ceil(5 / overlap_days)
             part_of_day = (getattr(v, "part_of_day", None) or "").strip()
             part_key = {"Ochtend": "m", "Dag": "d", "Avond": "n"}.get(part_of_day)
+            # Actual demand: real researcher-days consumed (no window_weight amplification).
             custom_fixed_demand_by_week[int(target_week)] = (
                 custom_fixed_demand_by_week.get(int(target_week), 0)
-                + cost * window_weight
+                + cost
             )
             if part_key is not None:
                 custom_fixed_demand_by_week_daypart[(int(target_week), part_key)] = (
@@ -385,7 +385,7 @@ class SeasonPlanningService:
                         (int(target_week), part_key),
                         0,
                     )
-                    + cost * window_weight
+                    + cost
                 )
 
         # 2a. Supply: Build Capacity Supply Map (Skill -> Week -> TotalSlots)
@@ -848,6 +848,7 @@ class SeasonPlanningService:
         tightness_reward_weights: list[int] = []
         stability_drift_terms: list[cp_model.IntVar] = []
         overflow_penalty_terms: list[cp_model.IntVar] = []
+        concentration_penalty_terms: list[cp_model.IntVar] = []
         large_team_penalty_terms: list[cp_model.BoolVar] = []
         weekly_load_penalty_terms: list[cp_model.IntVar] = []
         slack_reward_terms: list[cp_model.IntVar] = []
@@ -1187,8 +1188,17 @@ class SeasonPlanningService:
                     overflow_penalty_terms.append(overflow)
                     overflow_by_week_skill[(w, skill)] = overflow
 
-                    # Demand = Sum(assigned_bool_i * researchers_i * days_i)
-                    demand_terms = []
+                    # Two separate demand views per visit:
+                    #   actual_term  = b * req_res            (real researcher-days consumed)
+                    #   conc_term    = b * req_res * window_weight  (day-concentration risk)
+                    #
+                    # window_weight = ceil(5 / overlap_days) models the expected daily load:
+                    # a visit with 1 day overlap MUST happen on that day (weight=5), while a
+                    # full-week visit can be spread freely (weight=1). This is the right lens
+                    # for concentration risk, but using it as the actual capacity demand caused
+                    # weeks to appear much fuller than they really were.
+                    demand_terms = []       # actual researcher-days
+                    conc_demand_terms = []  # concentration risk (window_weight scaled)
                     for i, b in enumerate(assigned_bools):
                         v_cand = candidates[i][0]
                         overlap_days = candidates[i][1]
@@ -1201,14 +1211,18 @@ class SeasonPlanningService:
                         else:
                             req_res = 1  # Fallback for Mocks
 
-                        window_weight = math.ceil(5 / overlap_days)
-                        term = b * (req_res * window_weight)
-                        demand_terms.append(term)
-                        week_total_demand_terms.append(term)
+                        # Actual capacity consumed: just the researcher count
+                        actual_term = b * req_res
+                        demand_terms.append(actual_term)
+                        week_total_demand_terms.append(actual_term)
 
-                        # Daypart-aware accounting (approximate):
-                        # If a visit is tagged as a specific daypart, it can only
-                        # consume that daypart capacity plus flex.
+                        # Concentration risk: amplified by how constrained the day window is
+                        window_weight = math.ceil(5 / overlap_days)
+                        conc_term = b * (req_res * window_weight)
+                        conc_demand_terms.append(conc_term)
+
+                        # Daypart-aware accounting uses actual demand only.
+                        # This prevents morning capacity being used for an evening-only visit.
                         part_of_day = (
                             getattr(v_cand, "part_of_day", None) or ""
                         ).strip()
@@ -1216,13 +1230,10 @@ class SeasonPlanningService:
                             part_of_day
                         )
                         if part_key is not None:
-                            daypart_demand_terms[part_key].append(
-                                b * (req_res * window_weight)
-                            )
-                            week_daypart_demand_terms[part_key].append(
-                                b * (req_res * window_weight)
-                            )
+                            daypart_demand_terms[part_key].append(actual_term)
+                            week_daypart_demand_terms[part_key].append(actual_term)
 
+                    # Constraint 1: actual weekly capacity (researcher-days)
                     model.Add(
                         cp_model.LinearExpr.Sum(demand_terms) <= sup_total + overflow
                     )
@@ -1240,8 +1251,21 @@ class SeasonPlanningService:
                         )
                         slack_by_week_skill[(w, skill)] = slack
 
-                    # Additional hardening: enforce daypart capacity separately.
-                    # This prevents "morning" capacity being used for an evening-only visit.
+                    # Constraint 2: day-concentration risk (soft, lower penalty weight).
+                    # Prevents assigning so many narrow-window visits to one week that
+                    # the expected daily load exceeds daily capacity. The concentration
+                    # overflow is penalised less severely than an actual capacity overflow
+                    # because the week planner may still be able to spread the load.
+                    overflow_conc = model.NewIntVar(
+                        0, 10000, f"overflow_conc_{w}_{skill}"
+                    )
+                    concentration_penalty_terms.append(overflow_conc)
+                    model.Add(
+                        cp_model.LinearExpr.Sum(conc_demand_terms)
+                        <= sup_total + overflow_conc
+                    )
+
+                    # Constraint 3: daypart actual capacity
                     for part_key, d_terms in daypart_demand_terms.items():
                         if not d_terms:
                             continue
@@ -1408,6 +1432,11 @@ class SeasonPlanningService:
         # Constraint penalties: 200k per overflow unit so one overflow outweighs two active-visit rewards,
         # making it preferable to leave a visit unassigned rather than violate capacity.
         p_overflow = cp_model.LinearExpr.Sum(overflow_penalty_terms) * -200000
+        # Day-concentration risk penalty: 80k per overflow unit.
+        # Lower than p_overflow because concentration overflow is a probabilistic risk —
+        # the week planner may still distribute narrow-window visits across different days.
+        # But high enough that the solver avoids it when alternatives exist.
+        p_concentration = cp_model.LinearExpr.Sum(concentration_penalty_terms) * -80000
         p_successor_risk = cp_model.LinearExpr.Sum(successor_risk_terms) * -500
         # Weight reduced from -1_000 to -75: the hard gap constraint (w2 >= w1 + gap)
         # already guarantees correctness; this soft penalty only nudges V2 later when
@@ -1443,6 +1472,7 @@ class SeasonPlanningService:
             + priority_reward_term
             + slack_penalty
             + p_overflow
+            + p_concentration
             + p_successor_risk
             + p_predecessor_room_risk
             + p_large_teams
@@ -1558,8 +1588,7 @@ class SeasonPlanningService:
                     )
                     if existing_days is not None:
                         cost = _visit_cost(v)
-                        window_weight = math.ceil(5 / existing_days)
-                        demand = cost * window_weight
+                        demand = cost  # actual researcher-days (no window_weight)
 
                         if (
                             global_supply.get(existing_week_int, 0) >= demand
@@ -1583,8 +1612,7 @@ class SeasonPlanningService:
                 if chosen_week is not None:
                     break
                 cost = _visit_cost(v)
-                window_weight = math.ceil(5 / days)
-                demand = cost * window_weight
+                demand = cost  # actual researcher-days (no window_weight)
 
                 if global_supply.get(w, 0) < demand:
                     continue
@@ -1611,8 +1639,7 @@ class SeasonPlanningService:
                 continue
 
             cost = _visit_cost(v)
-            window_weight = math.ceil(5 / (chosen_days or 1))
-            demand = cost * window_weight
+            demand = cost  # actual researcher-days (no window_weight)
 
             global_supply[chosen_week] = max(
                 0, global_supply.get(chosen_week, 0) - demand
@@ -2125,20 +2152,37 @@ class SeasonPlanningService:
                 if total_days <= 0:
                     continue
 
-                for skill in user_skills.get(u.id, set()):
-                    if skill not in supply_map:
-                        supply_map[skill] = {}
-                    supply_map[skill][w] = supply_map[skill].get(w, 0) + total_days
+                my_skills = user_skills.get(u.id, set())
+                if not my_skills:
+                    continue
 
-                    if skill not in supply_map_part:
-                        supply_map_part[skill] = {}
+                # Demand-proportional allocation: distribute a researcher's days across
+                # their skills proportionally to demand for each skill in this week.
+                # This prevents double-counting when a researcher qualifies for multiple skills.
+                skill_demands = {
+                    s: demand_by_skill.get(s, {}).get(w, 0) for s in my_skills
+                }
+                total_skill_demand = sum(skill_demands.values())
+
+                for skill in my_skills:
+                    if total_skill_demand > 0:
+                        fraction = skill_demands[skill] / total_skill_demand
+                    else:
+                        # No demand for any of this user's skills: distribute equally
+                        fraction = 1.0 / len(my_skills)
+
+                    supply_map.setdefault(skill, {})
+                    supply_map[skill][w] = (
+                        supply_map[skill].get(w, 0) + total_days * fraction
+                    )
+
+                    supply_map_part.setdefault(skill, {})
                     for part, part_days in (
-                        ("Ochtend", m + f),
-                        ("Dag", d + f),
-                        ("Avond", n + f),
+                        ("Ochtend", (m + f) * fraction),
+                        ("Dag", (d + f) * fraction),
+                        ("Avond", (n + f) * fraction),
                     ):
-                        if part not in supply_map_part[skill]:
-                            supply_map_part[skill][part] = {}
+                        supply_map_part[skill].setdefault(part, {})
                         supply_map_part[skill][part][w] = (
                             supply_map_part[skill][part].get(w, 0) + part_days
                         )
@@ -2274,10 +2318,12 @@ class SeasonPlanningService:
                 # For part-specific rows, align with the season solver:
                 # Ochtend/Dag/Avond use (part + flex). Unknown parts fall back to total skill.
                 if part in {"Ochtend", "Dag", "Avond"}:
-                    part_supply = supply_map_part.get(skill, {}).get(part, {}).get(w, 0)
+                    part_supply = round(
+                        supply_map_part.get(skill, {}).get(part, {}).get(w, 0)
+                    )
                     demand = demand_by_skill_part.get(skill, {}).get(part, {}).get(w, 0)
                 else:
-                    part_supply = supply_map.get(skill, {}).get(w, 0)
+                    part_supply = round(supply_map.get(skill, {}).get(w, 0))
                     demand = demand_by_skill.get(skill, {}).get(w, 0)
 
                 week_view_rows[row_key][week_iso]["spare"] = max(
