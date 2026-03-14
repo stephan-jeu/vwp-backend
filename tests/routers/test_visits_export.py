@@ -105,7 +105,6 @@ async def test_export_visits_csv(async_client, app, mocker):
     assert "Status" in lines[0]
 
     # Validate row
-    row = lines[1].split(",")
     # Check project code
     assert "P-123" in lines[1]
     # Check status

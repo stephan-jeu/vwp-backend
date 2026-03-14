@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 from app.schemas.trash import TrashItem, TrashKind
 from app.services.trash_service import purge_old_trash

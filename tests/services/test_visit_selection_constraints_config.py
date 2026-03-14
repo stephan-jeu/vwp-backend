@@ -5,8 +5,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.visit_selection_ortools import select_visits_cp_sat
-import app.services.travel_time  # Ensure module is loaded for patching
-import app.services.visit_planning_selection  # Ensure module is loaded for patching
 from app.models.visit import Visit
 from app.models.user import User
 from app.models.cluster import Cluster

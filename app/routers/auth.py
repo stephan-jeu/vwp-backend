@@ -88,7 +88,7 @@ async def get_login_options(
         )
 
     result = await db.execute(
-        select(User).where(User.email == email, User.deleted_at == None)
+        select(User).where(User.email == email, User.deleted_at.is_(None))
     )
     user = result.scalar_one_or_none()
 
@@ -179,7 +179,7 @@ async def login_password(
         )
 
     result = await db.execute(
-        select(User).where(User.email == payload.email, User.deleted_at == None)
+        select(User).where(User.email == payload.email, User.deleted_at.is_(None))
     )
     user = result.scalar_one_or_none()
 
@@ -348,7 +348,7 @@ async def forgot_password(
     """Trigger password reset flow."""
     # Always return success to avoid enumeration
     result = await db.execute(
-        select(User).where(User.email == payload.email, User.deleted_at == None)
+        select(User).where(User.email == payload.email, User.deleted_at.is_(None))
     )
     user = result.scalar_one_or_none()
 

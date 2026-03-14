@@ -819,11 +819,53 @@ async def test_load_week_capacity_applies_spare_subtraction():
 
     with patch("core.settings.get_settings") as mock_get_settings:
         mock_get_settings.return_value.feature_strict_availability = False
-        caps = await _load_week_capacity(fake_db, week=1)
+        with patch.dict(
+            "os.environ",
+            {"SPARE_CAPACITY_BY_DAYPART": "Ochtend:1,Dag:2,Avond:2"},
+            clear=False,
+        ):
+            caps = await _load_week_capacity(fake_db, week=1)
 
     # Spare subtraction configured in service: Ochtend-1, Dag-2, Avond-2
     # So: morning 3-1=2, day 3-2=1, night 3-2=1, flex unchanged=2
     assert caps == {"Ochtend": 2, "Dag": 1, "Avond": 1, "Flex": 2}
+
+
+@pytest.mark.asyncio
+async def test_load_week_capacity_defaults_to_zero_spare_capacity():
+    from app.services.visit_planning_selection import _load_week_capacity
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    rows = [
+        SimpleNamespace(
+            morning_days=2, daytime_days=1, nighttime_days=1, flex_days=1, user_id=1
+        ),
+    ]
+
+    class FakeResult:
+        def scalars(self):
+            class S:
+                def all(self_non):
+                    return rows
+
+            return S()
+
+    async def fake_execute(_stmt):
+        return FakeResult()
+
+    fake_db = SimpleNamespace(execute=fake_execute)
+
+    with patch("core.settings.get_settings") as mock_get_settings:
+        mock_get_settings.return_value.feature_strict_availability = False
+        with patch.dict(
+            "os.environ",
+            {"SPARE_CAPACITY_BY_DAYPART": ""},
+            clear=False,
+        ):
+            caps = await _load_week_capacity(fake_db, week=1)
+
+    assert caps == {"Ochtend": 2, "Dag": 1, "Avond": 1, "Flex": 1}
 
 
 # -----------------

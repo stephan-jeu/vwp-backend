@@ -10,7 +10,6 @@ from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.function import Function
 from app.models.species import Species
-from app.models.user import User
 from app.models.visit import (
     Visit,
 )

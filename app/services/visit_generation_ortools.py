@@ -8,7 +8,6 @@ from datetime import date, timedelta
 from typing import Any
 
 from ortools.sat.python import cp_model
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.utils import select_active

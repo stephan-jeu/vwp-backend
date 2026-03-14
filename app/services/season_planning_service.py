@@ -412,9 +412,6 @@ class SeasonPlanningService:
         supply = {}
 
         for u in users:
-            contract = SeasonPlanningService._get_contract_value(u)
-            exp = (getattr(u, "experience_bat", "") or "").lower()
-
             for w in horizon_weeks:
                 # Availability
                 aw = avail_map.get((u.id, w))
@@ -863,7 +860,6 @@ class SeasonPlanningService:
         concentration_penalty_terms: list[cp_model.IntVar] = []
         large_team_penalty_terms: list[cp_model.BoolVar] = []
         weekly_load_penalty_terms: list[cp_model.IntVar] = []
-        slack_reward_terms: list[cp_model.IntVar] = []
 
         for v in visits:
             if not v.protocol_visit_windows:
@@ -1631,7 +1627,6 @@ class SeasonPlanningService:
             skill = SeasonPlanningService._get_required_user_flag(v)
 
             chosen_week: int | None = None
-            chosen_days: int | None = None
 
             existing_week = getattr(v, "provisional_week", None)
             if existing_week is not None:
@@ -1669,7 +1664,6 @@ class SeasonPlanningService:
                                 >= demand
                             ):
                                 chosen_week = existing_week_int
-                                chosen_days = existing_days
                                 greedy_existing += 1
 
             for w, days in sorted(visit_candidates.get(v_id, []), key=lambda x: x[0]):
@@ -1694,7 +1688,6 @@ class SeasonPlanningService:
                         continue
 
                 chosen_week = w
-                chosen_days = days
                 break
 
             if chosen_week is None:

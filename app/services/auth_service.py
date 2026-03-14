@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import secrets
+import string
 from typing import Any, Dict
 
 import jwt
+from passlib.context import CryptContext
 
 from core.settings import get_settings
 
@@ -76,12 +79,6 @@ def decode_token(token: str) -> Dict[str, Any]:
         options={"require": ["exp", "sub"]},
     )
 
-
-# --- Password & Token Utils ---
-
-from passlib.context import CryptContext
-import secrets
-import string
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

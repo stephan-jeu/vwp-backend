@@ -1,6 +1,6 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
-from httpx import AsyncClient, ASGITransport
+from unittest.mock import AsyncMock
+from httpx import AsyncClient
 
 from app.models.user import User
 from app.models.availability import AvailabilityWeek

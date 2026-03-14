@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Sequence
 from datetime import date
 
-from sqlalchemy import select, and_, or_, delete
+from sqlalchemy import select, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.availability_pattern import AvailabilityPattern

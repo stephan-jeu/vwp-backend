@@ -11,7 +11,6 @@ from sqlalchemy.orm import selectinload
 from app.models.activity_log import ActivityLog
 from app.models.visit import Visit
 from app.models.cluster import Cluster
-from app.models.user import User
 from app.schemas.planning import PlanningVisitRead, PlanningGenerateRequest
 from app.deps import AdminDep, DbDep
 from app.db.utils import select_active
@@ -157,7 +156,6 @@ async def generate_planning(
 
     # Post-planning Sanitization: Check for future conflicts
     from app.services.visit_sanitization import sanitize_future_planning
-    from core.settings import get_settings
 
     sanitized = await sanitize_future_planning(
         db, week_monday, result.get("selected_visit_ids", [])

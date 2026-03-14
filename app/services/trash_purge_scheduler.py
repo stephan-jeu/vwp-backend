@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import traceback
 
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
 from app.services.admin_email_service import send_admin_alert_email

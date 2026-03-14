@@ -5,7 +5,6 @@ Revises: 20260219_02
 Create Date: 2026-02-19
 """
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "20260219_03"

@@ -2,7 +2,6 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import select
 
 from app.models.visit import Visit
 from app.models.user import User

@@ -50,11 +50,59 @@ DAYPART_TO_AVAIL_FIELD = {
     "Avond": "nighttime_days",
 }
 
-SPARE_BY_DAYPART = {
-    "Ochtend": 1,
-    "Dag": 2,
-    "Avond": 2,
-}
+
+def _parse_spare_capacity_by_daypart(raw: str) -> dict[str, int]:
+    """Parse spare capacity per daypart from an env var string.
+
+    The accepted format is a comma-separated list of `Daypart:count` pairs.
+    Example: `Ochtend:1,Dag:2,Avond:2`.
+
+    Args:
+        raw: Raw env var value.
+
+    Returns:
+        Mapping of daypart label to non-negative spare capacity.
+    """
+
+    parsed: dict[str, int] = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        key = key.strip()
+        val = val.strip()
+        try:
+            num = int(val)
+        except ValueError:
+            continue
+        parsed[key] = max(0, num)
+    return parsed
+
+
+def _get_spare_capacity_by_daypart() -> dict[str, int]:
+    """Return the configured spare capacity per daypart.
+
+    Reads `SPARE_CAPACITY_BY_DAYPART` from the environment. For backwards
+    compatibility, falls back to `SPARE_BY_DAYPART` when the new variable is
+    unset.
+
+    Returns:
+        Mapping for the standard dayparts ("Ochtend", "Dag", "Avond"). Missing
+        keys default to 0.
+    """
+
+    raw = os.getenv("SPARE_CAPACITY_BY_DAYPART")
+    if raw is None:
+        raw = os.getenv("SPARE_BY_DAYPART", "")
+
+    spare = {
+        "Ochtend": 0,
+        "Dag": 0,
+        "Avond": 0,
+    }
+    spare.update(_parse_spare_capacity_by_daypart(raw))
+    return spare
 
 
 def _end_of_work_week(week_monday: date) -> date:
@@ -248,9 +296,10 @@ async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
         total_flex = sum(r.flex_days or 0 for r in rows)
 
     # Apply spare capacity caps (cannot go below zero)
-    total_morning = max(0, total_morning - SPARE_BY_DAYPART["Ochtend"])
-    total_daytime = max(0, total_daytime - SPARE_BY_DAYPART["Dag"])
-    total_night = max(0, total_night - SPARE_BY_DAYPART["Avond"])
+    spare = _get_spare_capacity_by_daypart()
+    total_morning = max(0, total_morning - spare["Ochtend"])
+    total_daytime = max(0, total_daytime - spare["Dag"])
+    total_night = max(0, total_night - spare["Avond"])
 
     return {
         "Ochtend": total_morning,
@@ -1335,7 +1384,9 @@ def _apply_gz_remark(visit: Visit) -> None:
     # Remove any existing GZ-gedeelte remark (old static or previous dynamic run)
     existing = visit.remarks_field or ""
     cleaned = re.sub(r"[^\n]*voor GZ-gedeelte[^\n]*\n?", "", existing).strip()
-    visit.remarks_field = (cleaned + "\n" + new_remark).strip() if cleaned else new_remark
+    visit.remarks_field = (
+        (cleaned + "\n" + new_remark).strip() if cleaned else new_remark
+    )
 
 
 async def select_visits_for_week(

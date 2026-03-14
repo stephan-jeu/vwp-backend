@@ -3,20 +3,15 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import date, timedelta
-import smtplib
 from email.message import EmailMessage
 
 from sqlalchemy import select, and_
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy.engine import Row
 
 from core.settings import get_settings
 from app.models.visit import Visit
 from app.models.cluster import Cluster
 from app.models.user import User
-from app.models.function import Function
-from app.models.species import Species
-from app.services.email_service import send_email
 
 logger = logging.getLogger(__name__)
 

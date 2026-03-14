@@ -1,4 +1,3 @@
-from datetime import date
 from typing import Optional
 
 from sqlalchemy import Select, and_, func, or_, select
@@ -17,7 +16,6 @@ from app.models.visit import (
     visit_researchers,
     visit_species,
 )
-from app.services.visit_status_service import VisitStatusCode
 
 
 def apply_visit_filters(
