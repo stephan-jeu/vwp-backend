@@ -2028,7 +2028,11 @@ class SeasonPlanningService:
         year = start_date.year
         avail_map = await SeasonPlanningService._load_availability_map(db, year)
         return SeasonPlanningService._build_capacity_grid(
-            start_date, visits, users, avail_map
+            start_date,
+            visits,
+            users,
+            avail_map,
+            strict_availability=get_settings().feature_strict_availability,
         )
 
     @staticmethod
@@ -2069,7 +2073,12 @@ class SeasonPlanningService:
             d.visit_id for d in diagnostics if d.action == "planning_season_unscheduled"
         )
         result = SeasonPlanningService._build_capacity_grid(
-            start_date, visits, users, avail_map, unschedulable_ids=unschedulable_ids
+            start_date,
+            visits,
+            users,
+            avail_map,
+            unschedulable_ids=unschedulable_ids,
+            strict_availability=get_settings().feature_strict_availability,
         )
 
         visit_by_id = {v.id: v for v in visits}
@@ -2105,6 +2114,7 @@ class SeasonPlanningService:
         users: list[User],
         avail_map: dict[tuple[int, int], AvailabilityWeek],
         unschedulable_ids: frozenset[int] | None = None,
+        strict_availability: bool = False,
     ) -> CapacitySimulationResponse:
         """Build a capacity grid based on visits and availability.
 
@@ -2338,42 +2348,69 @@ class SeasonPlanningService:
                 lbl = f"{skill} - {part}"
                 week_view_rows.setdefault(lbl, {})
 
+        # Aggregate planned visits per part-of-day across all skills (for strict totals rows)
+        planned_total_by_part_week: dict[str, dict[str, int]] = {}
+        if strict_availability:
+            for _skill, parts_data in planned_by_skill_part.items():
+                for _part, weeks_data in parts_data.items():
+                    planned_total_by_part_week.setdefault(_part, {})
+                    for _wiso, _count in weeks_data.items():
+                        planned_total_by_part_week[_part][_wiso] = (
+                            planned_total_by_part_week[_part].get(_wiso, 0) + _count
+                        )
+
         for w in horizon_weeks:
             week_iso = f"{year}-W{w:02d}"
 
             # Sum all users' days directly — summing per-skill supply would double-count
             # users who have multiple skills.
             global_days = 0
+            global_morning = 0
+            global_daytime = 0
+            global_nighttime = 0
             for u in users:
                 aw = avail_map.get((u.id, w))
-                global_days += (
-                    (
-                        (aw.morning_days or 0)
-                        + (aw.daytime_days or 0)
-                        + (aw.nighttime_days or 0)
-                        + (aw.flex_days or 0)
-                    )
-                    if aw
-                    else 0
-                )
+                if aw:
+                    _m = aw.morning_days or 0
+                    _d = aw.daytime_days or 0
+                    _n = aw.nighttime_days or 0
+                    _f = aw.flex_days or 0
+                    global_days += _m + _d + _n + _f
+                    global_morning += _m + _f
+                    global_daytime += _d + _f
+                    global_nighttime += _n + _f
 
             total_supply_w = global_days
 
             # Total Demand
             total_demand_w = demand_by_week.get(w, 0)
 
-            # Totalen Row
-            if "Totalen" not in week_view_rows:
-                week_view_rows["Totalen"] = {}
-            week_view_rows["Totalen"][week_iso] = {
-                "spare": max(0, total_supply_w - planned_total_by_week.get(w, 0)),
-                "planned": min(planned_total_by_week.get(w, 0), total_supply_w),
-                "shortage": max(0, total_demand_w - total_supply_w),
-            }
+            # Totalen row(s): per-part when strict_availability, single total otherwise
+            if strict_availability:
+                for part_label, part_supply_w in (
+                    ("Ochtend", global_morning),
+                    ("Dag", global_daytime),
+                    ("Avond", global_nighttime),
+                ):
+                    row_key = f"Totalen - {part_label}"
+                    week_view_rows.setdefault(row_key, {})
+                    planned_w = planned_total_by_part_week.get(part_label, {}).get(week_iso, 0)
+                    week_view_rows[row_key][week_iso] = {
+                        "spare": max(0, part_supply_w - planned_w),
+                        "planned": min(planned_w, part_supply_w),
+                        "shortage": 0,
+                    }
+            else:
+                week_view_rows.setdefault("Totalen", {})
+                week_view_rows["Totalen"][week_iso] = {
+                    "spare": max(0, total_supply_w - planned_total_by_week.get(w, 0)),
+                    "planned": min(planned_total_by_week.get(w, 0), total_supply_w),
+                    "shortage": max(0, total_demand_w - total_supply_w),
+                }
 
             # Per-skill spare: Supply(Skill) - Demand(Skill), backfilled into each row
             for row_key in week_view_rows:
-                if row_key == "Totalen":
+                if row_key.startswith("Totalen"):
                     continue
                 if " - " not in row_key:
                     continue
