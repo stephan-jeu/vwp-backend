@@ -127,6 +127,25 @@ class Settings(BaseModel):
         )
     )
 
+    # Feature: Huismus pair planning (same-day double visit in nearby cluster)
+    # When enabled, the weekly solver tries to pair a Huismus visit with a second
+    # Huismus visit from a nearby cluster (within huismus_pairing_max_travel_minutes).
+    # The pair counts as 1 capacity unit for the assigned researcher.
+    feature_huismus_pairing: bool = Field(
+        default_factory=lambda: os.getenv(
+            "FEATURE_HUISMUS_PAIRING", "false"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+    huismus_pairing_max_travel_minutes: int = Field(
+        default_factory=lambda: int(
+            os.getenv("HUISMUS_PAIRING_MAX_TRAVEL_MINUTES", "20")
+        )
+    )
+    huismus_pairing_bonus: int = Field(
+        default_factory=lambda: int(os.getenv("HUISMUS_PAIRING_BONUS", "5000"))
+    )
+
     # Seasonal planner scheduler
     season_planner_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(

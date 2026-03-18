@@ -16,6 +16,28 @@ from core.settings import get_settings
 _logger = logging.getLogger("uvicorn.error")
 
 
+def _full_addr_for_travel_time(cluster) -> str | None:
+    """Return the canonical address string used for travel-time lookups.
+
+    For coordinate-based addresses (decimal or DMS), the address is returned
+    as-is. For street addresses the project location is appended so that the
+    geocoder can resolve them unambiguously.
+    """
+    addr = getattr(cluster, "address", None)
+    if not addr:
+        return None
+    addr = addr.strip()
+    is_coords = bool(
+        re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
+        or re.match(r"^\d+°", addr)
+    )
+    if not is_coords:
+        loc = getattr(getattr(cluster, "project", None), "location", None)
+        if loc:
+            addr = f"{addr}, {loc}"
+    return addr
+
+
 class WeeklyPlanningDiagnostic(NamedTuple):
     """Diagnostic entry for a visit skipped during weekly planning."""
 
@@ -261,6 +283,21 @@ async def select_visits_cp_sat(
             db, week, user_caps, user_daypart_caps
         )
 
+    # Huismus pairing: load Pool 2 candidates (future provisional_week but window
+    # overlaps this week). These are only scheduled as the second visit of a pair.
+    _pairing_only_visit_ids: set[int] = set()
+    if get_settings().feature_huismus_pairing and include_travel_time and db and not isinstance(db, list):
+        from app.services.visit_planning_selection import _load_huismus_pairing_candidates
+        pairing_cands = await _load_huismus_pairing_candidates(db, week_monday, week)
+        existing_ids = {v.id for v in visits}
+        new_cands = [v for v in pairing_cands if v.id not in existing_ids]
+        _pairing_only_visit_ids = {v.id for v in new_cands if v.id is not None}
+        visits = list(visits) + new_cands
+        if new_cands:
+            _logger.info(
+                "huismus_pairing: loaded %d Pool-2 pairing candidates", len(new_cands)
+            )
+
     # Filter out visits with no daypart
     # AND enforce "Sequential Order": If multiple visits for same protocol are present,
     # keep only the one with the Lowest visit_index.
@@ -371,6 +408,11 @@ async def select_visits_cp_sat(
     v_map = {i: v for i, v in enumerate(visits)}
     u_map = {i: u for i, u in enumerate(users)}
 
+    # Identify pairing-only indices (Pool 2 Huismus candidates)
+    pairing_only_indices: set[int] = {
+        i for i, v in v_map.items() if getattr(v, "id", None) in _pairing_only_visit_ids
+    }
+
     # Pre-fetch cluster-to-cluster travel times for consecutive-daypart proximity
     # constraint (strict availability mode only).
     # Consecutive pairs: Ochtend→Dag and Dag→Avond (same day), Avond→Ochtend (overnight).
@@ -383,21 +425,6 @@ async def select_visits_cp_sat(
 
         _consec_pairs: list[tuple[str, str]] = []
         _consec_pair_indices: dict[tuple[str, str], list[tuple[int, int]]] = {}
-
-        def _full_addr_for_travel_time(cluster) -> str | None:
-            addr = getattr(cluster, "address", None)
-            if not addr:
-                return None
-            addr = addr.strip()
-            is_coords = bool(
-                re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
-                or re.match(r"^\d+°", addr)
-            )
-            if not is_coords:
-                loc = getattr(getattr(cluster, "project", None), "location", None)
-                if loc:
-                    addr = f"{addr}, {loc}"
-            return addr
 
         for i1, v1 in v_map.items():
             p1 = (getattr(v1, "part_of_day", None) or "").strip()
@@ -439,6 +466,9 @@ async def select_visits_cp_sat(
     # Use a large base.
     BASE_REWARD = 10000
     visit_weights = {i: BASE_REWARD + (len(visits) - i) * 100 for i in v_map}
+    # Pool 2 (pairing-only) visits have no independent reward — only the pairing bonus
+    for i in pairing_only_indices:
+        visit_weights[i] = 0
 
     # --- Constraints ---
 
@@ -493,6 +523,131 @@ async def select_visits_cp_sat(
         else:
             model.Add(scheduled[i] == 0)
 
+    # 2c-pre. Huismus pairing variables (feature_huismus_pairing).
+    #
+    # pair_saves[i1, i2, j]: BoolVar — 1 when researcher j executes both Huismus
+    # visits i1 (Pool 1) and i2 (Pool 2) on the same day.  Each active pair saves
+    # 1 capacity unit for the researcher (the pair counts as a single visit).
+    pair_saves: dict[tuple, object] = {}
+    pair_day_active: dict[tuple, object] = {}  # (i1, i2, j, d) → BoolVar, 1 when pair active on day d
+    valid_huismus_pair_indices: list[tuple[int, int]] = []
+    pool2_pair_indices: set[tuple[int, int]] = set()  # subset where i2 is a Pool-2 visit (gets cap saving)
+
+    if get_settings().feature_huismus_pairing:
+        from app.services.visit_planning_selection import _is_huismus_nest_visit as _is_huismus_v
+
+        pool1_huismus: set[int] = {
+            i for i, v in v_map.items()
+            if i not in pairing_only_indices and _is_huismus_v(v)
+        }
+
+        # Fetch cluster-to-cluster travel times for all candidate pairs:
+        #   - Pool1 × Pool2  (bring a future-week visit into the current week)
+        #   - Pool1 × Pool1  (two visits already in the current-week pool → same-day bonus)
+        max_travel = get_settings().huismus_pairing_max_travel_minutes
+        _h_pair_addr_map: dict[tuple, list[tuple[int, int]]] = {}
+        _h_pairs_to_fetch: list[tuple[str, str]] = []
+
+        def _enqueue_huismus_pair(i1: int, i2: int) -> None:
+            v1 = v_map[i1]
+            v2 = v_map[i2]
+            p1 = (getattr(v1, "part_of_day", None) or "").strip()
+            p2 = (getattr(v2, "part_of_day", None) or "").strip()
+            if p1 != p2 or not p1:
+                return  # Must be the same daypart
+            addr1 = _full_addr_for_travel_time(getattr(v1, "cluster", None))
+            addr2 = _full_addr_for_travel_time(getattr(v2, "cluster", None))
+            if not addr1 or not addr2:
+                return
+            key = (addr1, addr2)
+            _h_pairs_to_fetch.append(key)
+            _h_pair_addr_map.setdefault(key, []).append((i1, i2))
+
+        # Pool1 × Pool2 pairs
+        for i1 in pool1_huismus:
+            for i2 in pairing_only_indices:
+                _enqueue_huismus_pair(i1, i2)
+
+        # Pool1 × Pool1 pairs (both visits already in the regular pool)
+        pool1_list = sorted(pool1_huismus)
+        for idx_a, i1 in enumerate(pool1_list):
+            for i2 in pool1_list[idx_a + 1:]:
+                _enqueue_huismus_pair(i1, i2)
+
+        if _h_pairs_to_fetch:
+            from app.services import travel_time as _tt_h
+            _h_travel = await _tt_h.get_travel_minutes_batch(_h_pairs_to_fetch, db=db)
+            for key, mins in _h_travel.items():
+                if mins <= max_travel:
+                    for (i1, i2) in _h_pair_addr_map.get(key, []):
+                        valid_huismus_pair_indices.append((i1, i2))
+                        if i2 in pairing_only_indices:
+                            pool2_pair_indices.add((i1, i2))
+
+        _logger.info(
+            "huismus_pairing: %d Pool-1 Huismus, %d Pool-2 candidates, %d valid pairs (≤%d min)",
+            len(pool1_huismus),
+            len(pairing_only_indices),
+            len(valid_huismus_pair_indices),
+            max_travel,
+        )
+
+        # Create pair_saves[i1, i2, j] for every valid pair × every user
+        for (i1, i2) in valid_huismus_pair_indices:
+            for j in u_map:
+                if (i1, j) not in x or (i2, j) not in x:
+                    continue
+                ps = model.NewBoolVar(f"hps_{i1}_{i2}_{j}")
+                pair_saves[i1, i2, j] = ps
+
+                day_vars_for_pair = []
+                for d in range(5):
+                    if (i1, j, d) not in active_assignment or (i2, j, d) not in active_assignment:
+                        continue
+                    pad = model.NewBoolVar(f"hpad_{i1}_{i2}_{j}_{d}")
+                    # pad ⟺ active_assignment[i1,j,d] ∧ active_assignment[i2,j,d]
+                    model.AddBoolAnd(
+                        [active_assignment[i1, j, d], active_assignment[i2, j, d]]
+                    ).OnlyEnforceIf(pad)
+                    model.AddBoolOr(
+                        [active_assignment[i1, j, d].Not(), active_assignment[i2, j, d].Not()]
+                    ).OnlyEnforceIf(pad.Not())
+                    pair_day_active[i1, i2, j, d] = pad
+                    day_vars_for_pair.append(pad)
+
+                if day_vars_for_pair:
+                    model.AddBoolOr(day_vars_for_pair).OnlyEnforceIf(ps)
+                    model.AddBoolAnd([dv.Not() for dv in day_vars_for_pair]).OnlyEnforceIf(
+                        ps.Not()
+                    )
+                else:
+                    model.Add(ps == 0)
+
+        # At most 1 researcher can activate a given pair (implied by visit-assignment
+        # uniqueness, but stating it explicitly lets CP-SAT tighten its bound fast and
+        # prevents objective inflation from per-researcher pair_saves variables).
+        for (i1, i2) in valid_huismus_pair_indices:
+            pair_vars_for_pair = [
+                pair_saves[i1, i2, j] for j in u_map if (i1, i2, j) in pair_saves
+            ]
+            if len(pair_vars_for_pair) > 1:
+                model.Add(sum(pair_vars_for_pair) <= 1)
+
+        # Pool 2 visits may ONLY be scheduled as part of a valid pair
+        for i2 in pairing_only_indices:
+            pair_vars_for_i2 = [
+                pair_saves[i1, pi2, j]
+                for (i1, pi2) in valid_huismus_pair_indices
+                if pi2 == i2
+                for j in u_map
+                if (i1, pi2, j) in pair_saves
+            ]
+            if pair_vars_for_i2:
+                model.Add(scheduled[i2] <= sum(pair_vars_for_i2))
+            else:
+                # No valid pool-1 partner found → cannot schedule
+                model.Add(scheduled[i2] == 0)
+
     # 2c. User Capacity Constraints
 
     # Helper: ensure assigning to allowed days only (Strict Mode)
@@ -506,7 +661,18 @@ async def select_visits_cp_sat(
         # Weekly Max
         cap_max = user_caps.get(uid, 0)
         user_assignments = [x.get((i, j)) for i in v_map if (i, j) in x]
-        model.Add(sum(user_assignments) <= cap_max)
+        # Each active Huismus pair saves 1 capacity unit: two visits done together on the
+        # same day count as 1 slot.  The per-day limit (sum(h_pairs_this_day) <= 1) already
+        # caps savings at 1 per day, so this is safe for both Pool1×Pool2 and Pool1×Pool1.
+        user_pair_saves = [
+            pair_saves[i1, i2, j]
+            for (i1, i2) in valid_huismus_pair_indices
+            if (i1, i2, j) in pair_saves
+        ]
+        if user_pair_saves:
+            model.Add(sum(user_assignments) - sum(user_pair_saves) <= cap_max)
+        else:
+            model.Add(sum(user_assignments) <= cap_max)
 
         # Daypart Max & Flex
         dp_caps = user_daypart_caps.get(uid, {})
@@ -530,7 +696,18 @@ async def select_visits_cp_sat(
             flex_alloc[j, part] = fa
             total_flex_usage.append(fa)
 
-            model.Add(sum(part_assignments) <= dedicated + fa)
+            # Each active pair saves 1 daypart slot (bounded by per-day pair limit)
+            part_pair_saves = [
+                pair_saves[i1, i2, j]
+                for (i1, i2) in valid_huismus_pair_indices
+                if (i1, i2, j) in pair_saves
+                and getattr(v_map[i1], "part_of_day", None) == part
+                and getattr(v_map[i2], "part_of_day", None) == part
+            ]
+            if part_pair_saves:
+                model.Add(sum(part_assignments) - sum(part_pair_saves) <= dedicated + fa)
+            else:
+                model.Add(sum(part_assignments) <= dedicated + fa)
 
         if total_flex_usage:
             model.Add(sum(total_flex_usage) <= flex_max)
@@ -572,9 +749,21 @@ async def select_visits_cp_sat(
                 if (i, j, d) in active_assignment
             ]
             if active_vars:
-                model.Add(sum(active_vars) <= max_visits_per_day)
+                # Allow 1 extra visit if there is exactly 1 active Huismus pair on this day.
+                # We cap the bonus at 1 (a researcher may have at most 1 pair per day).
+                h_pairs_this_day = [
+                    pair_day_active[i1, i2, j, d]
+                    for (i1, i2) in valid_huismus_pair_indices
+                    if (i1, i2, j, d) in pair_day_active
+                ]
+                if h_pairs_this_day:
+                    model.Add(sum(h_pairs_this_day) <= 1)  # at most 1 pair per researcher per day
+                    model.Add(sum(active_vars) <= max_visits_per_day + sum(h_pairs_this_day))
+                else:
+                    model.Add(sum(active_vars) <= max_visits_per_day)
 
             # 2. Strict Daypart Exclusion: At most 1 visit per daypart per day
+            # (relaxed for Huismus pairs: two paired visits in the same daypart count as 1)
             for part in part_labels:
                 part_active_vars = [
                     active_assignment[i, j, d]
@@ -583,7 +772,17 @@ async def select_visits_cp_sat(
                     and getattr(v_map[i], "part_of_day", None) == part
                 ]
                 if part_active_vars:
-                    model.Add(sum(part_active_vars) <= 1)
+                    h_pairs_this_daypart = [
+                        pair_day_active[i1, i2, j, d]
+                        for (i1, i2) in valid_huismus_pair_indices
+                        if (i1, i2, j, d) in pair_day_active
+                        and getattr(v_map[i1], "part_of_day", None) == part
+                    ]
+                    if h_pairs_this_daypart:
+                        model.Add(sum(h_pairs_this_daypart) <= 1)  # at most 1 pair per daypart per day
+                        model.Add(sum(part_active_vars) <= 1 + sum(h_pairs_this_daypart))
+                    else:
+                        model.Add(sum(part_active_vars) <= 1)
 
     # 2e. Consecutive-daypart proximity constraint (strict availability mode only).
     # When a researcher is assigned two visits in consecutive dayparts — either on
@@ -727,6 +926,14 @@ async def select_visits_cp_sat(
                         model.Add(x[i, j] == 0)
                         continue
                     obj_terms.append(x[i, j] * -(cost * TRAVEL_TIME_WEIGHT))
+
+    # Huismus pairing bonus: reward the solver for forming a valid Huismus pair
+    if valid_huismus_pair_indices and pair_saves:
+        HUISMUS_PAIR_BONUS = get_settings().huismus_pairing_bonus
+        for (i1, i2) in valid_huismus_pair_indices:
+            for j in u_map:
+                if (i1, i2, j) in pair_saves:
+                    obj_terms.append(pair_saves[i1, i2, j] * HUISMUS_PAIR_BONUS)
 
     # Load Balancing Penalty (Quadratic)
     # For each user, sum of assignments^2
@@ -1316,6 +1523,10 @@ async def select_visits_cp_sat(
                 else:
                     skip_reason[v.id] = "capaciteitsgebrek"
             skipped_visits.append(v)
+
+    # Remove Pool-2 (pairing-only) visits from skipped: they are not regular visits
+    # and should not generate planning diagnostics when they end up unscheduled.
+    skipped_visits = [v for v in skipped_visits if getattr(v, "id", None) not in _pairing_only_visit_ids]
 
     # 5. Build diagnostics
     diagnostics: list[WeeklyPlanningDiagnostic] = []

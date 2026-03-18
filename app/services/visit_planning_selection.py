@@ -21,6 +21,7 @@ from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.species import Species
 from app.models.family import Family
+from app.models.function import Function
 from app.models.availability import AvailabilityWeek
 from app.models.user import User
 from app.services.visit_status_service import (
@@ -559,6 +560,79 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
         filtered.append(v)
 
     return filtered
+
+
+def _is_huismus_visit(v: Visit) -> bool:
+    """Return True if the visit has at least one Huismus-family species."""
+    for sp in v.species or []:
+        fam_name = (
+            getattr(getattr(sp, "family", None), "name", None) or ""
+        ).strip().lower()
+        if fam_name == "huismus":
+            return True
+    return False
+
+
+_HUISMUS_NEST_FUNCTIONS = {"Nest", "Nest en FL"}
+
+
+def _is_huismus_nest_visit(v: Visit) -> bool:
+    """Return True if the visit has Huismus-family species AND function is 'Nest' or 'Nest en FL'.
+
+    Used by the Huismus-pairing feature to restrict pairing to the relevant visit types.
+    """
+    fn = _first_function_name(v)
+    if fn not in _HUISMUS_NEST_FUNCTIONS:
+        return False
+    return _is_huismus_visit(v)
+
+
+async def _load_huismus_pairing_candidates(
+    db: AsyncSession, week_monday: date, week_num: int
+) -> list[Visit]:
+    """Load Huismus visits eligible for pairing but outside the regular solver pool.
+
+    These are open Huismus visits whose date window overlaps with the current week
+    but whose provisional_week is in the future (> week_num). They have no assigned
+    researchers. The solver may pull them into the current week exclusively as the
+    second visit of a Huismus pair.
+    """
+    week_friday = _end_of_work_week(week_monday)
+
+    stmt = (
+        select_active(Visit)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id)
+        .where(
+            and_(
+                Visit.from_date <= week_friday,
+                Visit.to_date >= week_monday,
+                Project.quote.is_(False),
+                # Only visits provisionally planned for a FUTURE week
+                Visit.provisional_week > week_num,
+                # Not yet assigned
+                or_(Visit.planned_week.is_(None), ~Visit.researchers.any()),
+                # Not custom visits
+                Visit.custom_function_name.is_(None),
+                Visit.custom_species_name.is_(None),
+                # Only Huismus family
+                Visit.species.any(
+                    Species.family.has(Family.name.ilike("huismus"))
+                ),
+                # Only 'Nest' or 'Nest en FL' function visits
+                Visit.functions.any(Function.name.in_(["Nest", "Nest en FL"])),
+            )
+        )
+        .options(
+            selectinload(Visit.functions),
+            selectinload(Visit.species).selectinload(Species.family),
+            selectinload(Visit.researchers),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.protocol_visit_windows),
+        )
+    )
+
+    return (await db.execute(stmt)).scalars().unique().all()
 
 
 def _consume_capacity(caps: dict, part: str, required: int) -> bool:
