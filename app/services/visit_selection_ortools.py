@@ -276,6 +276,42 @@ async def select_visits_cp_sat(
     if user_daypart_caps is None:
         user_daypart_caps = await _load_user_daypart_capacities(db, week)
 
+    # Pre-blocked day slots: researcher × day-index × daypart combinations that are
+    # already occupied by a visit outside the solver pool (planning_locked or otherwise
+    # already assigned with a concrete planned_date).  The OR-Tools daily constraint
+    # only sees visits in v_map; without this, the solver can assign a second visit to
+    # the same researcher on the same day/daypart as an already-locked visit.
+    # Maps (researcher_id, day_index 0-4, daypart) -> True
+    pre_blocked_slots: set[tuple[int, int, str]] = set()
+    if db and not isinstance(db, list) and not ignore_existing_assignments:
+        from sqlalchemy import select as _sa_select
+        from sqlalchemy.orm import selectinload as _sil
+        from app.models.visit import Visit as _Visit
+
+        _preplanned_stmt = (
+            _sa_select(_Visit)
+            .where(
+                _Visit.planned_week == week,
+                _Visit.planned_date.isnot(None),
+            )
+            .options(_sil(_Visit.researchers))
+        )
+        _preplanned: list = (await db.execute(_preplanned_stmt)).scalars().unique().all()
+        for _pv in _preplanned:
+            _pdate = getattr(_pv, "planned_date", None)
+            if _pdate is None:
+                continue
+            _d_idx = (_pdate - week_monday).days
+            if _d_idx < 0 or _d_idx > 4:
+                continue
+            _part = (getattr(_pv, "part_of_day", "") or "").strip()
+            if not _part:
+                continue
+            for _pu in getattr(_pv, "researchers", []) or []:
+                _uid = getattr(_pu, "id", None)
+                if _uid is not None:
+                    pre_blocked_slots.add((_uid, _d_idx, _part))
+
     if (
         db and not isinstance(db, list) and not ignore_existing_assignments
     ):  # Hack: avoid calling valid db ops if it's a list (test mock)
@@ -741,6 +777,7 @@ async def select_visits_cp_sat(
     # In strict availability mode researchers may do 2 visits per day (double visits).
     max_visits_per_day = 2 if get_settings().feature_strict_availability else 1
     for j in u_map:
+        uid = getattr(u_map[j], "id", None)
         for d in range(5):
             # 1. Total visits per day limit
             active_vars = [
@@ -772,6 +809,12 @@ async def select_visits_cp_sat(
                     and getattr(v_map[i], "part_of_day", None) == part
                 ]
                 if part_active_vars:
+                    # If this researcher already has a pre-planned (locked) visit on
+                    # this day in this daypart, forbid any solver visit here entirely.
+                    if uid is not None and (uid, d, part) in pre_blocked_slots:
+                        for var in part_active_vars:
+                            model.Add(var == 0)
+                        continue
                     h_pairs_this_daypart = [
                         pair_day_active[i1, i2, j, d]
                         for (i1, i2) in valid_huismus_pair_indices
