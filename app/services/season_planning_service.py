@@ -747,6 +747,15 @@ class SeasonPlanningService:
                 min_gap_days = val
             return math.ceil(min_gap_days / 7) if min_gap_days > 0 else 0
 
+        def _compute_june_weeks(y: int) -> set[int]:
+            """Return ISO week numbers that contain at least one day in June for year y."""
+            june_weeks: set[int] = set()
+            d = date(y, 6, 1)
+            while d.month == 6:
+                june_weeks.add(d.isocalendar().week)
+                d += timedelta(days=1)
+            return june_weeks
+
         def _visit_start(v: Visit) -> date:
             """Return the visit start date used for ordering constraints.
 
@@ -956,6 +965,51 @@ class SeasonPlanningService:
                         model.Add(w2 > w1).OnlyEnforceIf([a1, a2])
                         if gap_weeks > 0:
                             model.Add(w2 >= w1 + gap_weeks).OnlyEnforceIf([a1, a2])
+
+                        # June-visit constraint: at least one of the two visits must land
+                        # in a week that contains a day in June.
+                        proto_obj = protocols_1[pid]
+                        if getattr(proto_obj, "requires_june_visit", False):
+                            june_weeks = _compute_june_weeks(year)
+
+                            cands_e = sorted(
+                                w
+                                for w, _ in visit_candidates.get(earlier.id, [])
+                                if w > 0 and w in june_weeks
+                            )
+                            cands_l = sorted(
+                                w
+                                for w, _ in visit_candidates.get(later.id, [])
+                                if w > 0 and w in june_weeks
+                            )
+
+                            in_june_e = model.NewBoolVar(
+                                f"in_june_{earlier.id}_{pid}"
+                            )
+                            in_june_l = model.NewBoolVar(
+                                f"in_june_{later.id}_{pid}"
+                            )
+
+                            if cands_e:
+                                model.AddLinearConstraint(
+                                    w1,
+                                    cp_model.Domain.FromValues(cands_e),
+                                ).OnlyEnforceIf(in_june_e)
+                            else:
+                                model.Add(in_june_e == 0)
+
+                            if cands_l:
+                                model.AddLinearConstraint(
+                                    w2,
+                                    cp_model.Domain.FromValues(cands_l),
+                                ).OnlyEnforceIf(in_june_l)
+                            else:
+                                model.Add(in_june_l == 0)
+
+                            # At least one must be scheduled in June (when both active).
+                            model.Add(in_june_e + in_june_l >= 1).OnlyEnforceIf(
+                                [a1, a2]
+                            )
 
                         # Predecessor room: discourage placing V2 so early that V1 has
                         # very few valid weeks to choose from.  This is the mirror image
