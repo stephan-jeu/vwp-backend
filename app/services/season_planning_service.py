@@ -992,16 +992,14 @@ class SeasonPlanningService:
 
                             if cands_e:
                                 model.AddLinearConstraint(
-                                    w1,
-                                    cp_model.Domain.FromValues(cands_e),
+                                    w1, min(cands_e), max(cands_e)
                                 ).OnlyEnforceIf(in_june_e)
                             else:
                                 model.Add(in_june_e == 0)
 
                             if cands_l:
                                 model.AddLinearConstraint(
-                                    w2,
-                                    cp_model.Domain.FromValues(cands_l),
+                                    w2, min(cands_l), max(cands_l)
                                 ).OnlyEnforceIf(in_june_l)
                             else:
                                 model.Add(in_june_l == 0)
