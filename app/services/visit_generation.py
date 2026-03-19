@@ -74,7 +74,7 @@ async def generate_visits_for_cluster(
         protocols = (await db.execute(stmt)).scalars().unique().all()
 
     # Delegate to CP-SAT solver implementation.
-    return await generate_visits_cp_sat(
+    visits, warnings = await generate_visits_cp_sat(
         db,
         cluster,
         protocols,
@@ -91,6 +91,9 @@ async def generate_visits_for_cluster(
         default_sleutel=default_sleutel,
         default_remarks_field=default_remarks_field,
     )
+    if visits:
+        await sync_cluster_pvw_links(db, cluster.id)
+    return visits, warnings
 
 
 async def resolve_protocols_for_combos(

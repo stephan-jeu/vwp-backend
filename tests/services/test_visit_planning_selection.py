@@ -909,6 +909,9 @@ async def _fake_db_with_users(users: list[Any]):
     class FakeResult:
         def scalars(self):
             class S:
+                def unique(self_non):
+                    return self_non
+
                 def all(self_non):
                     return users
 

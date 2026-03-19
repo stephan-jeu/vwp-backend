@@ -46,6 +46,23 @@ def week_monday() -> date:
 
 
 class DummyDB:
+    class _ScalarResult:
+        def unique(self) -> "DummyDB._ScalarResult":
+            return self
+
+        def all(self) -> list[Any]:
+            return []
+
+        def first(self) -> Any | None:
+            return None
+
+    class _Result:
+        def scalars(self) -> "DummyDB._ScalarResult":
+            return DummyDB._ScalarResult()
+
+    async def execute(self, _stmt: Any) -> "DummyDB._Result":
+        return DummyDB._Result()
+
     async def commit(self) -> None:  # pragma: no cover - trivial
         return None
 
