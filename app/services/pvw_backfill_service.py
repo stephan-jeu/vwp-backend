@@ -141,8 +141,9 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
 
     for cluster_visits_list in visits_by_cluster.values():
         counters: dict[tuple[int, int], int] = {}
-        # Track pvw IDs claimed via tie-breaking to avoid re-use within this cluster.
-        claimed_tie_pvws: dict[int, set[int]] = {}
+        # Track all pvw IDs already claimed by earlier visits in this cluster to
+        # prevent the same PVW from being assigned to more than one visit.
+        claimed_pvws: dict[int, set[int]] = {}
 
         for visit in cluster_visits_list:
             if visit.custom_function_name or visit.custom_species_name:
@@ -172,13 +173,14 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                     pvw_id = None
 
                     # Primary: match by date-window overlap (ignoring year).
-                    # This correctly handles clusters where multiple visits of the
-                    # same protocol share a date range rather than relying on
-                    # visit_nr position alone.
+                    # Prefer unclaimed PVWs; fall back to best overall only when
+                    # every candidate PVW has already been claimed by an earlier visit.
                     if visit.from_date and visit.to_date:
+                        already_claimed = claimed_pvws.get(protocol.id, set())
                         best_pvw_id = None
                         best_overlap = 0
-                        tied_pvws: list[ProtocolVisitWindow] = []
+                        best_unclaimed_pvw_id = None
+                        best_unclaimed_overlap = 0
                         for pvw in pvws:
                             if pvw.window_from and pvw.window_to:
                                 overlap = _month_day_overlap_days(
@@ -187,26 +189,17 @@ async def backfill_visit_protocol_visit_windows(session: AsyncSession) -> None:
                                     pvw.window_from,
                                     pvw.window_to,
                                 )
-                                if overlap > best_overlap:
-                                    best_overlap = overlap
-                                    best_pvw_id = pvw.id
-                                    tied_pvws = [pvw]
-                                elif overlap == best_overlap and overlap > 0:
-                                    tied_pvws.append(pvw)
-                        # Tiebreaker: when multiple pvws share the same best overlap
-                        # (e.g. identical windows), pick the first unclaimed pvw.
-                        if len(tied_pvws) > 1:
-                            already_claimed = claimed_tie_pvws.get(protocol.id, set())
-                            for pvw in tied_pvws:
-                                if pvw.id not in already_claimed:
-                                    best_pvw_id = pvw.id
-                                    break
-                        if best_pvw_id is not None:
-                            pvw_id = best_pvw_id
-                            if len(tied_pvws) > 1:
-                                claimed_tie_pvws.setdefault(protocol.id, set()).add(
-                                    pvw_id
-                                )
+                                if overlap > 0:
+                                    if pvw.id not in already_claimed and overlap > best_unclaimed_overlap:
+                                        best_unclaimed_overlap = overlap
+                                        best_unclaimed_pvw_id = pvw.id
+                                    if overlap > best_overlap:
+                                        best_overlap = overlap
+                                        best_pvw_id = pvw.id
+                        chosen = best_unclaimed_pvw_id if best_unclaimed_pvw_id is not None else best_pvw_id
+                        if chosen is not None:
+                            pvw_id = chosen
+                            claimed_pvws.setdefault(protocol.id, set()).add(chosen)
 
                     # Fallback: positional ordering (original behaviour) for visits
                     # that lack date windows or whose window matches no pvw.
