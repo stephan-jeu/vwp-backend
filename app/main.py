@@ -120,6 +120,7 @@ def create_app(allowed_origins: Sequence[str] | None = None) -> FastAPI:
             "https://vwp.bureau-viridis.nl",
             "https://viridis-demo.nextaimove.com",
             "https://habitus-vwp.nextaimove.com",
+            "https://veldplanning-viridis.nl"
         ]
     )
 
