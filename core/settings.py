@@ -279,6 +279,13 @@ class Settings(BaseModel):
     ms365_tenant_id: str = Field(
         default_factory=lambda: os.getenv("MS365_TENANT_ID", "common")
     )
+    ms365_redirect_uris: list[str] = Field(
+        default_factory=lambda: [
+            uri.strip()
+            for uri in os.getenv("MS365_REDIRECT_URIS", "").split(",")
+            if uri.strip()
+        ]
+    )
     ms365_redirect_uri: str = Field(
         default_factory=lambda: os.getenv(
             "MS365_REDIRECT_URI", "http://localhost:3000/auth/callback/ms365"
@@ -299,6 +306,30 @@ class Settings(BaseModel):
         uris = [uri for uri in self.google_redirect_uris if uri]
         if self.google_redirect_uri:
             uris.append(self.google_redirect_uri)
+        # Preserve order, de-duplicate
+        seen: set[str] = set()
+        out: list[str] = []
+        for uri in uris:
+            if uri in seen:
+                continue
+            seen.add(uri)
+            out.append(uri)
+        return out
+
+    @property
+    def effective_ms365_redirect_uris(self) -> list[str]:
+        """Return the effective list of allowed MS365 OAuth redirect URIs.
+
+        This combines the legacy single `MS365_REDIRECT_URI` with the optional
+        comma-separated list `MS365_REDIRECT_URIS` and de-duplicates entries
+        while preserving order.
+
+        Returns:
+            List of allowed redirect URIs.
+        """
+        uris = [uri for uri in self.ms365_redirect_uris if uri]
+        if self.ms365_redirect_uri:
+            uris.append(self.ms365_redirect_uri)
         # Preserve order, de-duplicate
         seen: set[str] = set()
         out: list[str] = []

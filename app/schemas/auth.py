@@ -10,6 +10,7 @@ class GoogleCallbackRequest(BaseModel):
 
 class MS365CallbackRequest(BaseModel):
     code: str
+    redirect_uri: str | None = None
 
 
 class LoginOptionResponse(BaseModel):

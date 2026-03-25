@@ -153,9 +153,19 @@ async def login_ms365(
             status_code=status.HTTP_404_NOT_FOUND, detail="MS365 login disabled"
         )
 
+    chosen_redirect_uri = redirect_uri or settings.ms365_redirect_uri
+    if (
+        settings.effective_ms365_redirect_uris
+        and chosen_redirect_uri not in settings.effective_ms365_redirect_uris
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri not allowed",
+        )
+
     params = {
         "client_id": settings.ms365_client_id,
-        "redirect_uri": redirect_uri or settings.ms365_redirect_uri,
+        "redirect_uri": chosen_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile offline_access User.Read",
         "response_mode": "query",
@@ -282,13 +292,23 @@ async def ms365_callback(
     """Exchange MS365 code for tokens."""
     settings = get_settings()
 
+    chosen_redirect_uri = callback_request.redirect_uri or settings.ms365_redirect_uri
+    if (
+        settings.effective_ms365_redirect_uris
+        and chosen_redirect_uri not in settings.effective_ms365_redirect_uris
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri not allowed",
+        )
+
     token_endpoint = f"https://login.microsoftonline.com/{settings.ms365_tenant_id}/oauth2/v2.0/token"
     # Note: client_secret must be a string for httpx payload
     data = {
         "code": callback_request.code,
         "client_id": settings.ms365_client_id,
         "client_secret": settings.ms365_client_secret.get_secret_value(),
-        "redirect_uri": settings.ms365_redirect_uri,
+        "redirect_uri": chosen_redirect_uri,
         "grant_type": "authorization_code",
     }
 
