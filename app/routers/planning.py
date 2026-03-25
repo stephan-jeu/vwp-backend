@@ -178,6 +178,7 @@ async def generate_planning(
             "skipped_visit_ids": result.get("skipped_visit_ids", []),
             "sanitized_future_visit_ids": sanitized,
             "capacity_remaining": result.get("capacity_remaining", {}),
+            "planning_warning": result.get("planning_warning"),
         },
     )
 

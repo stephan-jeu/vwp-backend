@@ -1620,4 +1620,5 @@ async def select_visits_for_week(
         "skipped_visit_ids": [v.id for v in effective_skipped],
         "capacity_remaining": caps,
         "day_assignments": day_assignments,
+        "planning_warning": result.planning_warning,
     }

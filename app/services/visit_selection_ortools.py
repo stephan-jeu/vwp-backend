@@ -66,6 +66,7 @@ class VisitSelectionResult(NamedTuple):
     remaining_caps: dict[str, int]  # Global daypart caps (approximate)
     day_assignments: dict[int, date] | None = None  # visit_id -> date
     diagnostics: list[WeeklyPlanningDiagnostic] = []  # Per-visit skip reasons
+    planning_warning: str | None = None  # Set when solution is WEAK but still usable
 
 
 def _generate_greedy_planning_solution(
@@ -1527,13 +1528,25 @@ async def select_visits_cp_sat(
         _logger.warning(msg)
         raise PlanningRunError(msg, technical_detail=msg)
 
-    if quality == "WEAK" and time_limit_reached:
+    if scheduled_count == 0:
         msg = (
-            "WeeklyPlanning CP-SAT solution rejected: quality=WEAK and time limit reached "
+            "WeeklyPlanning CP-SAT scheduled 0 visits "
             f"(status={solver.StatusName(status)} gap={gap:.4f} limit={timeout_seconds:.1f}s time={solver.WallTime():.2f}s)"
         )
         _logger.warning(msg)
         raise PlanningRunError(msg, technical_detail=msg)
+
+    planning_warning: str | None = None
+    if quality == "WEAK":
+        planning_warning = (
+            "De automatische planning was moeilijk te optimaliseren. "
+            "Controleer het resultaat zorgvuldig en pas eventueel handmatig aan."
+        )
+        _logger.warning(
+            "WeeklyPlanning CP-SAT solution is WEAK but accepted: "
+            "scheduled=%d gap=%.4f limit=%.1fs time=%.2fs",
+            scheduled_count, gap, timeout_seconds, solver.WallTime(),
+        )
 
     # 4. Extract Result
     selected_result = []
@@ -1617,4 +1630,5 @@ async def select_visits_cp_sat(
         remaining_caps={},  # Caller mostly ignores this for 'effective' logic
         day_assignments=day_assignments,
         diagnostics=diagnostics,
+        planning_warning=planning_warning,
     )
