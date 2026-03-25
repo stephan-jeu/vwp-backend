@@ -20,22 +20,36 @@ def _full_addr_for_travel_time(cluster) -> str | None:
     """Return the canonical address string used for travel-time lookups.
 
     For coordinate-based addresses (decimal or DMS), the address is returned
-    as-is. For street addresses the project location is appended so that the
-    geocoder can resolve them unambiguously.
+    as-is.  For street addresses the location is appended for unambiguous
+    geocoding: cluster.location takes precedence over project.location (the
+    same precedence used elsewhere in the codebase).
+
+    Address "-" (a common placeholder) is treated as absent.  If no usable
+    street address is present, the location alone is returned so that
+    city-level travel times can still be estimated.
     """
-    addr = getattr(cluster, "address", None)
-    if not addr:
-        return None
-    addr = addr.strip()
+    raw = (getattr(cluster, "address", None) or "").strip()
+    addr = raw if raw and raw != "-" else None
+
     is_coords = bool(
-        re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
-        or re.match(r"^\d+°", addr)
+        addr and (
+            re.match(r"^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$", addr)
+            or re.match(r"^\d+°", addr)
+        )
     )
-    if not is_coords:
-        loc = getattr(getattr(cluster, "project", None), "location", None)
-        if loc:
-            addr = f"{addr}, {loc}"
-    return addr
+    if is_coords:
+        return addr
+
+    loc = (
+        getattr(cluster, "location", None)
+        or getattr(getattr(cluster, "project", None), "location", None)
+    )
+
+    if addr and loc:
+        return f"{addr}, {loc}"
+    if addr:
+        return addr
+    return loc or None
 
 
 class WeeklyPlanningDiagnostic(NamedTuple):
@@ -668,6 +682,16 @@ async def select_visits_cp_sat(
             ]
             if len(pair_vars_for_pair) > 1:
                 model.Add(sum(pair_vars_for_pair) <= 1)
+
+        # Global LP-tightening constraint: the total number of active pairs is
+        # bounded by the number of Pool-1 visits (each Pool-1 visit can be in
+        # at most one pair).  Without this, the LP relaxation allows all
+        # pair_saves variables to be fractionally 1 simultaneously, inflating
+        # the bound to ~(n_pairs × HUISMUS_PAIR_BONUS) and preventing CP-SAT
+        # from closing the gap within the time limit.
+        all_pair_save_vars = list(pair_saves.values())
+        if all_pair_save_vars:
+            model.Add(sum(all_pair_save_vars) <= len(pool1_huismus))
 
         # Pool 2 visits may ONLY be scheduled as part of a valid pair
         for i2 in pairing_only_indices:
