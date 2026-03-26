@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 from app.core.logging import logger
 from app.models.visit import Visit
 from app.models.activity_log import ActivityLog
+from app.models.visit_audit import VisitAudit
 
 
 class VisitStatusCode(StrEnum):
@@ -43,6 +44,8 @@ class VisitStatusCode(StrEnum):
     * ``approved`` – result explicitly approved.
     * ``rejected`` – result explicitly rejected.
     * ``cancelled`` – visit was cancelled.
+    * ``needs_action`` – audit flagged issues requiring researcher action.
+    * ``provisional`` – provisionally rejected pending corrections.
     """
 
     CREATED = "created"
@@ -56,6 +59,8 @@ class VisitStatusCode(StrEnum):
     REJECTED = "rejected"
     CANCELLED = "cancelled"
     MISSED = "missed"
+    NEEDS_ACTION = "needs_action"
+    PROVISIONAL = "provisional"
 
 
 # ActivityLog.action values that influence lifecycle status, ordered by
@@ -108,6 +113,7 @@ def derive_visit_status(
     last_log: ActivityLog | None,
     *,
     today: date | None = None,
+    audit_status: str | None = None,
 ) -> VisitStatusCode:
     """Derive the lifecycle status for a visit.
 
@@ -142,8 +148,16 @@ def derive_visit_status(
         if action == "visit_approved":
             return VisitStatusCode.APPROVED
         if action in {"visit_executed_deviation", "visit_executed_with_deviation"}:
+            if audit_status == "needs_action":
+                return VisitStatusCode.NEEDS_ACTION
+            if audit_status == "provisional":
+                return VisitStatusCode.PROVISIONAL
             return VisitStatusCode.EXECUTED_WITH_DEVIATION
         if action == "visit_executed":
+            if audit_status == "needs_action":
+                return VisitStatusCode.NEEDS_ACTION
+            if audit_status == "provisional":
+                return VisitStatusCode.PROVISIONAL
             return VisitStatusCode.EXECUTED
         if action == "visit_not_executed":
             return VisitStatusCode.NOT_EXECUTED
@@ -216,7 +230,11 @@ async def resolve_visit_status(
         return VisitStatusCode.CREATED
 
     last_log = await _latest_status_log_for_visit(db, visit.id)
-    return derive_visit_status(visit, last_log, today=today)
+
+    audit_stmt = select(VisitAudit.status).where(VisitAudit.visit_id == visit.id)
+    audit_status: str | None = (await db.execute(audit_stmt)).scalars().first()
+
+    return derive_visit_status(visit, last_log, today=today, audit_status=audit_status)
 
 
 async def resolve_visit_status_by_id(
@@ -250,7 +268,11 @@ async def resolve_visit_status_by_id(
         return None
 
     last_log = await _latest_status_log_for_visit(db, visit_id)
-    return derive_visit_status(visit, last_log, today=today)
+
+    audit_stmt = select(VisitAudit.status).where(VisitAudit.visit_id == visit_id)
+    audit_status: str | None = (await db.execute(audit_stmt)).scalars().first()
+
+    return derive_visit_status(visit, last_log, today=today, audit_status=audit_status)
 
 
 async def resolve_visit_statuses(
@@ -301,12 +323,20 @@ async def resolve_visit_statuses(
     logs = (await db.execute(stmt)).scalars().all()
     log_map = {log.target_id: log for log in logs if log.target_id is not None}
 
+    audit_status_stmt = (
+        select(VisitAudit.visit_id, VisitAudit.status)
+        .where(VisitAudit.visit_id.in_(visit_ids))
+    )
+    audit_rows = (await db.execute(audit_status_stmt)).all()
+    audit_status_map: dict[int, str] = {row.visit_id: row.status for row in audit_rows}
+
     status_map: dict[int, VisitStatusCode] = {}
     for visit in visits:
         if visit.id is None:
             continue
         status_map[visit.id] = derive_visit_status(
-            visit, log_map.get(visit.id), today=today
+            visit, log_map.get(visit.id), today=today,
+            audit_status=audit_status_map.get(visit.id),
         )
 
     return status_map

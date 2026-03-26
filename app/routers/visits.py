@@ -23,6 +23,8 @@ from app.models.visit import (
     visit_species,
 )
 from app.models.activity_log import ActivityLog
+from app.models.visit_audit import VisitAudit
+from app.schemas.visit_audit import AuditStatus, VisitAuditRead, VisitAuditWrite
 from app.schemas.function import FunctionCompactRead
 from app.schemas.species import SpeciesCompactRead
 from app.schemas.user import UserNameRead
@@ -1460,6 +1462,8 @@ async def list_visits_for_audit(
     relevant_statuses: set[VisitStatusCode] = {
         VisitStatusCode.EXECUTED,
         VisitStatusCode.EXECUTED_WITH_DEVIATION,
+        VisitStatusCode.NEEDS_ACTION,
+        VisitStatusCode.PROVISIONAL,
     }
     visits = [v for v in visits if status_map.get(v.id) in relevant_statuses]
 
@@ -1757,6 +1761,154 @@ async def reject_visit(
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{visit_id}/audit", response_model=VisitAuditRead)
+async def get_visit_audit(
+    _: AdminDep,
+    db: DbDep,
+    visit_id: int,
+) -> VisitAudit:
+    """Return the current audit record for a visit, or 404 if none exists yet."""
+
+    stmt = (
+        select(VisitAudit)
+        .where(VisitAudit.visit_id == visit_id)
+        .options(
+            selectinload(VisitAudit.created_by),
+            selectinload(VisitAudit.updated_by),
+        )
+    )
+    audit = (await db.execute(stmt)).scalars().first()
+    if audit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return audit
+
+
+# ActivityLog action written for each audit status transition.
+_AUDIT_LIFECYCLE_ACTION: dict[AuditStatus, str] = {
+    AuditStatus.APPROVED: "visit_approved",
+    AuditStatus.REJECTED: "visit_rejected",
+    AuditStatus.NEEDS_ACTION: "visit_needs_action",
+    AuditStatus.PROVISIONAL: "visit_provisional",
+}
+
+# Audit statuses that drive the ActivityLog-based lifecycle status (approved /
+# rejected).  Changing *away* from these requires a visit_status_cleared entry
+# so that derive_visit_status falls back to the execution-based status.
+_LIFECYCLE_SETTING_STATUSES: frozenset[AuditStatus] = frozenset(
+    {AuditStatus.APPROVED, AuditStatus.REJECTED}
+)
+
+
+@router.put("/{visit_id}/audit", response_model=VisitAuditRead)
+async def upsert_visit_audit(
+    admin: AdminDep,
+    db: DbDep,
+    visit_id: int,
+    payload: VisitAuditWrite,
+) -> VisitAudit:
+    """Create or update the audit record for a visit.
+
+    Upserts a single ``VisitAudit`` row (one per visit). When the audit
+    status changes to ``approved`` or ``rejected``, the corresponding
+    ``visit_approved`` / ``visit_rejected`` action is appended to the
+    ``ActivityLog`` so the visit lifecycle status stays consistent with
+    existing behaviour. When changing *away* from those statuses a
+    ``visit_status_cleared`` entry is written instead.
+    """
+
+    # Verify the visit exists.
+    visit_stmt = (
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    visit = (await db.execute(visit_stmt)).scalars().first()
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Load existing audit (if any) to determine previous status.
+    audit_stmt = (
+        select(VisitAudit)
+        .where(VisitAudit.visit_id == visit_id)
+        .options(
+            selectinload(VisitAudit.created_by),
+            selectinload(VisitAudit.updated_by),
+        )
+    )
+    audit = (await db.execute(audit_stmt)).scalars().first()
+    previous_status: AuditStatus | None = (
+        AuditStatus(audit.status) if audit is not None else None
+    )
+
+    # Serialize nested Pydantic models to plain dicts for JSON storage.
+    errors_data = [e.model_dump() for e in payload.errors]
+    species_data = {k: v.model_dump() for k, v in payload.species_functions.items()}
+
+    if audit is None:
+        audit = VisitAudit(
+            visit_id=visit_id,
+            status=payload.status,
+            errors=errors_data,
+            species_functions=species_data,
+            remarks=payload.remarks,
+            remarks_outside_pg=payload.remarks_outside_pg,
+            created_by_id=admin.id,
+        )
+        db.add(audit)
+    else:
+        audit.status = payload.status
+        audit.errors = errors_data
+        audit.species_functions = species_data
+        audit.remarks = payload.remarks
+        audit.remarks_outside_pg = payload.remarks_outside_pg
+        audit.updated_by_id = admin.id
+
+    await db.flush()
+
+    # Keep the ActivityLog-based visit lifecycle in sync.
+    cluster = visit.cluster
+    project: Project | None = getattr(cluster, "project", None)
+    lifecycle_details = {
+        "project_code": project.code if project else None,
+        "cluster_number": cluster.cluster_number if cluster else None,
+        "visit_nr": visit.visit_nr,
+    }
+
+    new_status = payload.status
+    if new_status != previous_status:
+        # When changing away from an ActivityLog-driven lifecycle status
+        # (approved / rejected) to an audit-driven one, clear the lifecycle
+        # entry so derive_visit_status falls back to the execution state.
+        if (
+            previous_status in _LIFECYCLE_SETTING_STATUSES
+            and new_status not in _LIFECYCLE_SETTING_STATUSES
+        ):
+            await log_activity(
+                db,
+                actor_id=admin.id,
+                action="visit_status_cleared",
+                target_type="visit",
+                target_id=visit_id,
+                details=lifecycle_details,
+                commit=False,
+            )
+
+        # Log every audit status change for traceability.
+        await log_activity(
+            db,
+            actor_id=admin.id,
+            action=_AUDIT_LIFECYCLE_ACTION[new_status],
+            target_type="visit",
+            target_id=visit_id,
+            details=lifecycle_details,
+            commit=False,
+        )
+
+    await db.commit()
+    await db.refresh(audit, ["created_by", "updated_by"])
+    return audit
 
 
 @router.post(
