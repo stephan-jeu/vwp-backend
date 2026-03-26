@@ -78,6 +78,7 @@ _STATUS_ACTIONS: set[str] = {
 }
 
 
+
 async def _latest_status_log_for_visit(
     db: AsyncSession,
     visit_id: int,
@@ -162,7 +163,10 @@ def derive_visit_status(
         if action == "visit_not_executed":
             return VisitStatusCode.NOT_EXECUTED
         if action == "visit_status_cleared":
-            pass
+            if audit_status == "needs_action":
+                return VisitStatusCode.NEEDS_ACTION
+            if audit_status == "provisional":
+                return VisitStatusCode.PROVISIONAL
         else:
             logger.warning(
                 "Unknown visit status action encountered in ActivityLog: %s", action
