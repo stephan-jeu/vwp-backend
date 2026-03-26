@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from email.message import EmailMessage
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_, extract
 from sqlalchemy.orm import Session, selectinload
 
 from core.settings import get_settings
@@ -49,11 +49,18 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
             Visit.researchers.any()
         )
         .where(
-            # Planned for this week
-            (Visit.planned_week == week)
+            # Planned for this week (weekly planning mode), with year guard via from_date
+            and_(
+                Visit.planned_week == week,
+                or_(
+                    Visit.from_date.is_(None),
+                    extract("year", Visit.from_date) == year,
+                ),
+            )
+            # OR planned on a specific date in this week (daily planning mode)
             | and_(
-                Visit.from_date <= week_end,
-                Visit.to_date >= week_start,
+                Visit.planned_date >= week_start,
+                Visit.planned_date <= week_end,
             )
         )
     )
