@@ -1526,9 +1526,7 @@ async def list_visits_for_audit(
     )
     visits = (await db.execute(stmt)).scalars().all()
 
-    status_map: dict[int, VisitStatusCode] = {}
-    for v in visits:
-        status_map[v.id] = await resolve_visit_status(db, v, today=effective_today)
+    status_map = await resolve_visit_statuses(db, visits, today=effective_today)
 
     relevant_statuses: set[VisitStatusCode] = {
         VisitStatusCode.EXECUTED,
