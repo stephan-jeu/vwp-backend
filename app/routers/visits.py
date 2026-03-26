@@ -63,6 +63,13 @@ from core.settings import get_settings
 router = APIRouter()
 
 
+def _isoweek_to_friday(year: int, week: int) -> date:
+    try:
+        return date.fromisocalendar(year, week, 5)
+    except ValueError:
+        return date.max
+
+
 def _validate_planning_locked_payload(
     *,
     planning_locked: bool,
@@ -318,25 +325,46 @@ async def list_visits(
     elif not include_archived and hasattr(Visit, "is_archived"):
         stmt = stmt.where(Visit.is_archived.is_(False))
 
-    stmt = stmt.distinct(Visit.id)
-
-    order_from = func.coalesce(Visit.from_date, date(9999, 12, 31))
-    stmt = stmt.order_by(
-        Visit.id,
-        order_from,
-        Project.code,
-        Cluster.cluster_number,
-        Visit.visit_nr,
+    # Add sort columns to the select so they're available after deduplication
+    stmt = stmt.add_columns(
+        Visit.from_date.label("s_from_date"),
+        Visit.planned_date.label("s_planned_date"),
+        Visit.planned_week.label("s_planned_week"),
+        Visit.provisional_week.label("s_provisional_week"),
+        Project.code.label("s_project_code"),
+        Cluster.cluster_number.label("s_cluster_number"),
+        Visit.visit_nr.label("s_visit_nr"),
     )
+    # DISTINCT ON (visits.id) requires ORDER BY to start with visits.id
+    dedup_subq = stmt.distinct(Visit.id).order_by(Visit.id).subquery()
+
+    order_from = func.coalesce(dedup_subq.c.s_from_date, date(9999, 12, 31))
+    if settings.feature_daily_planning:
+        id_stmt = select(dedup_subq.c.id).order_by(
+            order_from,
+            func.coalesce(dedup_subq.c.s_planned_date, date(9999, 12, 31)),
+            func.coalesce(dedup_subq.c.s_provisional_week, 9999),
+            dedup_subq.c.s_project_code,
+            dedup_subq.c.s_cluster_number,
+            dedup_subq.c.s_visit_nr,
+        )
+    else:
+        id_stmt = select(dedup_subq.c.id).order_by(
+            order_from,
+            func.coalesce(dedup_subq.c.s_planned_week, dedup_subq.c.s_provisional_week, 9999),
+            dedup_subq.c.s_project_code,
+            dedup_subq.c.s_cluster_number,
+            dedup_subq.c.s_visit_nr,
+        )
 
     if statuses:
-        visit_ids = (await db.execute(stmt)).scalars().all()
+        visit_ids = (await db.execute(id_stmt)).scalars().all()
         total = len(visit_ids)
     else:
-        count_stmt = select(func.count()).select_from(stmt.subquery())
+        count_stmt = select(func.count()).select_from(id_stmt.subquery())
         total = int((await db.execute(count_stmt)).scalar_one())
         visit_ids = (
-            (await db.execute(stmt.offset((page - 1) * page_size).limit(page_size)))
+            (await db.execute(id_stmt.offset((page - 1) * page_size).limit(page_size)))
             .scalars()
             .all()
         )
@@ -354,15 +382,26 @@ async def list_visits(
         allowed = set(statuses)
         visits = [v for v in visits if status_map.get(v.id) in allowed]
 
-    # Order by start date and project code (cluster/visit as tie-breakers)
+    # Order by start date, planned/provisional date or week, then project/cluster/visit
     def _sort_key(v: Visit) -> tuple:
         cluster = v.cluster
         project: Project | None = getattr(cluster, "project", None)
         from_date = v.from_date or date.max
+        ref_year = v.from_date.year if v.from_date else date.today().year
+        if settings.feature_daily_planning:
+            planned: date = (
+                v.planned_date
+                or (_isoweek_to_friday(ref_year, v.provisional_week) if v.provisional_week else None)
+                or date.max
+            )
+        else:
+            planned_week: int = v.planned_week or v.provisional_week or 9999
         project_code = project.code if project else ""
         cluster_number = cluster.cluster_number if cluster else ""
         visit_nr = v.visit_nr or 0
-        return (from_date, project_code, cluster_number, visit_nr)
+        if settings.feature_daily_planning:
+            return (from_date, planned, project_code, cluster_number, visit_nr)
+        return (from_date, planned_week, project_code, cluster_number, visit_nr)
 
     visits.sort(key=_sort_key)
 
@@ -492,19 +531,40 @@ async def export_visits(
     elif not include_archived and hasattr(Visit, "is_archived"):
         stmt = stmt.where(Visit.is_archived.is_(False))
 
-    stmt = stmt.distinct(Visit.id)
+    # Add sort columns to the select so they're available after deduplication
+    stmt = stmt.add_columns(
+        Visit.from_date.label("s_from_date"),
+        Visit.planned_date.label("s_planned_date"),
+        Visit.planned_week.label("s_planned_week"),
+        Visit.provisional_week.label("s_provisional_week"),
+        Project.code.label("s_project_code"),
+        Cluster.cluster_number.label("s_cluster_number"),
+        Visit.visit_nr.label("s_visit_nr"),
+    )
+    # DISTINCT ON (visits.id) requires ORDER BY to start with visits.id
+    dedup_subq = stmt.distinct(Visit.id).order_by(Visit.id).subquery()
 
     # Order consistent with list
-    order_from = func.coalesce(Visit.from_date, date(9999, 12, 31))
-    stmt = stmt.order_by(
-        Visit.id,
-        order_from,
-        Project.code,
-        Cluster.cluster_number,
-        Visit.visit_nr,
-    )
+    order_from = func.coalesce(dedup_subq.c.s_from_date, date(9999, 12, 31))
+    if settings.feature_daily_planning:
+        id_stmt = select(dedup_subq.c.id).order_by(
+            order_from,
+            func.coalesce(dedup_subq.c.s_planned_date, date(9999, 12, 31)),
+            func.coalesce(dedup_subq.c.s_provisional_week, 9999),
+            dedup_subq.c.s_project_code,
+            dedup_subq.c.s_cluster_number,
+            dedup_subq.c.s_visit_nr,
+        )
+    else:
+        id_stmt = select(dedup_subq.c.id).order_by(
+            order_from,
+            func.coalesce(dedup_subq.c.s_planned_week, dedup_subq.c.s_provisional_week, 9999),
+            dedup_subq.c.s_project_code,
+            dedup_subq.c.s_cluster_number,
+            dedup_subq.c.s_visit_nr,
+        )
 
-    visit_ids = (await db.execute(stmt)).scalars().all()
+    visit_ids = (await db.execute(id_stmt)).scalars().all()
 
     if not visit_ids:
         # Return empty csv
@@ -530,10 +590,21 @@ async def export_visits(
         cluster = v.cluster
         project: Project | None = getattr(cluster, "project", None)
         from_date = v.from_date or date.max
+        ref_year = v.from_date.year if v.from_date else date.today().year
+        if settings.feature_daily_planning:
+            planned: date = (
+                v.planned_date
+                or (_isoweek_to_friday(ref_year, v.provisional_week) if v.provisional_week else None)
+                or date.max
+            )
+        else:
+            planned_week: int = v.planned_week or v.provisional_week or 9999
         project_code = project.code if project else ""
         cluster_number = cluster.cluster_number if cluster else ""
         visit_nr = v.visit_nr or 0
-        return (from_date, project_code, cluster_number, visit_nr)
+        if settings.feature_daily_planning:
+            return (from_date, planned, project_code, cluster_number, visit_nr)
+        return (from_date, planned_week, project_code, cluster_number, visit_nr)
 
     visits.sort(key=_sort_key)
 
@@ -1464,6 +1535,8 @@ async def list_visits_for_audit(
         VisitStatusCode.EXECUTED_WITH_DEVIATION,
         VisitStatusCode.NEEDS_ACTION,
         VisitStatusCode.PROVISIONAL,
+        VisitStatusCode.APPROVED,
+        VisitStatusCode.REJECTED,
     }
     visits = [v for v in visits if status_map.get(v.id) in relevant_statuses]
 
