@@ -46,6 +46,7 @@ def make_visit(
 
     # Custom/Attributes defaults
     v.sleutel = False
+    v.vog = False
     v.cluster = MagicMock()
     v.cluster.project_id = cluster_id * 100  # Unique per cluster
 
@@ -270,3 +271,79 @@ def test_coupling_constraint_ignores_non_vleermuis():
 
     # Should pick W20 because no Vleermuis coupling penalty applies.
     assert v.provisional_week == 20
+
+
+def _make_simple_user(uid: int, family: str = "Vleermuis") -> MagicMock:
+    u = MagicMock()
+    u.id = uid
+    u.vleermuis = family == "Vleermuis"
+    u.smp_vleermuis = False
+    u.smp_gierzwaluw = False
+    u.smp_huismus = False
+    u.vrfg = False
+    u.vog = False
+    u.langoor = False
+    u.schijfhoren = False
+    u.zwaluw = False
+    u.vlinder = False
+    u.teunisbloempijlstaart = False
+    u.zangvogel = False
+    u.roofvogel = False
+    u.pad = False
+    u.biggenkruid = False
+    return u
+
+
+def _make_simple_avail(user_ids: list[int], weeks: range) -> dict:
+    avail_map = {}
+    for uid in user_ids:
+        for w in weeks:
+            aw = MagicMock()
+            aw.configure_mock(morning_days=5, daytime_days=5, nighttime_days=5, flex_days=0)
+            avail_map[(uid, w)] = aw
+    return avail_map
+
+
+def test_avoid_current_week_soft_prefers_future_week():
+    """When a future week is available the solver must prefer it over the current week."""
+    current_week = date(2026, 4, 6)  # Monday of week 15
+    v = make_visit(600, cluster_id=6, protocol_id=60, visit_index=1)
+    v.from_date = current_week  # window starts exactly at current week
+    v.to_date = date(2026, 12, 31)  # many future weeks available
+    v.provisional_week = None
+    sp = MagicMock()
+    sp.family.name = "Vleermuis"
+    v.species = [sp]
+
+    users = [_make_simple_user(1)]
+    avail_map = _make_simple_avail([1], range(1, 54))
+
+    SeasonPlanningService.solve_season(current_week, [v], users, avail_map)
+
+    assert v.provisional_week is not None
+    assert v.provisional_week > 15, (
+        f"Expected future week (>15) but got {v.provisional_week}"
+    )
+
+
+def test_avoid_current_week_falls_back_when_only_option():
+    """When the current week is the only feasible week the visit must still be scheduled."""
+    current_week = date(2026, 4, 6)  # Monday of week 15
+    week_friday = date(2026, 4, 10)   # Friday of week 15
+
+    v = make_visit(700, cluster_id=7, protocol_id=70, visit_index=1)
+    v.from_date = current_week
+    v.to_date = week_friday  # window covers ONLY week 15
+    v.provisional_week = None
+    sp = MagicMock()
+    sp.family.name = "Vleermuis"
+    v.species = [sp]
+
+    users = [_make_simple_user(1)]
+    avail_map = _make_simple_avail([1], range(1, 54))
+
+    SeasonPlanningService.solve_season(current_week, [v], users, avail_map)
+
+    assert v.provisional_week == 15, (
+        f"Expected week 15 (only option) but got {v.provisional_week}"
+    )

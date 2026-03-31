@@ -346,6 +346,7 @@ class SeasonPlanningService:
         """
         diagnostics: list[PlanningDiagnostic] = []
         no_window_visit_ids: set[int] = set()
+        pre_gap_infeasible_visit_ids: set[int] = set()
 
         year = start_date.year
         current_week = start_date.isocalendar().week
@@ -931,7 +932,7 @@ class SeasonPlanningService:
                                 logger.warning(
                                     "SeasonPlanning: protocolvolgorde niet haalbaar — "
                                     "%s (week %s) moet minstens %s week(en) vóór %s (week %s) staan "
-                                    "volgens protocol '%s'; volgorderesbeperking geskipt.",
+                                    "volgens protocol '%s'; volgorderbeperking geskipt.",
                                     _visit_label(earlier),
                                     forced_w1,
                                     gap_weeks,
@@ -943,7 +944,7 @@ class SeasonPlanningService:
                                     f"Protocolvolgorde conflict: {_visit_label(earlier)} staat vastgepind in week {forced_w1}, "
                                     f"{_visit_label(later)} staat vastgepind in week {forced_w2}. "
                                     f"Protocol '{proto_lbl}' vereist minimaal {gap_weeks} week(en) tussenruimte. "
-                                    f"De volgorderesbeperking is geskipt — controleer de vastgepinde weken."
+                                    f"De volgorderbeperking is geskipt — controleer de vastgepinde weken."
                                 )
                                 for affected_id in (earlier.id, later.id):
                                     diagnostics.append(
@@ -966,48 +967,184 @@ class SeasonPlanningService:
                         if gap_weeks > 0:
                             model.Add(w2 >= w1 + gap_weeks).OnlyEnforceIf([a1, a2])
 
+                            # Pre-solve feasibility check: detect visits whose window
+                            # is structurally too tight for the gap constraint.
+                            # Even if earlier is placed at its earliest possible week,
+                            # later cannot satisfy the required gap within its own window.
+                            earlier_min = forced_w1
+                            if earlier_min is None:
+                                _e_cands = [
+                                    w
+                                    for w, _ in visit_candidates.get(earlier.id, [])
+                                    if w > 0
+                                ]
+                                earlier_min = min(_e_cands) if _e_cands else None
+                            later_max = forced_w2
+                            if later_max is None:
+                                _l_cands = [
+                                    w
+                                    for w, _ in visit_candidates.get(later.id, [])
+                                    if w > 0
+                                ]
+                                later_max = max(_l_cands) if _l_cands else None
+
+                            if (
+                                earlier_min is not None
+                                and later_max is not None
+                                and earlier_min + gap_weeks > later_max
+                                and later.id not in pre_gap_infeasible_visit_ids
+                            ):
+                                proto_obj = protocols_1.get(pid)
+                                proto_lbl = (
+                                    _protocol_label(proto_obj)
+                                    if proto_obj is not None
+                                    else str(pid)
+                                )
+                                logger.warning(
+                                    "SeasonPlanning: uitvoeringsvenster te krap — "
+                                    "%s vereist week %s+ (gap %s na week %s van %s), "
+                                    "maar venster eindigt in week %s.",
+                                    _visit_label(later),
+                                    earlier_min + gap_weeks,
+                                    gap_weeks,
+                                    earlier_min,
+                                    _visit_label(earlier),
+                                    later_max,
+                                )
+                                reason_nl = (
+                                    f"Uitvoeringsvenster te krap: protocol '{proto_lbl}' vereist "
+                                    f"minimaal {gap_weeks} week(en) na het voorgaande bezoek "
+                                    f"({_visit_label(earlier)}, vroegst week {earlier_min}). "
+                                    f"Dit bezoek moet dan in week {earlier_min + gap_weeks} of later staan, "
+                                    f"maar het uitvoeringsvenster eindigt al in week {later_max}. "
+                                    f"Pas het uitvoeringsvenster of de protocolvereiste aan."
+                                )
+                                pre_gap_infeasible_visit_ids.add(later.id)
+                                diagnostics.append(
+                                    PlanningDiagnostic(
+                                        visit_id=later.id,
+                                        action="planning_season_unscheduled",
+                                        details={
+                                            "reason_nl": reason_nl,
+                                            "reason_code": "protocol_gap_infeasible",
+                                            "protocol": proto_lbl,
+                                            "earlier_visit_id": earlier.id,
+                                            "gap_required_weeks": gap_weeks,
+                                            "earlier_min_week": earlier_min,
+                                            "later_max_week": later_max,
+                                        },
+                                    )
+                                )
+
                         # June-visit constraint: at least one of the two visits must land
                         # in a week that contains a day in June.
                         proto_obj = protocols_1[pid]
                         if getattr(proto_obj, "requires_june_visit", False):
                             june_weeks = _compute_june_weeks(year)
+                            proto_lbl = _protocol_label(proto_obj)
 
-                            cands_e = sorted(
-                                w
-                                for w, _ in visit_candidates.get(earlier.id, [])
-                                if w > 0 and w in june_weeks
+                            # Guard 1: both visits pinned (planned_week / provisional_locked)
+                            # to a non-June week.  Adding the hard constraint would make the
+                            # model infeasible and cause the entire planning run to fail,
+                            # leaving all provisional_weeks unchanged.  Emit a diagnostic
+                            # and skip this constraint pair instead.
+                            forced_e_in_june = (
+                                forced_w1 is None or forced_w1 in june_weeks
                             )
-                            cands_l = sorted(
-                                w
-                                for w, _ in visit_candidates.get(later.id, [])
-                                if w > 0 and w in june_weeks
+                            forced_l_in_june = (
+                                forced_w2 is None or forced_w2 in june_weeks
                             )
-
-                            in_june_e = model.NewBoolVar(
-                                f"in_june_{earlier.id}_{pid}"
-                            )
-                            in_june_l = model.NewBoolVar(
-                                f"in_june_{later.id}_{pid}"
-                            )
-
-                            if cands_e:
-                                model.AddLinearConstraint(
-                                    w1, min(cands_e), max(cands_e)
-                                ).OnlyEnforceIf(in_june_e)
+                            if not forced_e_in_june and not forced_l_in_june:
+                                reason_nl = (
+                                    f"Juni-bezoeksvereiste niet haalbaar: "
+                                    f"{_visit_label(earlier)} staat vastgepind in week "
+                                    f"{forced_w1} en {_visit_label(later)} in week "
+                                    f"{forced_w2}. Protocol '{proto_lbl}' vereist dat "
+                                    f"minstens één bezoek in juni plaatsvindt. Pas een "
+                                    f"van de vastgepinde weken aan naar een juniweek."
+                                )
+                                for _affected_id in (earlier.id, later.id):
+                                    diagnostics.append(
+                                        PlanningDiagnostic(
+                                            visit_id=_affected_id,
+                                            action="planning_season_protocol_violation",
+                                            details={
+                                                "reason_nl": reason_nl,
+                                                "earlier_visit_id": earlier.id,
+                                                "later_visit_id": later.id,
+                                                "earlier_week": forced_w1,
+                                                "later_week": forced_w2,
+                                                "protocol": proto_lbl,
+                                                "violation_type": "june_visit_required",
+                                            },
+                                        )
+                                    )
                             else:
-                                model.Add(in_june_e == 0)
+                                cands_e = sorted(
+                                    w
+                                    for w, _ in visit_candidates.get(earlier.id, [])
+                                    if w > 0 and w in june_weeks
+                                )
+                                cands_l = sorted(
+                                    w
+                                    for w, _ in visit_candidates.get(later.id, [])
+                                    if w > 0 and w in june_weeks
+                                )
 
-                            if cands_l:
-                                model.AddLinearConstraint(
-                                    w2, min(cands_l), max(cands_l)
-                                ).OnlyEnforceIf(in_june_l)
-                            else:
-                                model.Add(in_june_l == 0)
+                                # Guard 2: neither visit's execution window overlaps with
+                                # June.  Same infeasibility risk — emit diagnostic and skip.
+                                if not cands_e and not cands_l:
+                                    reason_nl = (
+                                        f"Juni-bezoeksvereiste niet haalbaar: het "
+                                        f"uitvoeringsvenster van beide bezoeken overlapt "
+                                        f"niet met juni. Protocol '{proto_lbl}' vereist "
+                                        f"dat minstens één bezoek in juni plaatsvindt."
+                                    )
+                                    for _affected_id in (earlier.id, later.id):
+                                        diagnostics.append(
+                                            PlanningDiagnostic(
+                                                visit_id=_affected_id,
+                                                action="planning_season_protocol_violation",
+                                                details={
+                                                    "reason_nl": reason_nl,
+                                                    "earlier_visit_id": earlier.id,
+                                                    "later_visit_id": later.id,
+                                                    "protocol": proto_lbl,
+                                                    "violation_type": "june_visit_no_window",
+                                                },
+                                            )
+                                        )
+                                else:
+                                    in_june_e = model.NewBoolVar(
+                                        f"in_june_{earlier.id}_{pid}"
+                                    )
+                                    in_june_l = model.NewBoolVar(
+                                        f"in_june_{later.id}_{pid}"
+                                    )
 
-                            # At least one must be scheduled in June (when both active).
-                            model.Add(in_june_e + in_june_l >= 1).OnlyEnforceIf(
-                                [a1, a2]
-                            )
+                                    if cands_e:
+                                        model.AddLinearConstraint(
+                                            w1, min(cands_e), max(cands_e)
+                                        ).OnlyEnforceIf(in_june_e)
+                                    else:
+                                        model.Add(in_june_e == 0)
+
+                                    if cands_l:
+                                        model.AddLinearConstraint(
+                                            w2, min(cands_l), max(cands_l)
+                                        ).OnlyEnforceIf(in_june_l)
+                                    else:
+                                        model.Add(in_june_l == 0)
+
+                                    # At least one must be scheduled in June whenever the
+                                    # later visit is active.  Using only [a2] (not [a1, a2])
+                                    # ensures the constraint still fires when the earlier visit
+                                    # is unscheduled (a1=0, w1=0): in that case in_june_e is
+                                    # forced to 0 (0 ∉ June range), so in_june_l must be 1,
+                                    # pushing the later visit into June.
+                                    model.Add(in_june_e + in_june_l >= 1).OnlyEnforceIf(
+                                        a2
+                                    )
 
                         # Predecessor room: discourage placing V2 so early that V1 has
                         # very few valid weeks to choose from.  This is the mirror image
@@ -1182,11 +1319,11 @@ class SeasonPlanningService:
                 tightness_reward_weights.append(bonus)
 
         # Stability: penalise moving visits away from their current provisional_week.
-        # Prevents arbitrary solver drift between runs. Small enough that a genuine
-        # capacity need (100k reward) easily overrides it, but large enough that the
-        # solver won't reshuffle for minor slack savings (10 pts/week).
-        # Per-week cost: 500 pts. Moving a visit 5 weeks earlier for slack saves
-        # 5*10=50 pts — far less than the 5*500=2500 stability cost, so it won't.
+        # Prevents arbitrary solver drift between runs ("postit sticky").
+        # Per-week cost: 50 pts (~5× the early-placement bonus of 10 pts/week).
+        # Moving a visit 5 weeks earlier for slack saves 5*10=50 pts vs. 5*50=250 pts
+        # stability cost — so the solver mildly resists but can be overridden by
+        # meaningful capacity differences or hard constraints (e.g. June constraint).
         # Visits that are forced (planned_week / provisional_locked) are excluded.
         # Visits with no previous provisional_week are also excluded (free to assign).
         # This is only applied if provisional_week_stickiness_enabled is True.
@@ -1224,6 +1361,28 @@ class SeasonPlanningService:
                 )
 
                 stability_drift_terms.append(active_drift)
+
+        # Soft penalty: avoid assigning provisional_week to the current (running) week.
+        # Collects one BoolVar per visit that resolves to 1 when the visit is
+        # assigned to current_week.  The penalty weight is set low enough that the
+        # solver still uses current_week as a last resort (weight < base reward).
+        current_week_penalty_vars: list[cp_model.BoolVar] = []
+        avoid_cw_penalty = settings.season_planner_avoid_current_week_penalty
+        if avoid_cw_penalty > 0:
+            for v in visits:
+                if v.id not in visit_week_vars:
+                    continue
+                if v.id in forced_active_week_by_visit_id:
+                    continue
+                vw = visit_week_vars[v.id]
+                candidates_for_v = visit_candidates.get(v.id, [])
+                candidate_weeks_for_v = {w for w, _ in candidates_for_v}
+                if current_week not in candidate_weeks_for_v:
+                    continue
+                b_cw = model.NewBoolVar(f"in_current_week_{v.id}")
+                model.Add(vw == current_week).OnlyEnforceIf(b_cw)
+                model.Add(vw != current_week).OnlyEnforceIf(b_cw.Not())
+                current_week_penalty_vars.append(b_cw)
 
         # Map: Week -> Skill -> List of (v, overlap, is_active)
         # We constructed 'visits_per_week_candidate' earlier.
@@ -1569,13 +1728,21 @@ class SeasonPlanningService:
             tightness_reward_vars, tightness_reward_weights
         )
 
-        # Stability: -500 pts per week a visit deviates from its previous provisional_week.
-        p_stability = cp_model.LinearExpr.Sum(stability_drift_terms) * -500
+        # Stability: -50 pts per week a visit deviates from its previous provisional_week.
+        # Intentionally kept at ~5× the early-placement bonus (10 pts/week) so that the
+        # solver gently prefers to keep existing assignments ("postit sticky") without
+        # overriding meaningful moves driven by capacity, gap or window constraints.
+        p_stability = cp_model.LinearExpr.Sum(stability_drift_terms) * -50
 
         # Quadratic load spread: penalises overloading a single week.
         p_quadratic_load = (
             cp_model.LinearExpr.Sum(weekly_load_penalty_terms)
             * -get_settings().constraint_quadratic_load_penalty_weight
+        )
+
+        # Avoid current week: penalises each visit assigned to the current running week.
+        p_avoid_current_week = (
+            cp_model.LinearExpr.Sum(current_week_penalty_vars) * -avoid_cw_penalty
         )
 
         total_obj = (
@@ -1593,6 +1760,7 @@ class SeasonPlanningService:
             + tightness_reward
             + p_stability
             + p_quadratic_load
+            + p_avoid_current_week
         )
         model.Maximize(total_obj)
 
@@ -1983,7 +2151,10 @@ class SeasonPlanningService:
                         if not v.provisional_locked or v.provisional_week is None:
                             v.provisional_week = None
                         # Collect diagnostic: why was this visit not scheduled?
-                        if v.id in no_window_visit_ids:
+                        # Skip if a more specific pre-solve diagnostic was already emitted.
+                        if v.id in pre_gap_infeasible_visit_ids:
+                            pass
+                        elif v.id in no_window_visit_ids:
                             diagnostics.append(
                                 PlanningDiagnostic(
                                     visit_id=v.id,
@@ -2039,13 +2210,24 @@ class SeasonPlanningService:
                                         },
                                     )
                                 )
-                                # Best-effort fallback: assign the earliest candidate week so
-                                # this visit remains visible in the weekly planner inbox.
-                                # The diagnostic above marks it as unscheduled (at-risk), so
-                                # the frontend can show it with a warning indicator.
+                                # Best-effort fallback: assign a UI-hint week so this visit
+                                # remains visible in the weekly planner inbox.  The diagnostic
+                                # above marks it as unscheduled (at-risk), so the frontend can
+                                # show it with a warning indicator.
                                 # This does NOT affect solver capacity — it is purely a UI hint.
-                                if w_min is not None:
-                                    v.provisional_week = w_min
+                                #
+                                # We deliberately do NOT pick w_min (earliest edge week).
+                                # Edge weeks often have only 1 overlap day (window_weight=5),
+                                # which creates a bad greedy hint for the next nightly run: the
+                                # solver keeps trying to place the visit in a concentration-heavy
+                                # week and times out instead of exploring weeks with full overlap.
+                                # Instead, pick the week with the most overlap days (ties broken
+                                # by earliest week) so the next run starts from a sensible hint.
+                                if candidates:
+                                    best_fallback_w = max(
+                                        candidates, key=lambda wt: (wt[1], -wt[0])
+                                    )[0]
+                                    v.provisional_week = best_fallback_w
 
         return diagnostics
 

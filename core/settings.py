@@ -192,6 +192,17 @@ class Settings(BaseModel):
         in {"1", "true", "yes"}
     )
 
+    # Soft penalty weight for assigning provisional_week to the current (running) week.
+    # 50 000 is below the 100 000 base active-visit reward, so the solver still
+    # schedules a visit in the current week when it is the only feasible option,
+    # but strongly prefers any future week when one is available.
+    # Set to 0 to disable the penalty.
+    season_planner_avoid_current_week_penalty: int = Field(
+        default_factory=lambda: int(
+            os.getenv("SEASON_PLANNER_AVOID_CURRENT_WEEK_PENALTY", "50000")
+        )
+    )
+
     # Holiday reset scheduler (runs Jan 1 to reset org unavailabilities)
     holiday_reset_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(

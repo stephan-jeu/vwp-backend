@@ -8,11 +8,14 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import selectinload
 
 from app.models.activity_log import ActivityLog
+from app.models.cluster import Cluster
 from app.models.function import Function
+from app.models.project import Project
 from app.models.species import Species
 from app.models.user import User
+from app.models.visit import Visit
 from app.schemas.activity_log import ActivityLogListResponse
-from app.schemas.planning import SeasonPlannerStatusRead
+from app.schemas.planning import PlanningDiagnosticDetail, SeasonPlannerStatusRead
 from app.schemas.capacity import CapacitySimulationResponse
 from app.schemas.function import FunctionRead
 from app.schemas.species import SpeciesRead
@@ -245,6 +248,80 @@ async def get_planning_reasons(_: AdminDep, db: DbDep) -> dict[str, str]:
         reason_nl = details.get("reason_nl", "Reden onbekend.")
         reasons[key] = reason_nl
     return reasons
+
+
+@router.get("/planning-diagnostics", response_model=list[PlanningDiagnosticDetail])
+async def get_planning_diagnostics(
+    _: AdminDep, db: DbDep
+) -> list[PlanningDiagnosticDetail]:
+    """Return enriched planning diagnostics for the admin dashboard.
+
+    Joins planning-season ActivityLog entries with their associated visit,
+    cluster and project so the frontend can show actionable warnings without
+    extra round-trips.  One entry per visit is returned; when multiple
+    diagnostics exist for the same visit the most recently inserted one wins.
+
+    Args:
+        _: Ensures the caller is an admin user.
+        db: Async SQLAlchemy session.
+
+    Returns:
+        List of :class:`PlanningDiagnosticDetail` rows, one per affected visit.
+    """
+    log_stmt = (
+        select(ActivityLog)
+        .where(
+            ActivityLog.action.in_(
+                ["planning_season_unscheduled", "planning_season_protocol_violation"]
+            )
+        )
+        .where(ActivityLog.target_id.is_not(None))
+        .order_by(ActivityLog.created_at.asc())
+    )
+    log_rows = (await db.execute(log_stmt)).scalars().all()
+
+    visit_ids = {row.target_id for row in log_rows if row.target_id is not None}
+    if not visit_ids:
+        return []
+
+    visits_stmt = (
+        select(Visit)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id)
+        .where(Visit.id.in_(visit_ids))
+        .options(
+            selectinload(Visit.cluster).selectinload(Cluster.project)
+        )
+    )
+    visits = (await db.execute(visits_stmt)).scalars().unique().all()
+    visit_map: dict[int, Visit] = {v.id: v for v in visits}
+
+    result_map: dict[int, PlanningDiagnosticDetail] = {}
+    for row in log_rows:
+        vid = row.target_id
+        if vid is None:
+            continue
+        visit = visit_map.get(vid)
+        if visit is None:
+            continue
+        cluster = visit.cluster
+        project = cluster.project if cluster else None
+        details = row.details or {}
+        result_map[vid] = PlanningDiagnosticDetail(
+            visit_id=vid,
+            action=row.action,
+            reason_nl=details.get("reason_nl", "Reden onbekend."),
+            reason_code=details.get("reason_code"),
+            cluster_id=visit.cluster_id,
+            cluster_number=cluster.cluster_number if cluster else None,
+            project_code=project.code if project else None,
+            project_location=getattr(project, "location", None) if project else None,
+            visit_nr=visit.visit_nr,
+            from_date=visit.from_date,
+            to_date=visit.to_date,
+        )
+
+    return list(result_map.values())
 
 
 @router.get("/functions", response_model=list[FunctionRead])
