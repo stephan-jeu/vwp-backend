@@ -191,6 +191,25 @@ class Settings(BaseModel):
         ).lower()
         in {"1", "true", "yes"}
     )
+    # Penalty per week a visit drifts from its previous provisional_week.
+    # Lower values let the solver move visits to earlier weeks more freely.
+    # The early-placement bonus is 10 pts/week, so values below 10 mean the
+    # solver will prefer to move visits earlier when capacity allows.
+    provisional_week_stickiness_weight: int = Field(
+        default_factory=lambda: int(
+            os.getenv("PROVISIONAL_WEEK_STICKINESS_WEIGHT", "5")
+        )
+    )
+
+    # Weekly planner: how many future provisional weeks to look ahead when
+    # pulling visits into a week that still has remaining capacity.
+    # 0 = current behaviour (only current/past provisional weeks eligible).
+    # 1 = also consider visits provisionally planned for the next week.
+    week_planner_pull_forward_weeks: int = Field(
+        default_factory=lambda: int(
+            os.getenv("WEEK_PLANNER_PULL_FORWARD_WEEKS", "1")
+        )
+    )
 
     # Soft penalty weight for assigning provisional_week to the current (running) week.
     # 50 000 is below the 100 000 base active-visit reward, so the solver still

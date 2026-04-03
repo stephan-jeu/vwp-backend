@@ -321,6 +321,8 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
 
         # 1. Determine Window [week - 8, week - 1]
         week_num = week_monday.isocalendar().week
+        from core.settings import get_settings as _get_settings
+        _pull_forward_weeks = _get_settings().week_planner_pull_forward_weeks
         # We look back up to 8 weeks (arbitrary safe upper bound for "weeks" or "months" periods)
         lookback_start = max(1, week_num - 8)
         lookback_end = max(0, week_num - 1)
@@ -454,13 +456,11 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 # The Weekly Solver should ONLY optimize what is on the menu.
                 # So:
                 or_(
-                    # A. Authorized by Season Planner (Current or Past Overdue)
-                    Visit.provisional_week <= week_num,
-                    # B. Manually Pinned (Locked) - even if provisional_week is future? (Contradiction? No, manual sets provisional).
-                    # If manual/locked, provisional_week will be set.
-                    # C. Allow "No Provisional" visits if they are explicitly pinned/legacy?
-                    # If we enforce provisional strictly, new un-simulated visits won't show up.
-                    # Safety: Allow if provisional_week IS NULL (Backwards compatibility / new visits not yet simulated)
+                    # A. Authorized by Season Planner (Current or Past Overdue),
+                    # plus up to _pull_forward_weeks future weeks so the weekly planner
+                    # can pull upcoming visits forward when capacity is still available.
+                    Visit.provisional_week <= week_num + _pull_forward_weeks,
+                    # B. Safety: Allow if provisional_week IS NULL (new visits not yet simulated)
                     Visit.provisional_week.is_(None),
                 ),
                 # Exclude visits that are already planned with assigned researchers.

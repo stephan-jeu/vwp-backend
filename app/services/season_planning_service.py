@@ -1728,11 +1728,11 @@ class SeasonPlanningService:
             tightness_reward_vars, tightness_reward_weights
         )
 
-        # Stability: -50 pts per week a visit deviates from its previous provisional_week.
-        # Intentionally kept at ~5× the early-placement bonus (10 pts/week) so that the
-        # solver gently prefers to keep existing assignments ("postit sticky") without
-        # overriding meaningful moves driven by capacity, gap or window constraints.
-        p_stability = cp_model.LinearExpr.Sum(stability_drift_terms) * -50
+        # Stability: penalty per week a visit deviates from its previous provisional_week.
+        # Configurable via PROVISIONAL_WEEK_STICKINESS_WEIGHT (default 5).
+        # At 5 pts/week this is weaker than the early-placement bonus (10 pts/week),
+        # so the solver will prefer moving visits earlier when capacity allows.
+        p_stability = cp_model.LinearExpr.Sum(stability_drift_terms) * -settings.provisional_week_stickiness_weight
 
         # Quadratic load spread: penalises overloading a single week.
         p_quadratic_load = (
