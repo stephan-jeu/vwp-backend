@@ -173,7 +173,7 @@ class Settings(BaseModel):
     # PVW backfill scheduler
     pvw_backfill_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(
-            "PVW_BACKFILL_SCHEDULER_ENABLED", "true"
+            "PVW_BACKFILL_SCHEDULER_ENABLED", "false"
         ).lower()
         in {"1", "true", "yes"}
     )

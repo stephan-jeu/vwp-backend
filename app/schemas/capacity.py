@@ -26,6 +26,7 @@ class FamilyDaypartCapacity(BaseModel):
 class WeekResultCell(BaseModel):
     spare: int
     planned: int
+    demand: int = 0  # raw uncapped demand; equals planned when no overbooking
     shortage: int = 0
 
 

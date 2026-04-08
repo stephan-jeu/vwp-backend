@@ -83,6 +83,7 @@ class VisitUpdate(BaseModel):
     updates for functions/species can be done via their *_ids lists.
     """
 
+    cluster_id: int | None = None
     required_researchers: int | None = None
     visit_nr: int | None = None
     from_date: date | None = None

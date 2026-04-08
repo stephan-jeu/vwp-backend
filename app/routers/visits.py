@@ -429,6 +429,7 @@ async def list_visits(
         items.append(
             {
                 "id": v.id,
+                "project_id": project.id if project else 0,
                 "project_code": project_code,
                 "project_location": project_location,
                 "project_customer": project.customer if project else None,
@@ -1091,8 +1092,18 @@ async def update_visit(
     # while leaving omitted fields untouched.
     data = payload.dict(
         exclude_unset=True,
-        exclude={"function_ids", "species_ids", "researcher_ids"},
+        exclude={"function_ids", "species_ids", "researcher_ids", "cluster_id"},
     )
+
+    # Handle cluster_id change if provided
+    if payload.cluster_id is not None:
+        new_cluster = await db.get(Cluster, payload.cluster_id)
+        if new_cluster is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cluster not found",
+            )
+        visit.cluster_id = payload.cluster_id
 
     # Consistency check: If planned_week is cleared (set to None), also clear planned_date
     if "planned_week" in data and data["planned_week"] is None:

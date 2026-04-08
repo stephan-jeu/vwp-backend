@@ -2568,9 +2568,9 @@ class SeasonPlanningService:
                 if lbl not in week_view_rows:
                     week_view_rows[lbl] = {}
                 curr_row = week_view_rows[lbl].get(
-                    week_iso, {"spare": 0, "planned": 0, "shortage": 0}
+                    week_iso, {"spare": 0, "planned": 0, "demand": 0, "shortage": 0}
                 )
-                curr_row["planned"] += cost
+                curr_row["demand"] += cost
                 week_view_rows[lbl][week_iso] = curr_row
             else:
                 current["shortfall"] += cost
@@ -2632,13 +2632,16 @@ class SeasonPlanningService:
                     week_view_rows[row_key][week_iso] = {
                         "spare": max(0, part_supply_w - planned_w),
                         "planned": min(planned_w, part_supply_w),
+                        "demand": planned_w,
                         "shortage": 0,
                     }
             else:
                 week_view_rows.setdefault("Totalen", {})
+                raw_planned_w = planned_total_by_week.get(w, 0)
                 week_view_rows["Totalen"][week_iso] = {
-                    "spare": max(0, total_supply_w - planned_total_by_week.get(w, 0)),
-                    "planned": min(planned_total_by_week.get(w, 0), total_supply_w),
+                    "spare": max(0, total_supply_w - raw_planned_w),
+                    "planned": min(raw_planned_w, total_supply_w),
+                    "demand": raw_planned_w,
                     "shortage": max(0, total_demand_w - total_supply_w),
                 }
 
@@ -2656,10 +2659,11 @@ class SeasonPlanningService:
                     week_view_rows[row_key][week_iso] = {
                         "spare": 0,
                         "planned": 0,
+                        "demand": 0,
                         "shortage": 0,
                     }
 
-                planned = week_view_rows[row_key][week_iso]["planned"]
+                raw_demand = week_view_rows[row_key][week_iso]["demand"]
 
                 # For part-specific rows, align with the season solver:
                 # Ochtend/Dag/Avond use (part + flex). Unknown parts fall back to total skill.
@@ -2667,16 +2671,17 @@ class SeasonPlanningService:
                     part_supply = round(
                         supply_map_part.get(skill, {}).get(part, {}).get(w, 0)
                     )
-                    demand = demand_by_skill_part.get(skill, {}).get(part, {}).get(w, 0)
+                    skill_demand = demand_by_skill_part.get(skill, {}).get(part, {}).get(w, 0)
                 else:
                     part_supply = round(supply_map.get(skill, {}).get(w, 0))
-                    demand = demand_by_skill.get(skill, {}).get(w, 0)
+                    skill_demand = demand_by_skill.get(skill, {}).get(w, 0)
 
+                week_view_rows[row_key][week_iso]["planned"] = min(raw_demand, part_supply)
                 week_view_rows[row_key][week_iso]["spare"] = max(
-                    0, part_supply - planned
+                    0, part_supply - raw_demand
                 )
                 week_view_rows[row_key][week_iso]["shortage"] = max(
-                    0, demand - part_supply
+                    0, skill_demand - part_supply
                 )
 
         # --- Deadline Summary: per family/part/deadline, count planned/provisional/not_scheduled ---

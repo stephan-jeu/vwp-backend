@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.cluster import Cluster
 from app.models.function import Function
 from app.models.protocol import Protocol
+from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.species import Species
 from app.models.visit import Visit
 from app.db.utils import select_active
@@ -228,11 +229,26 @@ async def duplicate_cluster_with_visits(
             .scalars()
             .all()
         )
+        # Copy pvw links directly from source visit so the sync service does not
+        # need to recalculate them via a functions×species Cartesian product
+        # (which produces incorrect results for combined-protocol visits).
+        if v.protocol_visit_windows:
+            pvw_ids = [pvw.id for pvw in v.protocol_visit_windows]
+            clone.protocol_visit_windows = list(
+                (
+                    await db.execute(
+                        select(ProtocolVisitWindow).where(
+                            ProtocolVisitWindow.id.in_(pvw_ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
         clone.researchers = []
         db.add(clone)
 
     await db.flush()
-    await sync_cluster_pvw_links(db, new_cluster.id)
     return new_cluster
 
 
