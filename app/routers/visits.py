@@ -813,6 +813,7 @@ async def get_visit_detail(
 
     return VisitListRow(
         id=visit.id,
+        project_id=project.id if project else 0,
         project_code=project_code,
         project_location=project_location,
         project_customer=project_customer,
@@ -1049,6 +1050,7 @@ async def list_advertised_visits(
         items.append(
             VisitListRow(
                 id=v.id,
+                project_id=project.id if project else 0,
                 project_code=project_code,
                 project_location=project_location,
                 project_customer=project.customer if project else None,
@@ -1728,6 +1730,7 @@ async def list_visits_for_audit(
         items.append(
             VisitListRow(
                 id=v.id,
+                project_id=project.id if project else 0,
                 project_code=project_code,
                 project_location=project_location,
                 project_customer=project.customer if project else None,

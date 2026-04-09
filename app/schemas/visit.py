@@ -283,6 +283,7 @@ class VisitListRow(BaseModel):
     """
 
     id: int
+    project_id: int
     project_code: str
     project_location: str
     project_customer: str | None = None
