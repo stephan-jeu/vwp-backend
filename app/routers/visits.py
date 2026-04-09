@@ -1195,7 +1195,10 @@ async def update_visit(
     stmt = (
         select(Visit)
         .where(Visit.id == visit_id)
-        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+        .options(
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.species).selectinload(Species.family),
+        )
     )
     visit = (await db.execute(stmt)).scalars().first()
     if visit is None:
