@@ -122,7 +122,9 @@ async def sanitize_future_planning(
         days_diff = (visit_future.from_date - current_week_end).days
 
         if days_diff < required_gap_days:
-            # Violation!
+            # Violation! Skip researcher-locked visits — their researchers are client-specified.
+            if getattr(visit_future, "researchers_locked", False):
+                continue
             if visit_future.researchers:
                 visit_future.researchers.clear()
             visit_future.planned_week = None

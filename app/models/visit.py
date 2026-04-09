@@ -124,6 +124,11 @@ class Visit(TimestampMixin, SoftDeleteMixin, ArchivableMixin, Base):
     planning_locked: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # If True, the current researchers are client-specified and must be preserved
+    # by the weekly planner (hard constraint) and by planning resets.
+    researchers_locked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     advertized: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

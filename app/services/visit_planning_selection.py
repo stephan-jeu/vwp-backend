@@ -463,8 +463,14 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     # B. Safety: Allow if provisional_week IS NULL (new visits not yet simulated)
                     Visit.provisional_week.is_(None),
                 ),
-                # Exclude visits that are already planned with assigned researchers.
-                or_(Visit.planned_week.is_(None), ~Visit.researchers.any()),
+                # Exclude visits that are already planned with assigned researchers,
+                # unless researchers_locked (client-specified researchers that must be
+                # re-confirmed by the solver each week).
+                or_(
+                    Visit.planned_week.is_(None),
+                    ~Visit.researchers.any(),
+                    Visit.researchers_locked.is_(True),
+                ),
                 # Exclude custom visits (manual planning only)
                 Visit.custom_function_name.is_(None),
                 Visit.custom_species_name.is_(None),

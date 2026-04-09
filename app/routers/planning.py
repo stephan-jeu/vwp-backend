@@ -243,12 +243,13 @@ async def clear_planned_researchers(
     else:
         stmt = stmt.options(selectinload(Visit.researchers))
 
-    # Protect Manual/Custom visits from being cleared
+    # Protect Manual/Custom visits and researcher-locked visits from being cleared
     stmt = stmt.where(
         and_(
             Visit.custom_function_name.is_(None),
             Visit.custom_species_name.is_(None),
             Visit.planning_locked.is_(False),
+            Visit.researchers_locked.is_(False),
         )
     )
 

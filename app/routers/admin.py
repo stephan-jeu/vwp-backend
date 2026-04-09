@@ -289,6 +289,8 @@ async def get_planning_diagnostics(
         .join(Cluster, Visit.cluster_id == Cluster.id)
         .join(Project, Cluster.project_id == Project.id)
         .where(Visit.id.in_(visit_ids))
+        .where(Visit.provisional_week.is_(None))
+        .where(Visit.planned_week.is_(None))
         .options(
             selectinload(Visit.cluster).selectinload(Cluster.project)
         )

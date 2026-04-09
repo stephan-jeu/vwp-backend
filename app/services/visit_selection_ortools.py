@@ -227,11 +227,127 @@ def _build_weekly_skip_reason_nl(v: Visit, reason_code: str, week_monday: date) 
             f"(dagdeel: {part})."
         )
 
+    if reason_code == "onderzoekers_vergrendeld_niet_gekwalificeerd":
+        locked_names = ", ".join(
+            getattr(u, "full_name", None) or f"#{getattr(u, 'id', '?')}"
+            for u in (getattr(v, "researchers", []) or [])
+        )
+        return (
+            f"De vastgezette onderzoekers ({locked_names}) zijn niet gekwalificeerd "
+            f"voor dit bezoek. Verwijder de onderzoekers-vergrendeling of wijs "
+            "gekwalificeerde onderzoekers toe."
+        )
+
+    if reason_code == "onderzoekers_vergrendeld_geen_capaciteit":
+        locked_names = ", ".join(
+            getattr(u, "full_name", None) or f"#{getattr(u, 'id', '?')}"
+            for u in (getattr(v, "researchers", []) or [])
+        )
+        return (
+            f"De vastgezette onderzoekers ({locked_names}) hebben onvoldoende "
+            f"capaciteit of zijn niet beschikbaar voor dagdeel '{part}' in week {week_num}. "
+            "Pas de beschikbaarheid aan of verwijder de onderzoekers-vergrendeling."
+        )
+
     # capaciteitsgebrek (default)
     return (
         f"Onvoldoende '{part}'-capaciteit beschikbaar in week {week_num}. "
         "Hogere-prioriteitsbezoeken hebben de beschikbare capaciteit opgebruikt."
     )
+
+
+def _pre_solve_diagnose(
+    *,
+    v_map: dict,
+    u_map: dict,
+    x: dict,
+    scheduled: dict,
+    user_caps: dict,
+    user_daypart_caps: dict,
+    pre_blocked_slots: set,
+    week_monday,
+    today,
+) -> None:
+    """Log structured warnings for known infeasibility patterns before CP-SAT runs.
+
+    This does NOT raise — it only logs so the developer can read the cause in
+    the server output when CP-SAT returns INFEASIBLE.
+    """
+    from app.services.visit_planning_selection import _allowed_day_indices_for_visit
+
+    issues: list[str] = []
+
+    for i, v in v_map.items():
+        vid = getattr(v, "id", i)
+        vname = getattr(v, "name", None) or f"visit#{vid}"
+        req = getattr(v, "required_researchers", 1) or 1
+
+        # 1. No allowed days this week
+        allowed_days = _allowed_day_indices_for_visit(week_monday, v, today=today)
+        if not allowed_days:
+            issues.append(f"  VISIT {vname} (id={vid}): geen toegestane dagen deze week")
+
+        # 2. Fewer qualified researchers than required
+        qualified_js = [j for j in u_map if (i, j) in x]
+        if len(qualified_js) < req:
+            issues.append(
+                f"  VISIT {vname} (id={vid}): slechts {len(qualified_js)} gekwalificeerde "
+                f"onderzoekers, maar {req} vereist"
+            )
+
+        # 3. researchers_locked: check capacity and availability of locked researchers
+        if getattr(v, "researchers_locked", False) and getattr(v, "researchers", None):
+            locked_user_ids = {getattr(u, "id", None) for u in v.researchers} - {None}
+            if locked_user_ids:
+                part = (getattr(v, "part_of_day", "") or "").strip()
+                for j, u in u_map.items():
+                    uid = getattr(u, "id", None)
+                    if uid not in locked_user_ids:
+                        continue
+                    uname = getattr(u, "full_name", None) or f"user#{uid}"
+
+                    # a. Check weekly capacity
+                    cap = user_caps.get(uid, 0)
+                    if cap <= 0:
+                        issues.append(
+                            f"  LOCKED {vname} (id={vid}): onderzoeker {uname} heeft "
+                            f"0 weekcapaciteit (al vol of geen beschikbaarheid)"
+                        )
+
+                    # b. Check if ALL allowed days are pre-blocked for this researcher
+                    if allowed_days and part:
+                        blocked_days = {
+                            d for d in allowed_days
+                            if (uid, d, part) in pre_blocked_slots
+                        }
+                        if blocked_days == set(allowed_days):
+                            issues.append(
+                                f"  LOCKED {vname} (id={vid}): onderzoeker {uname} is op "
+                                f"alle toegestane dagen al bezet in dagdeel '{part}' "
+                                f"(pre_blocked_slots: {sorted(blocked_days)})"
+                            )
+
+                    # c. Check strict-mode day availability
+                    dp_caps = user_daypart_caps.get(uid, {})
+                    allowed_days_dict = dp_caps.get("days", {})
+                    if allowed_days_dict and part and allowed_days:
+                        allowed_days_for_part = set(allowed_days_dict.get(part, [0, 1, 2, 3, 4]))
+                        feasible_days = set(allowed_days) & allowed_days_for_part
+                        if not feasible_days:
+                            issues.append(
+                                f"  LOCKED {vname} (id={vid}): onderzoeker {uname} heeft "
+                                f"geen beschikbaarheid op de toegestane dagen voor dagdeel "
+                                f"'{part}' (beschikbaar: {sorted(allowed_days_for_part)}, "
+                                f"toegestaan voor bezoek: {sorted(allowed_days)})"
+                            )
+
+    if issues:
+        _logger.warning(
+            "WeeklyPlanning pre-solve diagnose: mogelijke infeasibility-oorzaken:\n%s",
+            "\n".join(issues),
+        )
+    else:
+        _logger.info("WeeklyPlanning pre-solve diagnose: geen bekende harde conflicten gevonden")
 
 
 async def select_visits_cp_sat(
@@ -454,7 +570,12 @@ async def select_visits_cp_sat(
     # Helper lookups
     # Sort visits by priority key to establish rank-based weights
     # This ensures the solver respects deadlines and tie-breakers similar to legacy heuristic
-    visits.sort(key=lambda v: _priority_key(week_monday, v))
+    # Locked visits get the highest greedy priority so the warm-start hint includes them,
+    # preventing CP-SAT from needing to discover the swap within the time limit.
+    visits.sort(key=lambda v: (
+        0 if (getattr(v, "researchers_locked", False) and getattr(v, "researchers", None)) else 1,
+        _priority_key(week_monday, v),
+    ))
 
     v_map = {i: v for i, v in enumerate(visits)}
     u_map = {i: u for i, u in enumerate(users)}
@@ -516,12 +637,31 @@ async def select_visits_cp_sat(
     # Max Travel ~ 120. Max Load Cost ~ 30 * N^2.
     # Use a large base.
     BASE_REWARD = 10000
+    # Locked visits get a reward larger than the sum of all other visits combined,
+    # so the solver always prefers assigning the locked researcher to their locked
+    # visit over any other combination.
+    LOCKED_REWARD = BASE_REWARD * (len(v_map) + 1) * 2
     visit_weights = {i: BASE_REWARD + (len(visits) - i) * 100 for i in v_map}
+    for i, v in v_map.items():
+        if getattr(v, "researchers_locked", False) and getattr(v, "researchers", None):
+            locked_ids = {getattr(u, "id", None) for u in v.researchers} - {None}
+            if locked_ids:
+                visit_weights[i] = LOCKED_REWARD + (len(visits) - i) * 100
+                _logger.info(
+                    "LOCKED_REWARD applied: visit_id=%s weight=%d locked_user_ids=%s",
+                    getattr(v, "id", i),
+                    visit_weights[i],
+                    locked_ids,
+                )
     # Pool 2 (pairing-only) visits have no independent reward — only the pairing bonus
     for i in pairing_only_indices:
         visit_weights[i] = 0
 
     # --- Constraints ---
+
+    # Tracks (i, j) pairs where researcher j is locked to visit i.
+    # These must bypass the travel-time hard cutoff.
+    locked_assignments: set[tuple[int, int]] = set()
 
     for i, v in v_map.items():
         scheduled[i] = model.NewBoolVar(f"scheduled_{i}")
@@ -573,6 +713,41 @@ async def select_visits_cp_sat(
             model.Add(sum(assigned_vars) == req * scheduled[i])
         else:
             model.Add(scheduled[i] == 0)
+
+        # 2b-post. Researchers-locked soft constraint.
+        # If the visit has client-specified researchers, force exactly those users to be
+        # assigned (if the visit is scheduled) and block all others.
+        # The visit is NOT forced to be scheduled — if the locked researchers lack
+        # capacity or availability the solver simply skips it (scheduled == 0) and a
+        # diagnostic warning is emitted in the result.
+        if getattr(v, "researchers_locked", False) and getattr(v, "researchers", None):
+            locked_user_ids = {getattr(u, "id", None) for u in v.researchers}
+            locked_user_ids.discard(None)
+            if locked_user_ids:
+                allowed_days = _allowed_day_indices_for_visit(week_monday, v, today=today)
+                part = (getattr(v, "part_of_day", "") or "").strip()
+                for j, u in u_map.items():
+                    uid = getattr(u, "id", None)
+                    if uid not in locked_user_ids:
+                        if (i, j) in x:
+                            model.Add(x[i, j] == 0)
+                        continue
+                    # Locked researcher diagnostics
+                    cap = user_caps.get(uid, 0)
+                    dp_caps = user_daypart_caps.get(uid, {})
+                    dedicated = dp_caps.get(part, 0)
+                    flex = dp_caps.get("Flex", 0)
+                    uname = getattr(u, "full_name", None) or f"user#{uid}"
+                    qualified = (i, j) in x
+                    _logger.info(
+                        "LOCKED constraint: visit_id=%s user=%s qualified=%s "
+                        "weekly_cap=%d dedicated_%s=%d flex=%d allowed_days=%s",
+                        getattr(v, "id", i), uname, qualified,
+                        cap, part, dedicated, flex, allowed_days,
+                    )
+                    if qualified:
+                        model.Add(x[i, j] == scheduled[i])
+                        locked_assignments.add((i, j))
 
     # 2c-pre. Huismus pairing variables (feature_huismus_pairing).
     #
@@ -991,8 +1166,21 @@ async def select_visits_cp_sat(
                 cost = travel_costs.get((i, j), 0)
                 if cost > 0:
                     if cost > TRAVEL_TIME_HARD_LIMIT:
-                        model.Add(x[i, j] == 0)
-                        continue
+                        if (i, j) in locked_assignments:
+                            # Admin explicitly locked this researcher: respect the choice
+                            # even if travel time exceeds the hard limit. Log a warning
+                            # so the planner is aware.
+                            _logger.warning(
+                                "Locked researcher (visit_id=%s, user_id=%s) exceeds "
+                                "travel hard limit (%d min > %d min) — hard limit bypassed.",
+                                getattr(v_map[i], "id", i),
+                                getattr(u_map[j], "id", j),
+                                cost,
+                                TRAVEL_TIME_HARD_LIMIT,
+                            )
+                        else:
+                            model.Add(x[i, j] == 0)
+                            continue
                     obj_terms.append(x[i, j] * -(cost * TRAVEL_TIME_WEIGHT))
 
     # Huismus pairing bonus: reward the solver for forming a valid Huismus pair
@@ -1411,6 +1599,21 @@ async def select_visits_cp_sat(
 
     solver.parameters.max_time_in_seconds = timeout_seconds
     solver.parameters.num_search_workers = 2
+
+    # --- Pre-solve infeasibility diagnostics ---
+    # Check known hard-constraint patterns that cause INFEASIBLE before the solver even runs.
+    _pre_solve_diagnose(
+        v_map=v_map,
+        u_map=u_map,
+        x=x,
+        scheduled=scheduled,
+        user_caps=user_caps,
+        user_daypart_caps=user_daypart_caps,
+        pre_blocked_slots=pre_blocked_slots,
+        week_monday=week_monday,
+        today=today,
+    )
+
     status = solver.Solve(model)
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -1520,6 +1723,26 @@ async def select_visits_cp_sat(
         )
         _logger.info("WeeklyPlanning CP-SAT summary: quality=FAILED")
 
+        if status == cp_model.INFEASIBLE:
+            # Log locked visits summary to help diagnose the conflict
+            locked_visits = [
+                (i, v) for i, v in v_map.items()
+                if getattr(v, "researchers_locked", False) and getattr(v, "researchers", None)
+            ]
+            if locked_visits:
+                _logger.warning(
+                    "WeeklyPlanning INFEASIBLE: %d bezoek(en) met researchers_locked=True "
+                    "(zie pre-solve diagnose hierboven voor details): %s",
+                    len(locked_visits),
+                    [getattr(v, "id", i) for i, v in locked_visits],
+                )
+            else:
+                _logger.warning(
+                    "WeeklyPlanning INFEASIBLE: geen researchers_locked bezoeken. "
+                    "Mogelijke oorzaak: te weinig capaciteit voor verplichte combinaties "
+                    "(strict availability, pre_blocked_slots, of gekwalificeerde onderzoekers)."
+                )
+
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         msg = (
             "WeeklyPlanning CP-SAT produced no feasible solution. "
@@ -1600,6 +1823,15 @@ async def select_visits_cp_sat(
                     skip_reason[v.id] = "geen_dag_in_venster"
                 elif not any((i, j) in x for j in u_map):
                     skip_reason[v.id] = "geen_gekwalificeerde_onderzoekers"
+                elif getattr(v, "researchers_locked", False) and getattr(v, "researchers", None):
+                    # Check if locked researchers are unqualified (not in x) vs. lacking capacity
+                    locked_ids = {getattr(lu, "id", None) for lu in v.researchers} - {None}
+                    locked_js = [j for j, u in u_map.items() if getattr(u, "id", None) in locked_ids]
+                    locked_qualified = any((i, j) in x for j in locked_js)
+                    if not locked_qualified:
+                        skip_reason[v.id] = "onderzoekers_vergrendeld_niet_gekwalificeerd"
+                    else:
+                        skip_reason[v.id] = "onderzoekers_vergrendeld_geen_capaciteit"
                 else:
                     skip_reason[v.id] = "capaciteitsgebrek"
             skipped_visits.append(v)

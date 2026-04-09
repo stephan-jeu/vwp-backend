@@ -98,6 +98,73 @@ def _validate_planning_locked_payload(
         )
 
 
+async def _validate_researchers_locked_payload(
+    db: AsyncSession,
+    *,
+    researchers_locked: bool,
+    researcher_ids: list[int] | None,
+    visit: "Visit | None" = None,
+) -> None:
+    """Validate that researchers_locked constraints are satisfied.
+
+    Raises HTTP 422 when:
+    - researchers_locked is True but no researcher_ids are provided.
+    - Any of the specified researchers do not exist.
+    - The number of locked researchers does not match required_researchers.
+    - Any locked researcher is not qualified for the visit.
+    """
+    if not researchers_locked:
+        return
+    effective_ids = researcher_ids or (
+        [r.id for r in visit.researchers] if visit else []
+    )
+    if not effective_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="researchers_locked requires at least one researcher",
+        )
+    # Verify all specified researchers exist and are active
+    stmt = select(User).where(
+        User.id.in_(effective_ids),
+        User.deleted_at.is_(None),
+    )
+    found = (await db.execute(stmt)).scalars().all()
+    if len(found) != len(set(effective_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="researchers_locked: one or more specified researchers were not found",
+        )
+
+    if visit is not None:
+        from app.services.visit_planning_selection import _qualifies_user_for_visit
+
+        # Check count matches required_researchers
+        required = getattr(visit, "required_researchers", 1) or 1
+        if len(set(effective_ids)) != required:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"researchers_locked: aantal vergrendelde onderzoekers ({len(set(effective_ids))}) "
+                    f"komt niet overeen met het vereiste aantal onderzoekers ({required})"
+                ),
+            )
+
+        # Check each researcher is qualified
+        unqualified = [
+            u.full_name or f"#{u.id}"
+            for u in found
+            if not _qualifies_user_for_visit(u, visit)
+        ]
+        if unqualified:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"researchers_locked: de volgende onderzoekers zijn niet gekwalificeerd "
+                    f"voor dit bezoek: {', '.join(unqualified)}"
+                ),
+            )
+
+
 async def _resolve_pvw_ids_for_visit(
     db: AsyncSession,
     *,
@@ -471,6 +538,7 @@ async def list_visits(
                 "part_of_day": v.part_of_day,
                 "start_time_text": v.start_time_text,
                 "planning_locked": v.planning_locked,
+                "researchers_locked": v.researchers_locked,
                 "researchers": [
                     UserNameRead(id=r.id, full_name=r.full_name) for r in v.researchers
                 ],
@@ -782,6 +850,7 @@ async def get_visit_detail(
         part_of_day=visit.part_of_day,
         start_time_text=visit.start_time_text,
         planning_locked=visit.planning_locked,
+        researchers_locked=visit.researchers_locked,
         researchers=[
             UserNameRead(id=r.id, full_name=r.full_name) for r in visit.researchers
         ],
@@ -805,6 +874,11 @@ async def create_visit(
         planning_locked=payload.planning_locked,
         planned_week=payload.planned_week,
         planned_date=payload.planned_date,
+        researcher_ids=payload.researcher_ids,
+    )
+    await _validate_researchers_locked_payload(
+        db,
+        researchers_locked=getattr(payload, "researchers_locked", False),
         researcher_ids=payload.researcher_ids,
     )
 
@@ -1066,6 +1140,46 @@ async def list_visit_activity(
     return list(result.scalars().all())
 
 
+@router.get("/{visit_id}/researcher-qualification")
+async def check_researcher_qualification(
+    _: AdminDep,
+    db: DbDep,
+    visit_id: int,
+    researcher_ids: Annotated[list[int], Query()] = [],
+) -> dict:
+    """Check whether the given researchers are qualified for the visit.
+
+    Returns a list of unqualified researcher names so the frontend can warn the user.
+    """
+    stmt = (
+        select_active(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.functions),
+            selectinload(Visit.species).selectinload(Species.family),
+        )
+    )
+    visit = (await db.execute(stmt)).scalars().first()
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
+
+    if not researcher_ids:
+        return {"unqualified": []}
+
+    user_stmt = select(User).where(
+        User.id.in_(researcher_ids),
+        User.deleted_at.is_(None),
+    )
+    users = (await db.execute(user_stmt)).scalars().all()
+
+    unqualified = [
+        {"id": u.id, "full_name": u.full_name}
+        for u in users
+        if not _qualifies_user_for_visit(u, visit)
+    ]
+    return {"unqualified": unqualified}
+
+
 @router.put("/{visit_id}", response_model=VisitRead)
 async def update_visit(
     admin: AdminDep, db: DbDep, visit_id: int, payload: VisitUpdate
@@ -1193,6 +1307,13 @@ async def update_visit(
         planned_week=final_planned_week,
         planned_date=final_planned_date,
         researcher_ids=final_researcher_ids,
+    )
+    final_researchers_locked = bool(getattr(visit, "researchers_locked", False))
+    await _validate_researchers_locked_payload(
+        db,
+        researchers_locked=final_researchers_locked,
+        researcher_ids=final_researcher_ids,
+        visit=visit,
     )
 
     # Auto-update Protocol Visit Windows if species/functions/visit_nr changed
