@@ -226,6 +226,7 @@ async def get_tight_visit_chains(
 
                 visit_row = VisitListRow(
                     id=v.id,
+                    project_id=v.cluster.project.id,
                     project_code=v.cluster.project.code,
                     project_location=v.cluster.project.location or "",
                     cluster_id=v.cluster_id,
