@@ -2443,12 +2443,15 @@ class SeasonPlanningService:
         supply_map_part = {}  # Skill -> Part -> Week -> Count
 
         # Map active Horizon
+        # Only include weeks >= current_week to avoid past planned/provisional weeks
+        # pulling the horizon backwards and showing stale columns in the grid.
         weeks = sorted(
             list(
                 set(
                     (v.provisional_week or v.planned_week)
                     for v in visits
                     if (v.provisional_week or v.planned_week)
+                    and (v.provisional_week or v.planned_week) >= current_week
                 )
                 | {start_date.isocalendar().week}
                 | demand_weeks
