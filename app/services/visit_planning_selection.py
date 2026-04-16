@@ -420,6 +420,36 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     # Block this protocol FOR THIS CLUSTER only
                     blocked_pairs.add((prot_id, locked_cluster_id))
 
+        # Same-week block: visits that are planning_locked in the current week are
+        # already committed and not in the candidate pool. Any sibling visit from
+        # the same protocol+cluster in the same week would violate min_period
+        # (intra-week gap is at most 4 days, so any min_period >= 5 days is
+        # violated). Block those siblings unconditionally.
+        stmt_locked_this_week = (
+            select(Protocol.id, Visit.cluster_id)
+            .join(
+                ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id
+            )
+            .join(
+                visit_protocol_visit_windows,
+                visit_protocol_visit_windows.c.protocol_visit_window_id
+                == ProtocolVisitWindow.id,
+            )
+            .join(Visit, Visit.id == visit_protocol_visit_windows.c.visit_id)
+            .where(
+                and_(
+                    Visit.planned_week == week_num,
+                    Visit.planning_locked.is_(True),
+                    Visit.deleted_at.is_(None),
+                    Protocol.min_period_between_visits_value.isnot(None),
+                )
+            )
+        )
+        for prot_id, cluster_id in (
+            await db.execute(stmt_locked_this_week)
+        ).unique().all():
+            blocked_pairs.add((prot_id, cluster_id))
+
     stmt = (
         select_active(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
