@@ -66,17 +66,27 @@ def apply_visit_filters(
 
     if species_ids:
         # Include visits that have the species via the junction table OR via
-        # custom_species_name matching the name of one of the selected species.
+        # custom_species_name containing the name of one of the selected species.
+        # LIKE matching (rather than exact IN) handles cases where custom_species_name
+        # contains multiple species joined as free text (e.g. "Huismus en Spreeuw").
         species_junction_subq = select(visit_species.c.visit_id).where(
             visit_species.c.species_id.in_(species_ids)
         )
-        custom_species_name_subq = select(Species.name).where(
-            Species.id.in_(species_ids)
+        custom_name_match = (
+            select(Species.id)
+            .where(
+                Species.id.in_(species_ids),
+                func.lower(Visit.custom_species_name).like(
+                    func.concat("%", func.lower(Species.name), "%")
+                ),
+            )
+            .correlate(Visit)
+            .exists()
         )
         stmt = stmt.where(
             or_(
                 Visit.id.in_(species_junction_subq),
-                Visit.custom_species_name.in_(custom_species_name_subq),
+                custom_name_match,
             )
         )
 

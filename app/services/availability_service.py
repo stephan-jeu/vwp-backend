@@ -75,6 +75,7 @@ async def list_by_week_range(
         .join(visit_researchers, visit_researchers.c.visit_id == Visit.id)
         .where(
             and_(
+                Visit.deleted_at.is_(None),
                 Visit.planned_week.is_not(None),
                 Visit.planned_week >= week_start,
                 Visit.planned_week <= week_end,
@@ -218,6 +219,7 @@ async def _list_by_week_range_strict(
         .join(visit_researchers, visit_researchers.c.visit_id == Visit.id)
         .where(
             and_(
+                Visit.deleted_at.is_(None),
                 Visit.planned_week.is_not(None),
                 Visit.planned_week >= week_start,
                 Visit.planned_week <= week_end,
