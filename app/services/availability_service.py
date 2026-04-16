@@ -6,11 +6,53 @@ from sqlalchemy import Select, and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.utils import select_active
+from app.models.activity_log import ActivityLog
 from app.models.availability import AvailabilityWeek
 from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.user import User
 from app.models.visit import Visit, visit_researchers
+
+_VISIT_STATUS_ACTIONS = {
+    "visit_executed",
+    "visit_executed_deviation",
+    "visit_executed_with_deviation",
+    "visit_not_executed",
+    "visit_approved",
+    "visit_rejected",
+    "visit_cancelled",
+    "visit_status_cleared",
+}
+
+
+def _cancelled_visit_ids_subq():
+    """Subquery returning visit IDs whose latest status log is visit_cancelled."""
+    latest_log_subq = (
+        select(
+            ActivityLog.target_id.label("visit_id"),
+            func.max(ActivityLog.created_at).label("latest_at"),
+        )
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.action.in_(_VISIT_STATUS_ACTIONS),
+        )
+        .group_by(ActivityLog.target_id)
+        .subquery()
+    )
+    return (
+        select(ActivityLog.target_id)
+        .join(
+            latest_log_subq,
+            and_(
+                ActivityLog.target_id == latest_log_subq.c.visit_id,
+                ActivityLog.created_at == latest_log_subq.c.latest_at,
+            ),
+        )
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.action == "visit_cancelled",
+        )
+    )
 from app.schemas.availability import (
     AvailabilityCellUpdate,
     AvailabilityCompact,
@@ -85,6 +127,7 @@ async def list_by_week_range(
                 Visit.planned_week >= week_start,
                 Visit.planned_week <= week_end,
                 Visit.part_of_day.is_not(None),
+                Visit.id.not_in(_cancelled_visit_ids_subq()),
             )
         )
         .where(or_(Project.quote.is_(False), Project.quote.is_(None)))
@@ -233,6 +276,7 @@ async def _list_by_week_range_strict(
                 Visit.planned_week >= week_start,
                 Visit.planned_week <= week_end,
                 Visit.part_of_day.is_not(None),
+                Visit.id.not_in(_cancelled_visit_ids_subq()),
             )
         )
         .where(or_(Project.quote.is_(False), Project.quote.is_(None)))
