@@ -480,6 +480,8 @@ async def duplicate_cluster(
         new_address=payload.address,
         new_location=payload.location,
     )
+    # Eager-load the project relationship to avoid lazy-load in async context
+    await db.refresh(new_cluster, ["project"])
     await _geocode_cluster(new_cluster)
     await db.commit()
     await db.refresh(new_cluster)
