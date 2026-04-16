@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from sqlalchemy import Select, and_, select, func
+from sqlalchemy import Select, and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.utils import select_active
 from app.models.availability import AvailabilityWeek
+from app.models.cluster import Cluster
+from app.models.project import Project
 from app.models.user import User
 from app.models.visit import Visit, visit_researchers
 from app.schemas.availability import (
@@ -73,15 +75,19 @@ async def list_by_week_range(
             func.count().label("cnt"),
         )
         .join(visit_researchers, visit_researchers.c.visit_id == Visit.id)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id, isouter=True)
         .where(
             and_(
                 Visit.deleted_at.is_(None),
+                Visit.is_archived.is_(False),
                 Visit.planned_week.is_not(None),
                 Visit.planned_week >= week_start,
                 Visit.planned_week <= week_end,
                 Visit.part_of_day.is_not(None),
             )
         )
+        .where(or_(Project.quote.is_(False), Project.quote.is_(None)))
         .group_by(visit_researchers.c.user_id, Visit.planned_week, Visit.part_of_day)
     )
 
@@ -217,15 +223,19 @@ async def _list_by_week_range_strict(
             func.count().label("cnt"),
         )
         .join(visit_researchers, visit_researchers.c.visit_id == Visit.id)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id, isouter=True)
         .where(
             and_(
                 Visit.deleted_at.is_(None),
+                Visit.is_archived.is_(False),
                 Visit.planned_week.is_not(None),
                 Visit.planned_week >= week_start,
                 Visit.planned_week <= week_end,
                 Visit.part_of_day.is_not(None),
             )
         )
+        .where(or_(Project.quote.is_(False), Project.quote.is_(None)))
         .group_by(visit_researchers.c.user_id, Visit.planned_week, Visit.part_of_day)
     )
     assignments_result = await db.execute(assignments_stmt)
