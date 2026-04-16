@@ -50,29 +50,45 @@ def apply_visit_filters(
     if cluster_number is not None:
         stmt = stmt.where(Cluster.cluster_number.ilike(f"%{cluster_number}%"))
 
-    joined_functions = False
-    joined_species = False
     if function_ids:
-        stmt = stmt.join(visit_functions, Visit.id == visit_functions.c.visit_id)
-        stmt = stmt.where(visit_functions.c.function_id.in_(function_ids))
-        joined_functions = True
+        # Include visits that have the function via the junction table OR via
+        # custom_function_name matching the name of one of the selected functions.
+        function_junction_subq = select(visit_functions.c.visit_id).where(
+            visit_functions.c.function_id.in_(function_ids)
+        )
+        custom_name_subq = select(Function.name).where(Function.id.in_(function_ids))
+        stmt = stmt.where(
+            or_(
+                Visit.id.in_(function_junction_subq),
+                Visit.custom_function_name.in_(custom_name_subq),
+            )
+        )
 
     if species_ids:
-        stmt = stmt.join(visit_species, Visit.id == visit_species.c.visit_id)
-        stmt = stmt.where(visit_species.c.species_id.in_(species_ids))
-        joined_species = True
+        # Include visits that have the species via the junction table OR via
+        # custom_species_name matching the name of one of the selected species.
+        species_junction_subq = select(visit_species.c.visit_id).where(
+            visit_species.c.species_id.in_(species_ids)
+        )
+        custom_species_name_subq = select(Species.name).where(
+            Species.id.in_(species_ids)
+        )
+        stmt = stmt.where(
+            or_(
+                Visit.id.in_(species_junction_subq),
+                Visit.custom_species_name.in_(custom_species_name_subq),
+            )
+        )
 
     # Optional text search across project, cluster and related names
     if search:
         term = search.strip().lower()
         like = f"%{term}%"
-        if not joined_functions:
-            stmt = stmt.outerjoin(
-                visit_functions, Visit.id == visit_functions.c.visit_id
-            )
+        stmt = stmt.outerjoin(
+            visit_functions, Visit.id == visit_functions.c.visit_id
+        )
         stmt = stmt.outerjoin(Function, Function.id == visit_functions.c.function_id)
-        if not joined_species:
-            stmt = stmt.outerjoin(visit_species, Visit.id == visit_species.c.visit_id)
+        stmt = stmt.outerjoin(visit_species, Visit.id == visit_species.c.visit_id)
         stmt = stmt.outerjoin(Species, Species.id == visit_species.c.species_id)
         stmt = stmt.outerjoin(
             visit_researchers, Visit.id == visit_researchers.c.visit_id
