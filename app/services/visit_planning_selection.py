@@ -313,6 +313,10 @@ async def _load_week_capacity(db: AsyncSession, week: int) -> dict:
 async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list[Visit]:
     week_friday = _end_of_work_week(week_monday)
 
+    from app.models.protocol_visit_window import ProtocolVisitWindow
+    from app.models.protocol import Protocol
+    from app.models.visit import visit_protocol_visit_windows
+
     async with db.begin_nested() if db.in_transaction() else db.begin() as _:
         # Sub-query for look-back logic (Protocol Frequency Control)
         # Find protocols that have 'locked' visits in the past, up to 8 weeks.
@@ -327,13 +331,9 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
         lookback_start = max(1, week_num - 8)
         lookback_end = max(0, week_num - 1)
 
-        if lookback_end >= lookback_start:
-            # We need to import ProtocolVisitWindow here or inside function if not top-level
-            from app.models.protocol_visit_window import ProtocolVisitWindow
-            from app.models.protocol import Protocol
+        blocked_pairs: set[tuple[int, int]] = set()
 
-            # Junction table
-            from app.models.visit import visit_protocol_visit_windows
+        if lookback_end >= lookback_start:
 
             # Query visits that are planned in the lookback window AND have researchers
             # AND retrieve their associated protocol info (min_period value/unit)
@@ -370,10 +370,6 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             )
             rows_p = (await db.execute(stmt_hist)).unique().all()
 
-            # Check conflicts
-            # Target start date for new visits is roughly week_monday.
-            blocked_pairs = set()
-
             for (
                 prot_id,
                 min_val,
@@ -396,20 +392,24 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 else:  # days or None
                     required_gap_days = min_val
 
-                # Gap = (Target End - Locked Start) [OPTIMISTIC]
-                # Target End is week_friday (week_monday + 4).
-                # Locked Start is locked_visit_start.
+                # Gap = (Target Friday - Monday of locked_week).
+                # Using planned_week Monday as reference gives the actual execution
+                # date. The previous approach used from_date (window start), which
+                # can be weeks earlier than when the visit was really planned,
+                # causing the gap check to incorrectly pass.
 
-                ref_date = locked_visit_start
-                if not ref_date:
-                    # Fallback: estimate from week number
-                    # Assume locked visit happened on MONDAY of its week to be rigorous?
-                    # OR MONDAY to be Optimistic?
-                    # Optimistic goal: Maximize gap. So Assume Locked = Monday.
-                    ref_week_monday = date.fromisocalendar(
-                        week_monday.year, locked_week, 1
-                    )  # Approx year
-                    ref_date = ref_week_monday
+                if locked_week:
+                    try:
+                        ref_year = (
+                            locked_visit_start.year
+                            if locked_visit_start
+                            else week_monday.year
+                        )
+                        ref_date = date.fromisocalendar(ref_year, locked_week, 1)
+                    except ValueError:
+                        ref_date = locked_visit_start or week_monday
+                else:
+                    ref_date = locked_visit_start or week_monday
 
                 # Target Friday
                 target_friday = week_friday
@@ -482,7 +482,7 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.researchers),
             selectinload(Visit.cluster).selectinload(Cluster.project),
-            selectinload(Visit.protocol_visit_windows),
+            selectinload(Visit.protocol_visit_windows).selectinload(ProtocolVisitWindow.protocol),
         )
     )
 
@@ -539,31 +539,71 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 reasons,
             )
 
-    if not blocked_pairs:
-        return candidates
-
     # Filter out candidates belonging to blocked (protocol, cluster) pairs
+    if blocked_pairs:
+        pre_dedup = []
+        for v in candidates:
+            v_pids = {pvw.protocol_id for pvw in (v.protocol_visit_windows or [])}
+            is_blocked = any(
+                (pid, v.cluster_id) in blocked_pairs for pid in v_pids
+            )
+            if is_blocked:
+                if _DEBUG_PLANNING and v.id in _DEBUG_PLANNING_VISIT_IDS:
+                    _logger.debug(
+                        "planning_debug visit_id=%s excluded_stage=blocked_pairs",
+                        v.id,
+                    )
+            else:
+                pre_dedup.append(v)
+    else:
+        pre_dedup = list(candidates)
+
+    # Intra-week protocol frequency deduplication.
+    # A protocol with min_period > 0 may appear at most once per (protocol, cluster)
+    # per planning week. When two visits of the same protocol+cluster are both
+    # eligible (their windows overlap the current week), only the one with the
+    # earliest from_date passes through. The later visit will be picked up in a
+    # subsequent planning run once the gap requirement is satisfied.
+    #
+    # This guards against the case where the backwards lookback cannot help:
+    # neither visit is locked yet, so there is nothing in the history to block on.
+    proto_cluster_winner: dict[tuple[int, int], int] = {}  # key -> winning visit.id
+
+    for v in pre_dedup:
+        v_from = v.from_date or date.min
+        for pvw in (v.protocol_visit_windows or []):
+            prot = getattr(pvw, "protocol", None)
+            if not prot or not prot.min_period_between_visits_value:
+                continue
+            key = (prot.id, v.cluster_id)
+            if key not in proto_cluster_winner:
+                proto_cluster_winner[key] = v.id
+            else:
+                winner_id = proto_cluster_winner[key]
+                winner = next((x for x in pre_dedup if x.id == winner_id), None)
+                winner_from = (winner.from_date if winner else None) or date.min
+                if v_from < winner_from:
+                    proto_cluster_winner[key] = v.id
+
     filtered = []
-    for v in candidates:
-        # Check if v has any (protocol, cluster) in blocked_pairs
-        v_pids = {pvw.protocol_id for pvw in (v.protocol_visit_windows or [])}
-
-        # Candidate is blocked if ANY of its protocols are blocked FOR ITS CLUSTER
-        is_blocked = False
-        for pid in v_pids:
-            if (pid, v.cluster_id) in blocked_pairs:
-                is_blocked = True
+    for v in pre_dedup:
+        is_dedup_blocked = False
+        for pvw in (v.protocol_visit_windows or []):
+            prot = getattr(pvw, "protocol", None)
+            if not prot or not prot.min_period_between_visits_value:
+                continue
+            key = (prot.id, v.cluster_id)
+            if proto_cluster_winner.get(key) != v.id:
+                is_dedup_blocked = True
                 break
-
-        if is_blocked:
+        if is_dedup_blocked:
             if _DEBUG_PLANNING and v.id in _DEBUG_PLANNING_VISIT_IDS:
                 _logger.debug(
-                    "planning_debug visit_id=%s excluded_stage=blocked_pairs",
+                    "planning_debug visit_id=%s excluded_stage=intra_week_protocol_dedup",
                     v.id,
                 )
-            continue
-
-        filtered.append(v)
+        else:
+            filtered.append(v)
 
     return filtered
 

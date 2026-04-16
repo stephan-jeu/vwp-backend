@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models import Base, TimestampMixin, SoftDeleteMixin, ArchivableMixin
@@ -25,3 +25,5 @@ class Cluster(TimestampMixin, SoftDeleteMixin, ArchivableMixin, Base):
     address: Mapped[str] = mapped_column(String(255))
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     cluster_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lon: Mapped[float | None] = mapped_column(Float, nullable=True)

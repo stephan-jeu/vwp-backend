@@ -1113,6 +1113,9 @@ async def select_visits_cp_sat(
         pairs_to_check: list[tuple[str, str]] = []
         pair_to_indices: dict[tuple[str, str], list[tuple[int, int]]] = {}
 
+        # Coördinaten per adresstring voor Haversine-fallback (geen postcode-zones nodig)
+        addr_to_coords: dict[str, tuple[float, float]] = {}
+
         for i, v in v_map.items():
             cluster = getattr(v, "cluster", None)
             dest = getattr(cluster, "address", None)
@@ -1133,6 +1136,12 @@ async def select_visits_cp_sat(
                 if loc:
                     dest = f"{dest}, {loc}"
 
+            # Sla opgeslagen coördinaten op voor Haversine-fallback
+            c_lat = getattr(cluster, "lat", None)
+            c_lon = getattr(cluster, "lon", None)
+            if c_lat is not None and c_lon is not None:
+                addr_to_coords[dest] = (c_lat, c_lon)
+
             for j, u in u_map.items():
                 if _qualifies_user_for_visit(u, v):
                     origin = getattr(u, "address", None)
@@ -1140,13 +1149,19 @@ async def select_visits_cp_sat(
                         origin = getattr(u, "city", None)
 
                     if origin:
+                        # Sla coördinaten van onderzoeker op voor Haversine-fallback
+                        u_lat = getattr(u, "lat", None)
+                        u_lon = getattr(u, "lon", None)
+                        if u_lat is not None and u_lon is not None:
+                            addr_to_coords[origin] = (u_lat, u_lon)
+
                         key = (origin, dest)
                         pairs_to_check.append(key)
                         if key not in pair_to_indices:
                             pair_to_indices[key] = []
                         pair_to_indices[key].append((i, j))
 
-        # Parallel Fetch
+        # Parallel Fetch via Google Maps (gecached)
         if pairs_to_check:
             batch_results = await travel_time.get_travel_minutes_batch(
                 pairs_to_check, db=db
@@ -1156,6 +1171,20 @@ async def select_visits_cp_sat(
                 indices_list = pair_to_indices.get((origin, dest), [])
                 for i, j in indices_list:
                     travel_costs[i, j] = mins
+
+            # Haversine-fallback voor paren zonder Google Maps resultaat
+            # (bijv. geen API-key of cache miss). Beter dan postcode-zones:
+            # Lelystad (82xx) en Almere (13xx) zijn dichtbij maar postcodegewijs ver.
+            for key, indices_list in pair_to_indices.items():
+                origin, dest = key
+                if any((i, j) not in travel_costs for i, j in indices_list):
+                    o_coords = addr_to_coords.get(origin)
+                    d_coords = addr_to_coords.get(dest)
+                    if o_coords and d_coords:
+                        mins = travel_time.haversine_minutes(*o_coords, *d_coords)
+                        for i, j in indices_list:
+                            if (i, j) not in travel_costs:
+                                travel_costs[i, j] = mins
 
     for i, v in v_map.items():
         base_val = visit_weights[i]

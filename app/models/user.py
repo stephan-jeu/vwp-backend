@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Enum, String, Index, text, DateTime
+from sqlalchemy import Enum, Float, String, Index, text, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, TimestampMixin, SoftDeleteMixin
@@ -37,6 +37,8 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
     admin: Mapped[bool] = mapped_column(default=False, server_default="false")
     city: Mapped[str | None] = mapped_column(String(255), nullable=True)
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lon: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     class ContractType(StrEnum):
         INTERN = "Intern"

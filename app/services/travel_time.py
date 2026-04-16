@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Optional
 
@@ -11,6 +12,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.travel_time_cache import TravelTimeCache
 
 _logger = logging.getLogger("uvicorn.error")
+
+# Gemiddelde rijsnelheid in NL in km/h (inclusief vertragingen, bebouwde kom etc.)
+_NL_AVG_SPEED_KMH = 60.0
+# Omrijfactor: wegafstand ≈ 1.35× luchtlijnafstand in NL
+_NL_DETOUR_FACTOR = 1.35
+_EARTH_RADIUS_KM = 6371.0
+
+
+def haversine_minutes(
+    lat1: float, lon1: float, lat2: float, lon2: float
+) -> int:
+    """Schat rijdtijd in minuten op basis van Haversine luchtlijnafstand.
+
+    Gebruikt een NL-specifieke omrijfactor (1.35×) en gemiddelde rijsnelheid
+    (60 km/h) als benadering voor rijdtijd. Veel betrouwbaarder dan
+    postcodegebied-vergelijking: Lelystad (82xx) en Almere (13xx) zijn
+    geografisch dichtbij maar ver qua postcode.
+
+    Args:
+        lat1, lon1: Vertrekpunt in WGS84 decimale graden.
+        lat2, lon2: Bestemming in WGS84 decimale graden.
+
+    Returns:
+        Geschatte rijdtijd in minuten (minimaal 1).
+    """
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    dist_km = _EARTH_RADIUS_KM * c * _NL_DETOUR_FACTOR
+
+    minutes = (dist_km / _NL_AVG_SPEED_KMH) * 60
+    return max(1, round(minutes))
 
 GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 

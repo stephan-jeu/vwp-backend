@@ -34,11 +34,33 @@ from app.services.visit_generation import (
     derive_start_time_text_for_visit,
 )
 from app.services.activity_log_service import log_activity
+from app.services.geocoding import geocode_address
 from app.services.planning_run_errors import PlanningRunError
 from app.services.soft_delete import soft_delete_entity
 
 
 router = APIRouter()
+
+
+async def _geocode_cluster(cluster: Cluster) -> None:
+    """Geocodeer het clusteradres en sla lat/lon op in het cluster-object.
+
+    Gebruikt het clusteradres, aangevuld met de locatie van het project als
+    dat beschikbaar is. Stelt cluster.lat en cluster.lon in-place in.
+    """
+    address = (getattr(cluster, "address", None) or "").strip()
+    if not address or address == "-":
+        return
+
+    location = getattr(cluster, "location", None)
+    if not location:
+        project = getattr(cluster, "project", None)
+        location = getattr(project, "location", None) if project else None
+
+    query = f"{address}, {location}" if location else address
+    coords = await geocode_address(query)
+    if coords:
+        cluster.lat, cluster.lon = coords
 
 
 def _validate_planning_locked_defaults(
@@ -299,6 +321,7 @@ async def create_cluster(
             )
             _visits_created_ids = [v.id for v in visits_created]
 
+        await _geocode_cluster(cluster)
         await db.commit()
         await db.refresh(cluster)
     except PlanningRunError as exc:
@@ -457,6 +480,7 @@ async def duplicate_cluster(
         new_address=payload.address,
         new_location=payload.location,
     )
+    await _geocode_cluster(new_cluster)
     await db.commit()
     await db.refresh(new_cluster)
 
@@ -527,9 +551,17 @@ async def update_cluster(
     cluster = await db.get(Cluster, cluster_id)
     if cluster is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    address_changed = cluster.address != payload.address or cluster.location != payload.location
     cluster.address = payload.address
     cluster.location = payload.location
     cluster.cluster_number = payload.cluster_number
+
+    if address_changed:
+        cluster.lat = None
+        cluster.lon = None
+        await _geocode_cluster(cluster)
+
     await db.commit()
     await db.refresh(cluster)
 

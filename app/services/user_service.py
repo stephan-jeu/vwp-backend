@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate, UserBase
+from app.services.geocoding import geocode_address
 from app.services.soft_delete import soft_delete_entity
 from app.db.utils import select_active
 
@@ -82,6 +83,14 @@ async def create_user(db: AsyncSession, payload: UserCreate) -> User:
 
     user = User(**data)
     db.add(user)
+
+    # Geocodeer thuisadres voor Haversine-fallback in de planner
+    geo_query = data.get("address") or data.get("city")
+    if geo_query:
+        coords = await geocode_address(geo_query)
+        if coords:
+            user.lat, user.lon = coords
+
     try:
         await db.commit()
     except IntegrityError:
@@ -132,6 +141,18 @@ async def update_user(db: AsyncSession, user_id: int, payload: UserUpdate) -> Us
         data["language"] = _enum_to_value(data.get("language"), UserBase.Language)
     for k, v in data.items():
         setattr(row, k, v)
+
+    # Her-geocodeer als adres of stad is gewijzigd
+    if "address" in data or "city" in data:
+        geo_query = row.address or row.city
+        if geo_query:
+            coords = await geocode_address(geo_query)
+            if coords:
+                row.lat, row.lon = coords
+            else:
+                row.lat, row.lon = None, None
+        else:
+            row.lat, row.lon = None, None
 
     try:
         await db.commit()
