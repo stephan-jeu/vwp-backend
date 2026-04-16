@@ -505,6 +505,45 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 Visit.custom_function_name.is_(None),
                 Visit.custom_species_name.is_(None),
                 Visit.custom_species_name.is_(None),
+                # Exclude visits whose most recent status-bearing ActivityLog
+                # action is a terminal state. We look at the latest action so
+                # that a visit_status_cleared entry by the admin correctly
+                # reopens the visit (the old terminal action stays in the log,
+                # but is no longer the most recent one).
+                # If no status-bearing log exists at all, the subquery returns
+                # NULL, which is not IN the terminal set → visit stays eligible.
+                ~(
+                    select(ActivityLog.action)
+                    .where(
+                        ActivityLog.target_type == "visit",
+                        ActivityLog.target_id == Visit.id,
+                        ActivityLog.action.in_(
+                            [
+                                "visit_executed",
+                                "visit_executed_deviation",
+                                "visit_executed_with_deviation",
+                                "visit_approved",
+                                "visit_cancelled",
+                                "visit_not_executed",
+                                "visit_rejected",
+                                "visit_status_cleared",
+                            ]
+                        ),
+                    )
+                    .order_by(ActivityLog.created_at.desc())
+                    .limit(1)
+                    .scalar_subquery()
+                ).in_(
+                    [
+                        "visit_executed",
+                        "visit_executed_deviation",
+                        "visit_executed_with_deviation",
+                        "visit_approved",
+                        "visit_cancelled",
+                        "visit_not_executed",
+                        "visit_rejected",
+                    ]
+                ),
             )
         )
         .options(
