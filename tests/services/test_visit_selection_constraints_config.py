@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.visit_selection_ortools import select_visits_cp_sat
+from app.services.planning_run_errors import PlanningRunError
 from app.models.visit import Visit
 from app.models.user import User
 from app.models.cluster import Cluster
@@ -83,28 +84,23 @@ async def test_max_travel_time_configuration():
         }
 
         # --- CASE 1: Strict Limit (60 mins) < Travel (70 mins) ---
-        # User should NOT be assigned
+        # User should NOT be assigned; with no valid assignment CP-SAT schedules 0 visits → PlanningRunError
         mock_settings = MagicMock()
         mock_settings.constraint_max_travel_time_minutes = 60
         # Ensure other settings don't crash
         mock_settings.constraint_large_team_penalty = True
         mock_settings_getter.return_value = mock_settings
 
-        result_strict = await select_visits_cp_sat(
-            db=[],
-            week_monday=date(2026, 5, 4),
-            visits=[visit],
-            users=users,
-            user_caps=user_caps,
-            user_daypart_caps=user_daypart_caps,
-            include_travel_time=True,
-        )
-
-        # Expectation: Visit NOT scheduled or User NOT assigned
-        # Since only 1 user and they are blocked by travel, visit should be unscheduled
-        assert visit not in result_strict.selected, (
-            "Visit should be skipped due to strict travel limit"
-        )
+        with pytest.raises(PlanningRunError):
+            await select_visits_cp_sat(
+                db=[],
+                week_monday=date(2026, 5, 4),
+                visits=[visit],
+                users=users,
+                user_caps=user_caps,
+                user_daypart_caps=user_daypart_caps,
+                include_travel_time=True,
+            )
 
         # --- CASE 2: Loose Limit (80 mins) > Travel (70 mins) ---
         # User SHOULD be assigned

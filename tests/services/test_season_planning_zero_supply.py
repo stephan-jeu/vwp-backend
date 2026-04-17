@@ -327,6 +327,7 @@ def test_quadratic_load_distributes_evenly():
     mock_settings_on.constraint_quadratic_load_penalty_weight = 5
     mock_settings_on.constraint_large_team_penalty = False
     mock_settings_on.provisional_week_stickiness_enabled = False
+    mock_settings_on.season_planner_avoid_current_week_penalty = 0
     with patch(
         "app.services.season_planning_service.get_settings",
         return_value=mock_settings_on,
@@ -345,6 +346,7 @@ def test_quadratic_load_distributes_evenly():
     mock_settings.constraint_quadratic_load_penalty_weight = 0
     mock_settings.constraint_large_team_penalty = False
     mock_settings.provisional_week_stickiness_enabled = False
+    mock_settings.season_planner_avoid_current_week_penalty = 0
     with patch(
         "app.services.season_planning_service.get_settings", return_value=mock_settings
     ):

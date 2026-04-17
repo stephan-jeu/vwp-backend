@@ -52,6 +52,11 @@ async def test_lookback_frequency_exclusion(mocker):
     ]
     mock_result_hist.unique.return_value.all.return_value = rows
 
+    # The function also runs a second query for same-week locked visits (stmt_locked_this_week).
+    # Return an empty result to indicate no locked visits this week.
+    mock_result_locked_this_week = MagicMock()
+    mock_result_locked_this_week.unique.return_value.all.return_value = []
+
     mock_result_candidates = MagicMock()
 
     # Create Candidate Visits
@@ -83,7 +88,7 @@ async def test_lookback_frequency_exclusion(mocker):
         cand_c,
     ]
 
-    mock_db.execute.side_effect = [mock_result_hist, mock_result_candidates]
+    mock_db.execute.side_effect = [mock_result_hist, mock_result_locked_this_week, mock_result_candidates]
 
     # 2. Execute
     results = await _eligible_visits_for_week(mock_db, w20_monday)
@@ -135,9 +140,11 @@ async def test_lookahead_sanitization(mocker):
 
     visit_future_a = MagicMock(id=200, planned_week=21, from_date=date(2026, 5, 18))
     visit_future_a.researchers = ["mock_res"]
+    visit_future_a.researchers_locked = False
 
     visit_future_b = MagicMock(id=300, planned_week=25, from_date=date(2026, 6, 15))
     visit_future_b.researchers = ["mock_res"]
+    visit_future_b.researchers_locked = False
 
     # Rows
     rows = [(visit_future_a, 99, 2, "weeks"), (visit_future_b, 99, 2, "weeks")]

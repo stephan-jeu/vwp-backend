@@ -243,25 +243,43 @@ async def clear_planned_researchers(
     else:
         stmt = stmt.options(selectinload(Visit.researchers))
 
-    # Protect Manual/Custom visits and researcher-locked visits from being cleared
-    stmt = stmt.where(
-        and_(
-            Visit.custom_function_name.is_(None),
-            Visit.custom_species_name.is_(None),
-            Visit.planning_locked.is_(False),
-            Visit.researchers_locked.is_(False),
-        )
+    # Base filter: exclude Manual/Custom visits and planning_locked visits
+    base_filter = and_(
+        Visit.custom_function_name.is_(None),
+        Visit.custom_species_name.is_(None),
+        Visit.planning_locked.is_(False),
     )
 
-    visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
+    # Full reset: clear researchers + planned_week (only for non-researcher-locked visits)
+    full_reset_stmt = stmt.where(
+        and_(base_filter, Visit.researchers_locked.is_(False))
+    )
+    visits: list[Visit] = (await db.execute(full_reset_stmt)).scalars().unique().all()
     for v in visits:
         v.researchers.clear()
         v.planned_week = None
         v.planned_date = None
 
+    # Partial reset: researchers_locked visits keep their researchers, but planned_week is cleared
+    locked_stmt = select_active(Visit).where(
+        and_(base_filter, Visit.researchers_locked.is_(True))
+    )
+    if week is not None:
+        locked_stmt = locked_stmt.where(
+            (Visit.planned_week == week)
+            | and_(
+                Visit.planned_week.is_(None),
+                Visit.provisional_week == week,
+            )
+        )
+    locked_visits: list[Visit] = (await db.execute(locked_stmt)).scalars().unique().all()
+    for v in locked_visits:
+        v.planned_week = None
+        v.planned_date = None
+
     await db.commit()
 
-    return {"cleared": len(visits)}
+    return {"cleared": len(visits) + len(locked_visits)}
 
 
 @router.post("/{year}/{week}/notify")

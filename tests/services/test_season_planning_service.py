@@ -47,6 +47,7 @@ def make_visit(
     # Custom/Attributes defaults
     v.sleutel = False
     v.vog = False
+    v.priority = False
     v.cluster = MagicMock()
     v.cluster.project_id = cluster_id * 100  # Unique per cluster
 
@@ -210,8 +211,8 @@ def test_coupling_constraint_ignores_non_vleermuis():
 
     v = make_visit(500, cluster_id=5, protocol_id=50, visit_index=1)
     v.required_researchers = 2
-    v.from_date = date(2026, 5, 1)  # roughly week 18+
-    v.to_date = date(2026, 6, 30)  # Allow scheduling up to Week ~26
+    v.from_date = date(2026, 5, 11)  # W20 Monday — tight window keeps domain to W20/W21 only
+    v.to_date = date(2026, 5, 22)    # W21 Friday
 
     # U1: Junior (available W20, W21)
     u1 = MagicMock()
