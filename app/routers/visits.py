@@ -1199,6 +1199,7 @@ async def update_visit(
             selectinload(Visit.cluster).selectinload(Cluster.project),
             selectinload(Visit.species).selectinload(Species.family),
             selectinload(Visit.functions),
+            selectinload(Visit.researchers),
         )
     )
     visit = (await db.execute(stmt)).scalars().first()
