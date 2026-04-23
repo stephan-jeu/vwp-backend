@@ -9,7 +9,7 @@ import logging
 
 from uuid import uuid4
 
-from sqlalchemy import delete, select, and_, or_
+from sqlalchemy import delete, func, select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -510,9 +510,10 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 # that a visit_status_cleared entry by the admin correctly
                 # reopens the visit (the old terminal action stays in the log,
                 # but is no longer the most recent one).
-                # If no status-bearing log exists at all, the subquery returns
-                # NULL, which is not IN the terminal set → visit stays eligible.
-                ~(
+                # COALESCE maps NULL (no status log at all) to '' so the visit
+                # stays eligible — NULL NOT IN (...) evaluates to NULL in SQL,
+                # which would incorrectly exclude new visits with no log entries.
+                func.coalesce(
                     select(ActivityLog.action)
                     .where(
                         ActivityLog.target_type == "visit",
@@ -532,8 +533,9 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     )
                     .order_by(ActivityLog.created_at.desc())
                     .limit(1)
-                    .scalar_subquery()
-                ).in_(
+                    .scalar_subquery(),
+                    "",
+                ).notin_(
                     [
                         "visit_executed",
                         "visit_executed_deviation",
