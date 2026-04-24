@@ -493,13 +493,20 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     # B. Safety: Allow if provisional_week IS NULL (new visits not yet simulated)
                     Visit.provisional_week.is_(None),
                 ),
-                # Exclude visits that are already planned with assigned researchers,
-                # unless researchers_locked (client-specified researchers that must be
-                # re-confirmed by the solver each week).
+                # Exclude visits that are already planned with assigned researchers.
+                # researchers_locked visits (client-specified researchers) are re-confirmed
+                # by the solver, but ONLY for the same week they were planned — not when
+                # their planned_week is a different (past or future) week. Without this
+                # restriction, a researchers_locked visit planned for week N with a wide
+                # date window would silently jump to week N+1 or N+2 when planning runs
+                # for those weeks.
                 or_(
                     Visit.planned_week.is_(None),
                     ~Visit.researchers.any(),
-                    Visit.researchers_locked.is_(True),
+                    and_(
+                        Visit.researchers_locked.is_(True),
+                        Visit.planned_week == week_num,
+                    ),
                 ),
                 # Exclude custom visits (manual planning only)
                 Visit.custom_function_name.is_(None),
