@@ -1505,9 +1505,18 @@ async def set_admin_planning_status(
     if mode == "open":
         visit.planned_week = None
         visit.planned_date = None
-        await db.execute(
-            delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
-        )
+        if visit.planning_locked:
+            # planning_locked was set: clear researchers and unset the lock
+            await db.execute(
+                delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
+            )
+            visit.planning_locked = False
+        elif not visit.researchers_locked:
+            # No locks active: clear researchers normally
+            await db.execute(
+                delete(visit_researchers).where(visit_researchers.c.visit_id == visit.id)
+            )
+        # If researchers_locked (and not planning_locked): keep researchers + researchers_locked
         planned_week = None
         researcher_ids: list[int] | None = None
     else:
