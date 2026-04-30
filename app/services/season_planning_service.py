@@ -359,12 +359,17 @@ class SeasonPlanningService:
                 getattr(v, "custom_function_name", None)
                 or getattr(v, "custom_species_name", None)
             )
-            if not is_custom:
+            is_protocol_less = not getattr(v, "protocol_visit_windows", None)
+            if not is_custom and not is_protocol_less:
                 continue
 
             planned_week = getattr(v, "planned_week", None)
             provisional_week = getattr(v, "provisional_week", None)
             target_week = planned_week or provisional_week
+            if not target_week:
+                planned_date = getattr(v, "planned_date", None)
+                if planned_date is not None:
+                    target_week = planned_date.isocalendar().week
             if not target_week:
                 continue
 
@@ -520,6 +525,8 @@ class SeasonPlanningService:
                 or getattr(v, "custom_species_name", None)
             )
             if is_custom:
+                continue
+            if not v.protocol_visit_windows:
                 continue
 
             if debug_this_visit:

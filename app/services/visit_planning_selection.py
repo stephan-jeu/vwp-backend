@@ -508,10 +508,10 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                         Visit.planned_week == week_num,
                     ),
                 ),
-                # Exclude custom visits (manual planning only)
+                # Exclude custom visits and protocol-less visits (manual planning only)
                 Visit.custom_function_name.is_(None),
                 Visit.custom_species_name.is_(None),
-                Visit.custom_species_name.is_(None),
+                Visit.protocol_visit_windows.any(),
                 # Exclude visits whose most recent status-bearing ActivityLog
                 # action is a terminal state. We look at the latest action so
                 # that a visit_status_cleared entry by the admin correctly
@@ -736,9 +736,10 @@ async def _load_huismus_pairing_candidates(
                 Visit.provisional_week > week_num,
                 # Not yet assigned
                 or_(Visit.planned_week.is_(None), ~Visit.researchers.any()),
-                # Not custom visits
+                # Not custom or protocol-less visits
                 Visit.custom_function_name.is_(None),
                 Visit.custom_species_name.is_(None),
+                Visit.protocol_visit_windows.any(),
                 # Only Huismus family
                 Visit.species.any(
                     Species.family.has(Family.name.ilike("huismus"))
