@@ -161,6 +161,7 @@ async def list_clusters(
                         remarks_field=v.remarks_field,
                         priority=v.priority,
                         planned_week=v.planned_week,
+                        planned_date=v.planned_date,
                         planning_locked=v.planning_locked,
                         researcher_ids=[u.id for u in (v.researchers or [])],
                         researchers=[
@@ -395,6 +396,7 @@ async def create_cluster(
                 remarks_field=v.remarks_field,
                 priority=v.priority,
                 planned_week=v.planned_week,
+                planned_date=v.planned_date,
                 planning_locked=v.planning_locked,
                 researcher_ids=[u.id for u in (v.researchers or [])],
                 researchers=[

@@ -110,6 +110,7 @@ class VisitReadCompact(BaseModel):
     remarks_field: str | None
     priority: bool
     planned_week: int | None = None
+    planned_date: date | None = None
     planning_locked: bool = False
     researcher_ids: list[int] = []
     researchers: list[UserNameRead] = []
