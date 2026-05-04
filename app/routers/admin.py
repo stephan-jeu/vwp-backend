@@ -52,7 +52,10 @@ async def list_tight_visits(
     _: AdminDep, db: DbDep, simulated_today: date | None = Query(None)
 ) -> list[TightVisitResponse]:
     """Identify and return 'tight' visit chains."""
-    return await get_tight_visit_chains(db, simulated_today=simulated_today)
+    effective_today = None
+    if _settings.test_mode_enabled:
+        effective_today = simulated_today
+    return await get_tight_visit_chains(db, simulated_today=effective_today)
 
 
 @router.get("")

@@ -2042,7 +2042,10 @@ async def upsert_visit_audit(
     visit_stmt = (
         select(Visit)
         .where(Visit.id == visit_id)
-        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+        .options(
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+            selectinload(Visit.researchers),
+        )
     )
     visit = (await db.execute(visit_stmt)).scalars().first()
     if visit is None:
@@ -2097,7 +2100,23 @@ async def upsert_visit_audit(
     }
 
     new_status = payload.status
-    if new_status != previous_status:
+
+    # Check if the visit lifecycle status has drifted away from an expected
+    # lifecycle-setting audit status (e.g. APPROVED or REJECTED) because of
+    # intermediate actions like a visit re-execution.
+    expected_status_code = None
+    if new_status == AuditStatus.APPROVED:
+        expected_status_code = VisitStatusCode.APPROVED
+    elif new_status == AuditStatus.REJECTED:
+        expected_status_code = VisitStatusCode.REJECTED
+
+    current_lifecycle_status = await resolve_visit_status(db, visit)
+    lifecycle_drifted = (
+        expected_status_code is not None
+        and current_lifecycle_status != expected_status_code
+    )
+
+    if new_status != previous_status or lifecycle_drifted:
         # When changing away from an ActivityLog-driven lifecycle status
         # (approved / rejected) to an audit-driven one, clear the lifecycle
         # entry so derive_visit_status falls back to the execution state.
@@ -2115,7 +2134,7 @@ async def upsert_visit_audit(
                 commit=False,
             )
 
-        # Log every audit status change for traceability.
+        # Log every audit status change for traceability (or if lifecycle drifted).
         await log_activity(
             db,
             actor_id=admin.id,

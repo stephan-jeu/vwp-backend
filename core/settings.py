@@ -416,12 +416,12 @@ class Settings(BaseModel):
         return f"postgresql+asyncpg://{self.db_user}:{pwd}@{self.db_host}:{self.db_port}/{self.db_name}"
 
 
+_SETTINGS_SINGLETON: Settings | None = None
+
 def get_settings() -> Settings:
     # Keep a simple module-level singleton without extra deps
     # Evaluated only once per process
     global _SETTINGS_SINGLETON
-    try:
-        return _SETTINGS_SINGLETON
-    except NameError:
-        _SETTINGS_SINGLETON = Settings()  # type: ignore[reportPrivateUsage]
-        return _SETTINGS_SINGLETON
+    if _SETTINGS_SINGLETON is None:
+        _SETTINGS_SINGLETON = Settings()
+    return _SETTINGS_SINGLETON

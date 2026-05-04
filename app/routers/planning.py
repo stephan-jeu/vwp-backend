@@ -17,6 +17,7 @@ from app.db.utils import select_active
 from app.services.activity_log_service import log_activity
 from app.services.visit_planning_selection import select_visits_for_week
 from app.services.planning_run_errors import PlanningRunError
+from core.settings import get_settings
 
 
 _logger = logging.getLogger("uvicorn.error")
@@ -124,7 +125,11 @@ async def generate_planning(
         )
 
     # Compute Monday for current year ISO week
-    today = simulated_today or date.today()
+    settings = get_settings()
+    today = date.today()
+    if settings.test_mode_enabled and simulated_today:
+        today = simulated_today
+        
     current_year = today.year
     week_monday = date.fromisocalendar(current_year, week, 1)
     # Use dynamic timeout (None) which defaults to max(5s, min(60s, complexity))
