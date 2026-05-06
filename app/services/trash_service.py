@@ -8,8 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
 from app.models import SoftDeleteMixin
-from app.models.activity_log import ActivityLog
+from app.models.activity_log import ActivityLog, activity_log_actors
 from app.models.availability import AvailabilityWeek
+from app.models.availability_pattern import AvailabilityPattern
+from app.models.user_unavailability import UserUnavailability
+from app.models.visit_audit import VisitAudit
 from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.user import User
@@ -394,6 +397,31 @@ async def hard_delete_trash_item(
         )
         await db.execute(
             delete(AvailabilityWeek).where(AvailabilityWeek.user_id == user.id)
+        )
+        await db.execute(
+            delete(AvailabilityPattern)
+            .execution_options(include_deleted=True)
+            .where(AvailabilityPattern.user_id == user.id)
+        )
+        await db.execute(
+            delete(UserUnavailability)
+            .execution_options(include_deleted=True)
+            .where(UserUnavailability.user_id == user.id)
+        )
+        await db.execute(
+            delete(activity_log_actors).where(
+                activity_log_actors.c.user_id == user.id
+            )
+        )
+        await db.execute(
+            update(VisitAudit)
+            .where(VisitAudit.updated_by_id == user.id)
+            .values(updated_by_id=None)
+        )
+        await db.execute(
+            update(VisitAudit)
+            .where(VisitAudit.created_by_id == user.id)
+            .values(created_by_id=None)
         )
         await db.execute(delete(User).where(User.id == user.id))
         await db.commit()

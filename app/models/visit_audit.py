@@ -52,10 +52,10 @@ class VisitAudit(TimestampMixin, Base):
     remarks: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     remarks_outside_pg: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    created_by_id: Mapped[int] = mapped_column(
-        ForeignKey(User.id), nullable=False, index=True
+    created_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey(User.id), nullable=True, index=True
     )
-    created_by: Mapped[User] = relationship(User, foreign_keys=[created_by_id])
+    created_by: Mapped[User | None] = relationship(User, foreign_keys=[created_by_id])
 
     updated_by_id: Mapped[int | None] = mapped_column(
         ForeignKey(User.id), nullable=True, index=True
