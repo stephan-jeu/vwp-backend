@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+.env.habitus
+.env.viridis
+.env.dev
+scripts/update_habitus_db.sh

@@ -51,6 +51,11 @@ DAYPART_TO_AVAIL_FIELD = {
     "Avond": "nighttime_days",
 }
 
+# Maps visit part_of_day to the protocol start_timing_reference that applies to it.
+# SUNRISE visits (Ochtend) should only be blocked/deduped against SUNRISE protocols,
+# and SUNSET visits (Avond) only against SUNSET protocols. Dag visits are unrestricted.
+_PART_OF_DAY_TIMING_REF: dict[str, str] = {"Ochtend": "SUNRISE", "Avond": "SUNSET"}
+
 
 def _parse_spare_capacity_by_daypart(raw: str) -> dict[str, int]:
     """Parse spare capacity per daypart from an env var string.
@@ -207,57 +212,26 @@ def _meets_vleermuis_expertise(user: User, visit: Visit) -> bool:
     return required_rank == 0 or user_rank >= required_rank
 
 
-def _family_priority_from_first_species(v: Visit) -> int | None:
-    try:
-        sp: Species = v.species[0]
-        fam: Family | None = sp.family
-        return getattr(fam, "priority", None)
-    except Exception:
-        return None
-
-
 def _priority_key(week_monday: date, v: Visit) -> tuple:
-    # Build priority tiers as boolean flags (True = matches tier). We want True > False
-    # in the listed order. Compute a single integer weight where higher is better,
-    # then sort by (-weight, to_date, from_date, id) to keep deterministic order.
+    # Compute a single integer weight where higher is better, then sort by
+    # (-weight, to_date, from_date, id) for a deterministic order.
+    # Priority order (highest → lowest):
+    #   priority flag > deadline (≤2 weken) > achterstallig > deze week > rest
+    current_week = week_monday.isocalendar().week
     two_weeks_after_monday = week_monday + timedelta(days=14)
 
-    tier1 = bool(v.priority)
-    tier2 = bool(v.to_date and v.to_date <= two_weeks_after_monday)
-    fam_prio = _family_priority_from_first_species(v)
-    tier3 = bool(fam_prio is not None and fam_prio <= 3)
-    fn0 = _first_function_name(v)
-    tier4 = fn0.lstrip().upper().startswith("SMP")
-    tier5 = _any_function_contains(v, ("Vliegroute", "Foerageergebied"))
-    tier6 = bool(getattr(v, "hub", False))
-    tier7 = bool(getattr(v, "sleutel", False))
-    tier8 = bool(
-        getattr(v, "fiets", False)
-        or getattr(v, "dvp", False)
-        or getattr(v, "wbc", False)
-    )
+    prio_flag = bool(v.priority)
+    deadline = bool(v.to_date and v.to_date <= two_weeks_after_monday)
+    overdue = bool(v.provisional_week is not None and v.provisional_week < current_week)
+    this_week = bool(v.provisional_week == current_week)
 
-    # Weight: tier0 (Season Plan) most significant.
-    # tier0: Is this visit specifically provisionally planned for THIS week?
-    # (Matches Architect's precise slot).
-    # We need to access current week number. `week_monday` is passed.
-    current_week = week_monday.isocalendar().week
-    tier0 = bool(v.provisional_week == current_week)
-
-    # Re-weight
     weight = (
-        (int(tier0) << 8)
-        | (int(tier1) << 7)
-        | (int(tier2) << 6)
-        | (int(tier3) << 5)
-        | (int(tier4) << 4)
-        | (int(tier5) << 3)
-        | (int(tier6) << 2)
-        | (int(tier7) << 1)
-        | int(tier8)
+        (int(prio_flag) << 3)
+        | (int(deadline) << 2)
+        | (int(overdue) << 1)
+        | int(this_week)
     )
 
-    # Stable tie-breakers: earlier dates first, then smaller id
     to_d = v.to_date or date.max
     from_d = v.from_date or date.max
     vid = v.id or 0
@@ -345,9 +319,11 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                     Protocol.id,
                     Protocol.min_period_between_visits_value,
                     Protocol.min_period_between_visits_unit,
+                    Protocol.start_timing_reference,
                     Visit.from_date,  # Use visit START date as reference for Optimistic Planning
                     Visit.planned_week,
                     Visit.cluster_id,
+                    Visit.part_of_day,
                 )
                 .join(
                     ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id
@@ -374,11 +350,19 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 prot_id,
                 min_val,
                 min_unit,
+                prot_timing_ref,
                 locked_visit_start,
                 locked_week,
                 locked_cluster_id,
+                locked_part_of_day,
             ) in rows_p:
                 if not min_val:
+                    continue
+
+                # Skip cross-timing blocks: a SUNSET visit must not block SUNRISE
+                # visits and vice versa. Only block within the same timing group.
+                locked_timing = _PART_OF_DAY_TIMING_REF.get(locked_part_of_day or "")
+                if locked_timing and prot_timing_ref and locked_timing != prot_timing_ref:
                     continue
 
                 # Calculate required gap
@@ -426,7 +410,12 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
         # (intra-week gap is at most 4 days, so any min_period >= 5 days is
         # violated). Block those siblings unconditionally.
         stmt_locked_this_week = (
-            select(Protocol.id, Visit.cluster_id)
+            select(
+                Protocol.id,
+                Visit.cluster_id,
+                Protocol.start_timing_reference,
+                Visit.part_of_day,
+            )
             .join(
                 ProtocolVisitWindow, ProtocolVisitWindow.protocol_id == Protocol.id
             )
@@ -445,9 +434,12 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 )
             )
         )
-        for prot_id, cluster_id in (
+        for prot_id, cluster_id, prot_timing_ref, locked_part_of_day in (
             await db.execute(stmt_locked_this_week)
         ).unique().all():
+            locked_timing = _PART_OF_DAY_TIMING_REF.get(locked_part_of_day or "")
+            if locked_timing and prot_timing_ref and locked_timing != prot_timing_ref:
+                continue
             blocked_pairs.add((prot_id, cluster_id))
 
     stmt = (
@@ -617,11 +609,25 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 reasons,
             )
 
-    # Filter out candidates belonging to blocked (protocol, cluster) pairs
+    # Filter out candidates belonging to blocked (protocol, cluster) pairs.
+    # Only check protocols whose start_timing_reference matches the visit's part_of_day
+    # so that SUNRISE visits are never blocked by SUNSET locked visits and vice versa.
     if blocked_pairs:
         pre_dedup = []
         for v in candidates:
-            v_pids = {pvw.protocol_id for pvw in (v.protocol_visit_windows or [])}
+            candidate_timing = _PART_OF_DAY_TIMING_REF.get(
+                getattr(v, "part_of_day", None) or ""
+            )
+            v_pids = {
+                pvw.protocol_id
+                for pvw in (v.protocol_visit_windows or [])
+                if not (
+                    candidate_timing
+                    and getattr(getattr(pvw, "protocol", None), "start_timing_reference", None)
+                    and getattr(getattr(pvw, "protocol", None), "start_timing_reference", None)
+                    != candidate_timing
+                )
+            }
             is_blocked = any(
                 (pid, v.cluster_id) in blocked_pairs for pid in v_pids
             )
@@ -648,10 +654,15 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
     proto_cluster_winner: dict[tuple[int, int], int] = {}  # key -> winning visit.id
 
     for v in pre_dedup:
+        v_timing = _PART_OF_DAY_TIMING_REF.get(getattr(v, "part_of_day", None) or "")
         v_from = v.from_date or date.min
         for pvw in (v.protocol_visit_windows or []):
             prot = getattr(pvw, "protocol", None)
             if not prot or not prot.min_period_between_visits_value:
+                continue
+            # Only compete within the same timing group (SUNRISE vs SUNSET).
+            prot_timing_ref = getattr(prot, "start_timing_reference", None)
+            if v_timing and prot_timing_ref and v_timing != prot_timing_ref:
                 continue
             key = (prot.id, v.cluster_id)
             if key not in proto_cluster_winner:
@@ -662,13 +673,28 @@ async def _eligible_visits_for_week(db: AsyncSession, week_monday: date) -> list
                 winner_from = (winner.from_date if winner else None) or date.min
                 if v_from < winner_from:
                     proto_cluster_winner[key] = v.id
+                elif v_from == winner_from:
+                    # Tie-break by provisional_week: the visit that is due sooner
+                    # (lower provisional_week) takes priority over pull-forward
+                    # candidates from future weeks. Fall back to visit id for
+                    # a stable, deterministic result.
+                    winner_prov = (winner.provisional_week or 9999) if winner else 9999
+                    v_prov = v.provisional_week or 9999
+                    if v_prov < winner_prov or (
+                        v_prov == winner_prov and v.id < winner_id
+                    ):
+                        proto_cluster_winner[key] = v.id
 
     filtered = []
     for v in pre_dedup:
+        v_timing = _PART_OF_DAY_TIMING_REF.get(getattr(v, "part_of_day", None) or "")
         is_dedup_blocked = False
         for pvw in (v.protocol_visit_windows or []):
             prot = getattr(pvw, "protocol", None)
             if not prot or not prot.min_period_between_visits_value:
+                continue
+            prot_timing_ref = getattr(prot, "start_timing_reference", None)
+            if v_timing and prot_timing_ref and v_timing != prot_timing_ref:
                 continue
             key = (prot.id, v.cluster_id)
             if proto_cluster_winner.get(key) != v.id:

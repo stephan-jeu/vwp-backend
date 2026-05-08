@@ -386,6 +386,7 @@ async def select_visits_cp_sat(
         _load_all_users,
         _apply_existing_assignments_to_capacities,
         DAYPART_TO_AVAIL_FIELD,
+        _PART_OF_DAY_TIMING_REF,
     )
 
     # 1. Load Data
@@ -494,7 +495,12 @@ async def select_visits_cp_sat(
             clean_visits.append(v)
             continue
 
+        v_timing = _PART_OF_DAY_TIMING_REF.get(pod or "")
         for pvw in pvws:
+            prot = getattr(pvw, "protocol", None)
+            prot_timing_ref = getattr(prot, "start_timing_reference", None)
+            if v_timing and prot_timing_ref and v_timing != prot_timing_ref:
+                continue  # Only order visits within the same timing group
             protocol_groups[(pvw.protocol_id, v.cluster_id)].append(
                 (pvw.visit_index, v)
             )
@@ -637,16 +643,17 @@ async def select_visits_cp_sat(
     # Max Travel ~ 120. Max Load Cost ~ 30 * N^2.
     # Use a large base.
     BASE_REWARD = 10000
+    RANK_WEIGHT = 100
     # Locked visits get a reward larger than the sum of all other visits combined,
     # so the solver always prefers assigning the locked researcher to their locked
     # visit over any other combination.
     LOCKED_REWARD = BASE_REWARD * (len(v_map) + 1) * 2
-    visit_weights = {i: BASE_REWARD + (len(visits) - i) * 100 for i in v_map}
+    visit_weights = {i: BASE_REWARD + (len(visits) - i) * RANK_WEIGHT for i in v_map}
     for i, v in v_map.items():
         if getattr(v, "researchers_locked", False) and getattr(v, "researchers", None):
             locked_ids = {getattr(u, "id", None) for u in v.researchers} - {None}
             if locked_ids:
-                visit_weights[i] = LOCKED_REWARD + (len(visits) - i) * 100
+                visit_weights[i] = LOCKED_REWARD + (len(visits) - i) * RANK_WEIGHT
                 _logger.info(
                     "LOCKED_REWARD applied: visit_id=%s weight=%d locked_user_ids=%s",
                     getattr(v, "id", i),

@@ -28,6 +28,7 @@ from app.models.availability import AvailabilityWeek
 from app.services.visit_planning_selection import (
     _first_function_name,
     _any_function_contains,
+    _PART_OF_DAY_TIMING_REF,
 )
 from app.services.planning_run_errors import PlanningRunError
 from app.schemas.capacity import (
@@ -882,9 +883,15 @@ class SeasonPlanningService:
             if not v.protocol_visit_windows:
                 continue
             proto_map: dict[int, Protocol] = {}
+            v_timing = _PART_OF_DAY_TIMING_REF.get(
+                (getattr(v, "part_of_day", None) or "").strip()
+            )
             for pvw in v.protocol_visit_windows:
                 proto = getattr(pvw, "protocol", None)
                 if proto and getattr(pvw, "protocol_id", None) is not None:
+                    prot_timing_ref = getattr(proto, "start_timing_reference", None)
+                    if v_timing and prot_timing_ref and v_timing != prot_timing_ref:
+                        continue  # Only apply constraints within the same timing group
                     proto_map[pvw.protocol_id] = proto
             if not proto_map:
                 continue
