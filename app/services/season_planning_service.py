@@ -66,6 +66,12 @@ try:
 except ValueError:
     _DEBUG_SEASON_PLANNING_VISIT_ID = None
 
+# Visits with a candidate-week span shorter than this are considered "tight-window".
+# Tight-window visits get a strongly amplified early-placement bonus and are excluded
+# from the predecessor_room_risk penalty (which would otherwise push their successors
+# toward the end of their windows, causing a cascade across the whole visit chain).
+_TIGHT_WINDOW_THRESHOLD_WEEKS = 4
+
 
 def _visit_label(v: "Visit") -> str:
     """Return a human-readable label for a visit: '<project code> / <cluster number> bezoek <nr>'."""
@@ -1196,8 +1202,15 @@ class SeasonPlanningService:
                                 v1_eff_max = max(cands_max) if cands_max else None
                             if v1_eff_min is not None and v1_eff_max is not None:
                                 v1_own_window = v1_eff_max - v1_eff_min + 1
-                                # Skip if V1's own window is already tight — no room to help
-                                if v1_own_window > gap_weeks:
+                                # Skip if V1's window is tight: the gap constraint already
+                                # ensures correct spacing, and adding a room-protection penalty
+                                # on V2 would push successive visits toward the end of their
+                                # windows (cascade effect).  Also skip if V1's window is ≤
+                                # gap_weeks (no room to protect in that case either).
+                                if (
+                                    v1_own_window > gap_weeks
+                                    and v1_own_window >= _TIGHT_WINDOW_THRESHOLD_WEEKS
+                                ):
                                     # desired_min_w2: V2 must be at least here so V1 has THRESHOLD weeks
                                     desired_min_w2 = (
                                         v1_eff_min + gap_weeks + _PRED_THRESHOLD
@@ -1702,15 +1715,51 @@ class SeasonPlanningService:
         priority_reward_term = cp_model.LinearExpr.Sum(priority_active_vars) * 50000
 
         # Slack Penalties (Early Preference)
-        slack_terms = []
+        # Base weight: 10 pts/week for all visits.
+        # Tight-window visits (window < _TIGHT_WINDOW_THRESHOLD_WEEKS) receive a
+        # strongly amplified incentive so the solver places them early in their window.
+        # A 3-week window visit gets (4-3)*500 = 500 pts/week extra → 1 000 pts
+        # preference for the first over the last week.  This must be large enough to
+        # overcome the quadratic load-spread penalty (≈5*(2D+1) marginal pts at
+        # demand D) and the predecessor_room_risk was already removed for tight-window
+        # chains (see _TIGHT_WINDOW_THRESHOLD_WEEKS at module level), so 500 is
+        # sufficient for all practical demand levels.
+        #
+        # Window span is computed from the actual candidate weeks in visit_candidates
+        # (which are based on v.from_date/v.to_date).  Using pvw window dates would
+        # give wrong results when the protocol window is wider than the visit window.
+        _TIGHT_WINDOW_EARLY_BONUS_PER_WEEK = 500
+
+        slack_vars: list[cp_model.IntVar] = []
+        slack_weights: list[int] = []
         for v in visits:
             if v.id in visit_week_vars and v.to_date:
                 dw = v.to_date.isocalendar().week
                 vw = visit_week_vars[v.id]
                 if dw >= current_week:
-                    slack_terms.append(vw)
+                    cand_weeks = [w for w, _ in visit_candidates.get(v.id, []) if w > 0]
+                    if cand_weeks:
+                        window_span = max(cand_weeks) - min(cand_weeks) + 1
+                    elif v.from_date:
+                        window_span = math.ceil(
+                            ((v.to_date - v.from_date).days + 1) / 7
+                        )
+                    else:
+                        window_span = None
 
-        slack_penalty = cp_model.LinearExpr.Sum(slack_terms) * -10
+                    weight = 10
+                    if (
+                        window_span is not None
+                        and window_span < _TIGHT_WINDOW_THRESHOLD_WEEKS
+                    ):
+                        weight += (
+                            _TIGHT_WINDOW_THRESHOLD_WEEKS - window_span
+                        ) * _TIGHT_WINDOW_EARLY_BONUS_PER_WEEK
+
+                    slack_vars.append(vw)
+                    slack_weights.append(-weight)
+
+        slack_penalty = cp_model.LinearExpr.WeightedSum(slack_vars, slack_weights)
 
         # Constraint penalties: 200k per overflow unit so one overflow outweighs two active-visit rewards,
         # making it preferable to leave a visit unassigned rather than violate capacity.
@@ -1723,7 +1772,7 @@ class SeasonPlanningService:
         p_successor_risk = cp_model.LinearExpr.Sum(successor_risk_terms) * -500
         # Weight reduced from -1_000 to -75: the hard gap constraint (w2 >= w1 + gap)
         # already guarantees correctness; this soft penalty only nudges V2 later when
-        # V1 has genuinely few weeks left.  At -75 it is ~7× stronger than the
+        # V1 has genuinely few weeks left.  At -75 it is ~7× stronger than the base
         # early-placement bonus (10 pts/week) — enough to matter when room is truly
         # tight, but no longer dominant over the whole window.
         p_predecessor_room_risk = (
