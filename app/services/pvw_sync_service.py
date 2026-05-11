@@ -8,6 +8,7 @@ from app.core.logging import logger
 from app.models.protocol import Protocol
 from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.visit import Visit, visit_protocol_visit_windows
+from app.services.visit_generation_common import _derive_part_of_day
 
 
 async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
@@ -53,8 +54,8 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
         .all()
     )
 
-    protocol_map: dict[tuple[int, int], Protocol] = {
-        (p.function_id, p.species_id): p
+    protocol_map: dict[tuple[int, int, str | None], Protocol] = {
+        (p.function_id, p.species_id, p.start_timing_reference): p
         for p in protocols
         if p.function_id is not None and p.species_id is not None
     }
@@ -100,17 +101,19 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> None:
     # pvw[i] (sorted by visit_index) to visit[i] (sorted by visit_nr).
     expected: dict[int, set[int]] = {v.id: set() for v in visits}
 
-    for (func_id, species_id), protocol in protocol_map.items():
+    for (func_id, species_id, _), protocol in protocol_map.items():
         pvws = protocol_pvws.get(protocol.id, [])
         if not pvws:
             continue
 
+        expected_part = _derive_part_of_day(protocol)
         matching_visits = [
             v for v in visits  # already ordered by visit_nr
             if (func_id, species_id) in visit_fs.get(v.id, set())
             and not v.custom_function_name
             and not v.custom_species_name
             and v.visit_nr is not None
+            and (expected_part is None or v.part_of_day == expected_part)
         ]
 
         for i, visit in enumerate(matching_visits):
