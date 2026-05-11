@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import logger
+from app.db.utils import select_active
 from app.models.protocol_visit_window import ProtocolVisitWindow
 from app.models.visit import Visit
 
@@ -39,7 +40,7 @@ async def update_subsequent_visits(
 
     # Reload visit with PVWs and their protocols
     stmt = (
-        select(Visit)
+        select_active(Visit)
         .where(Visit.id == executed_visit.id)
         .options(
             selectinload(Visit.protocol_visit_windows).selectinload(
@@ -115,7 +116,7 @@ async def update_subsequent_visits(
         # Here we focus on the specific protocol chain.
 
         linked_visits_stmt = (
-            select(Visit)
+            select_active(Visit)
             .join(Visit.protocol_visit_windows)
             .where(
                 Visit.cluster_id == visit.cluster_id,  # Same cluster

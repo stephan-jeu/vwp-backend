@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from sqlalchemy import Select, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.cluster import Cluster
@@ -42,7 +43,7 @@ from app.services.soft_delete import soft_delete_entity
 router = APIRouter()
 
 
-async def _geocode_cluster(cluster: Cluster) -> None:
+async def _geocode_cluster(cluster: Cluster, db: AsyncSession) -> None:
     """Geocodeer het clusteradres en sla lat/lon op in het cluster-object.
 
     Gebruikt het clusteradres, aangevuld met de locatie van het project als
@@ -53,8 +54,8 @@ async def _geocode_cluster(cluster: Cluster) -> None:
         return
 
     location = getattr(cluster, "location", None)
-    if not location:
-        project = getattr(cluster, "project", None)
+    if not location and cluster.project_id is not None:
+        project = await db.get(Project, cluster.project_id)
         location = getattr(project, "location", None) if project else None
 
     query = f"{address}, {location}" if location else address
@@ -322,7 +323,7 @@ async def create_cluster(
             )
             _visits_created_ids = [v.id for v in visits_created]
 
-        await _geocode_cluster(cluster)
+        await _geocode_cluster(cluster, db)
         await db.commit()
         await db.refresh(cluster)
     except PlanningRunError as exc:
@@ -482,9 +483,7 @@ async def duplicate_cluster(
         new_address=payload.address,
         new_location=payload.location,
     )
-    # Eager-load the project relationship to avoid lazy-load in async context
-    await db.refresh(new_cluster, ["project"])
-    await _geocode_cluster(new_cluster)
+    await _geocode_cluster(new_cluster, db)
     await db.commit()
     await db.refresh(new_cluster)
 
@@ -564,7 +563,7 @@ async def update_cluster(
     if address_changed:
         cluster.lat = None
         cluster.lon = None
-        await _geocode_cluster(cluster)
+        await _geocode_cluster(cluster, db)
 
     await db.commit()
     await db.refresh(cluster)
