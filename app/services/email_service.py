@@ -12,8 +12,14 @@ logger = logging.getLogger(__name__)
 def start_smtp_session() -> smtplib.SMTP:
     settings = get_settings()
     server = smtplib.SMTP(settings.smtp_host, settings.smtp_port)
-    server.starttls()
-    server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
+    server.ehlo()
+    try:
+        server.starttls()
+        server.ehlo()
+    except smtplib.SMTPException:
+        logger.info("SMTP: STARTTLS not available; continuing without TLS")
+    if settings.smtp_user:
+        server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
     return server
 
 

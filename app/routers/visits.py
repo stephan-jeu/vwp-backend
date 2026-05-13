@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from typing import Annotated
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import and_, asc, case, delete, desc, extract, func, insert, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -326,6 +326,194 @@ async def list_species_options(
     return [SpeciesCompactRead.model_validate(s) for s in species]
 
 
+def _build_sql_sort_exprs(
+    sort_by: str | None,
+    sort_dir: str,
+    dedup_subq,
+    feature_daily_planning: bool,
+) -> list:
+    """Return a list of SQLAlchemy ORDER BY expressions for the visit dedup subquery."""
+    from sqlalchemy import Integer
+
+    is_asc = sort_dir == "asc"
+    dir_fn = asc if is_asc else desc
+
+    def nl(expr):
+        """Direction with nulls last."""
+        return dir_fn(expr).nullslast()
+
+    c = dedup_subq.c
+
+    secondary = [
+        asc(func.coalesce(c.s_from_date, date(9999, 12, 31))),
+        asc(func.coalesce(c.s_project_code, "")),
+        asc(func.coalesce(c.s_cluster_number, "")),
+        asc(func.coalesce(c.s_visit_nr, 9999)),
+    ]
+
+    if sort_by == "project_code":
+        return [nl(c.s_project_code)] + secondary
+    if sort_by == "project_location":
+        loc_expr = func.coalesce(c.s_cluster_location, c.s_project_location, "")
+        return [nl(loc_expr)] + secondary
+    if sort_by == "cluster_number":
+        return [nl(c.s_cluster_number)] + secondary
+    if sort_by == "visit_nr":
+        return [nl(c.s_visit_nr)] + secondary
+    if sort_by == "period":
+        return [nl(c.s_from_date)] + secondary
+    if sort_by == "part_of_day":
+        return [nl(c.s_part_of_day)] + secondary
+    if sort_by == "functions":
+        return [nl(func.coalesce(c.s_function_name, ""))] + secondary
+    if sort_by == "species":
+        return [nl(func.coalesce(c.s_species_name, ""))] + secondary
+    if sort_by == "researchers":
+        return [nl(func.coalesce(c.s_researcher_name, ""))] + secondary
+    if sort_by == "week":
+        week_expr = func.coalesce(c.s_planned_week, c.s_provisional_week, 9999)
+        return [dir_fn(week_expr)] + secondary
+    if sort_by == "date":
+        if feature_daily_planning:
+            ref_year = func.cast(
+                func.coalesce(
+                    func.extract("isoyear", c.s_from_date),
+                    func.extract("year", func.current_date()),
+                ),
+                Integer,
+            )
+            week_as_date = func.to_date(
+                func.concat(ref_year, " ", c.s_provisional_week, " 5"),
+                literal("IYYY IW ID"),
+            )
+            unified_date = case(
+                (c.s_planned_date.is_not(None), c.s_planned_date),
+                (c.s_provisional_week.is_not(None), week_as_date),
+                else_=date(9999, 12, 31),
+            )
+            # planned_date wins over provisional_week within the same week (always ASC tiebreaker)
+            date_priority = case(
+                (c.s_planned_date.is_not(None), 0),
+                else_=1,
+            )
+            return [dir_fn(unified_date), asc(date_priority)] + secondary
+        else:
+            week_expr = func.coalesce(c.s_planned_week, c.s_provisional_week, 9999)
+            return [dir_fn(week_expr)] + secondary
+
+    # Default sort (no sort_by)
+    order_from = func.coalesce(c.s_from_date, date(9999, 12, 31))
+    if feature_daily_planning:
+        return [
+            asc(order_from),
+            asc(func.coalesce(c.s_planned_date, date(9999, 12, 31))),
+            asc(func.coalesce(c.s_provisional_week, 9999)),
+            asc(c.s_project_code),
+            asc(c.s_cluster_number),
+            asc(c.s_visit_nr),
+        ]
+    return [
+        asc(order_from),
+        asc(func.coalesce(c.s_planned_week, c.s_provisional_week, 9999)),
+        asc(c.s_project_code),
+        asc(c.s_cluster_number),
+        asc(c.s_visit_nr),
+    ]
+
+
+_STATUS_ORDER: dict[str, int] = {
+    "created": 0,
+    "open": 1,
+    "planned": 2,
+    "overdue": 3,
+    "missed": 4,
+    "executed": 5,
+    "executed_with_deviation": 6,
+    "not_executed": 7,
+    "needs_action": 8,
+    "provisional": 9,
+    "approved": 10,
+    "rejected": 11,
+    "cancelled": 12,
+}
+
+
+def _build_python_sort_key(
+    sort_by: str | None,
+    sort_dir: str,
+    feature_daily_planning: bool,
+    status_map: dict | None = None,
+):
+    """Return (key_fn, reverse) for sorting a list of Visit objects in Python."""
+    reverse = sort_dir == "desc"
+
+    def key(v: Visit) -> tuple:
+        cluster = v.cluster
+        project = getattr(cluster, "project", None)
+        ref_year = v.from_date.year if v.from_date else date.today().year
+
+        from_date_val = v.from_date or date.max
+        project_code_val = (project.code if project else None) or ""
+        cluster_num_val = (cluster.cluster_number if cluster else None) or ""
+        visit_nr_val = v.visit_nr if v.visit_nr is not None else 9999
+        part_of_day_val = v.part_of_day or ""
+        project_location_val = (
+            (cluster.location if cluster and cluster.location else None)
+            or (project.location if project else None)
+            or ""
+        )
+
+        if feature_daily_planning:
+            planned_val: date = (
+                v.planned_date
+                or (_isoweek_to_friday(ref_year, v.provisional_week) if v.provisional_week else None)
+                or date.max
+            )
+            date_flag = 0 if v.planned_date else 1
+        else:
+            week_val = v.planned_week or v.provisional_week or 9999
+
+        sec = (from_date_val, project_code_val, cluster_num_val, visit_nr_val)
+
+        if sort_by == "project_code":
+            return (project_code_val, cluster_num_val, visit_nr_val)
+        if sort_by == "project_location":
+            return (project_location_val, project_code_val, cluster_num_val)
+        if sort_by == "cluster_number":
+            return (cluster_num_val, project_code_val, visit_nr_val)
+        if sort_by == "visit_nr":
+            return (visit_nr_val, from_date_val, project_code_val)
+        if sort_by == "period":
+            return (from_date_val,) + sec[1:]
+        if sort_by == "part_of_day":
+            return (part_of_day_val, from_date_val, project_code_val)
+        if sort_by == "status":
+            status_code = (status_map or {}).get(v.id, "created")
+            return (_STATUS_ORDER.get(str(status_code), 99), from_date_val, project_code_val)
+        if sort_by == "functions":
+            fn_val = next((f.name for f in v.functions), v.custom_function_name or "")
+            return (fn_val or "", from_date_val, project_code_val)
+        if sort_by == "species":
+            sp_val = next(
+                (s.abbreviation or s.name for s in v.species), v.custom_species_name or ""
+            )
+            return (sp_val or "", from_date_val, project_code_val)
+        if sort_by == "researchers":
+            r_val = next((r.full_name or "" for r in v.researchers), "")
+            return (r_val, from_date_val, project_code_val)
+        if sort_by in ("week", "date"):
+            if feature_daily_planning:
+                return (planned_val, date_flag, from_date_val, project_code_val)
+            return (week_val, from_date_val, project_code_val)
+
+        # Default
+        if feature_daily_planning:
+            return (from_date_val, planned_val, date_flag, project_code_val, cluster_num_val, visit_nr_val)
+        return (from_date_val, week_val, project_code_val, cluster_num_val, visit_nr_val)
+
+    return key, reverse
+
+
 @router.get("", response_model=VisitListResponse)
 async def list_visits(
     current_user: UserDep,
@@ -342,6 +530,8 @@ async def list_visits(
     unplanned_only: Annotated[bool, Query()] = False,
     include_archived: Annotated[bool, Query()] = False,
     only_archived: Annotated[bool, Query()] = False,
+    sort_by: Annotated[str | None, Query()] = None,
+    sort_dir: Annotated[str, Query()] = "asc",
 ) -> VisitListResponse:
     """Return a paginated list of visits for the overview table.
 
@@ -381,6 +571,7 @@ async def list_visits(
         stmt,
         search=search,
         week=week,
+        daily_planning=settings.feature_daily_planning,
         cluster_number=cluster_number,
         function_ids=function_ids,
         species_ids=species_ids,
@@ -399,30 +590,42 @@ async def list_visits(
         Visit.planned_week.label("s_planned_week"),
         Visit.provisional_week.label("s_provisional_week"),
         Project.code.label("s_project_code"),
+        Project.location.label("s_project_location"),
         Cluster.cluster_number.label("s_cluster_number"),
+        Cluster.location.label("s_cluster_location"),
         Visit.visit_nr.label("s_visit_nr"),
+        Visit.part_of_day.label("s_part_of_day"),
+        func.coalesce(
+            select(func.min(Function.name))
+            .select_from(visit_functions)
+            .join(Function, Function.id == visit_functions.c.function_id)
+            .where(visit_functions.c.visit_id == Visit.id)
+            .correlate(Visit)
+            .scalar_subquery(),
+            Visit.custom_function_name,
+        ).label("s_function_name"),
+        func.coalesce(
+            select(func.min(func.coalesce(Species.abbreviation, Species.name)))
+            .select_from(visit_species)
+            .join(Species, Species.id == visit_species.c.species_id)
+            .where(visit_species.c.visit_id == Visit.id)
+            .correlate(Visit)
+            .scalar_subquery(),
+            Visit.custom_species_name,
+        ).label("s_species_name"),
+        select(func.min(User.full_name))
+        .select_from(visit_researchers)
+        .join(User, User.id == visit_researchers.c.user_id)
+        .where(visit_researchers.c.visit_id == Visit.id)
+        .correlate(Visit)
+        .scalar_subquery()
+        .label("s_researcher_name"),
     )
     # DISTINCT ON (visits.id) requires ORDER BY to start with visits.id
     dedup_subq = stmt.distinct(Visit.id).order_by(Visit.id).subquery()
 
-    order_from = func.coalesce(dedup_subq.c.s_from_date, date(9999, 12, 31))
-    if settings.feature_daily_planning:
-        id_stmt = select(dedup_subq.c.id).order_by(
-            order_from,
-            func.coalesce(dedup_subq.c.s_planned_date, date(9999, 12, 31)),
-            func.coalesce(dedup_subq.c.s_provisional_week, 9999),
-            dedup_subq.c.s_project_code,
-            dedup_subq.c.s_cluster_number,
-            dedup_subq.c.s_visit_nr,
-        )
-    else:
-        id_stmt = select(dedup_subq.c.id).order_by(
-            order_from,
-            func.coalesce(dedup_subq.c.s_planned_week, dedup_subq.c.s_provisional_week, 9999),
-            dedup_subq.c.s_project_code,
-            dedup_subq.c.s_cluster_number,
-            dedup_subq.c.s_visit_nr,
-        )
+    sort_exprs = _build_sql_sort_exprs(sort_by, sort_dir, dedup_subq, settings.feature_daily_planning)
+    id_stmt = select(dedup_subq.c.id).order_by(*sort_exprs)
 
     if statuses:
         visit_ids = (await db.execute(id_stmt)).scalars().all()
@@ -449,28 +652,8 @@ async def list_visits(
         allowed = set(statuses)
         visits = [v for v in visits if status_map.get(v.id) in allowed]
 
-    # Order by start date, planned/provisional date or week, then project/cluster/visit
-    def _sort_key(v: Visit) -> tuple:
-        cluster = v.cluster
-        project: Project | None = getattr(cluster, "project", None)
-        from_date = v.from_date or date.max
-        ref_year = v.from_date.year if v.from_date else date.today().year
-        if settings.feature_daily_planning:
-            planned: date = (
-                v.planned_date
-                or (_isoweek_to_friday(ref_year, v.provisional_week) if v.provisional_week else None)
-                or date.max
-            )
-        else:
-            planned_week: int = v.planned_week or v.provisional_week or 9999
-        project_code = project.code if project else ""
-        cluster_number = cluster.cluster_number if cluster else ""
-        visit_nr = v.visit_nr or 0
-        if settings.feature_daily_planning:
-            return (from_date, planned, project_code, cluster_number, visit_nr)
-        return (from_date, planned_week, project_code, cluster_number, visit_nr)
-
-    visits.sort(key=_sort_key)
+    _py_key, _py_reverse = _build_python_sort_key(sort_by, sort_dir, settings.feature_daily_planning, status_map)
+    visits.sort(key=_py_key, reverse=_py_reverse)
 
     if statuses:
         total = len(visits)
@@ -567,6 +750,8 @@ async def export_visits(
     unplanned_only: Annotated[bool, Query()] = False,
     include_archived: Annotated[bool, Query()] = False,
     only_archived: Annotated[bool, Query()] = False,
+    sort_by: Annotated[str | None, Query()] = None,
+    sort_dir: Annotated[str, Query()] = "asc",
 ) -> Response:
     """Export filtered visits to CSV."""
     import csv
@@ -589,6 +774,7 @@ async def export_visits(
         stmt,
         search=search,
         week=week,
+        daily_planning=settings.feature_daily_planning,
         cluster_number=cluster_number,
         function_ids=function_ids,
         species_ids=species_ids,
@@ -607,32 +793,42 @@ async def export_visits(
         Visit.planned_week.label("s_planned_week"),
         Visit.provisional_week.label("s_provisional_week"),
         Project.code.label("s_project_code"),
+        Project.location.label("s_project_location"),
         Cluster.cluster_number.label("s_cluster_number"),
+        Cluster.location.label("s_cluster_location"),
         Visit.visit_nr.label("s_visit_nr"),
+        Visit.part_of_day.label("s_part_of_day"),
+        func.coalesce(
+            select(func.min(Function.name))
+            .select_from(visit_functions)
+            .join(Function, Function.id == visit_functions.c.function_id)
+            .where(visit_functions.c.visit_id == Visit.id)
+            .correlate(Visit)
+            .scalar_subquery(),
+            Visit.custom_function_name,
+        ).label("s_function_name"),
+        func.coalesce(
+            select(func.min(func.coalesce(Species.abbreviation, Species.name)))
+            .select_from(visit_species)
+            .join(Species, Species.id == visit_species.c.species_id)
+            .where(visit_species.c.visit_id == Visit.id)
+            .correlate(Visit)
+            .scalar_subquery(),
+            Visit.custom_species_name,
+        ).label("s_species_name"),
+        select(func.min(User.full_name))
+        .select_from(visit_researchers)
+        .join(User, User.id == visit_researchers.c.user_id)
+        .where(visit_researchers.c.visit_id == Visit.id)
+        .correlate(Visit)
+        .scalar_subquery()
+        .label("s_researcher_name"),
     )
     # DISTINCT ON (visits.id) requires ORDER BY to start with visits.id
     dedup_subq = stmt.distinct(Visit.id).order_by(Visit.id).subquery()
 
-    # Order consistent with list
-    order_from = func.coalesce(dedup_subq.c.s_from_date, date(9999, 12, 31))
-    if settings.feature_daily_planning:
-        id_stmt = select(dedup_subq.c.id).order_by(
-            order_from,
-            func.coalesce(dedup_subq.c.s_planned_date, date(9999, 12, 31)),
-            func.coalesce(dedup_subq.c.s_provisional_week, 9999),
-            dedup_subq.c.s_project_code,
-            dedup_subq.c.s_cluster_number,
-            dedup_subq.c.s_visit_nr,
-        )
-    else:
-        id_stmt = select(dedup_subq.c.id).order_by(
-            order_from,
-            func.coalesce(dedup_subq.c.s_planned_week, dedup_subq.c.s_provisional_week, 9999),
-            dedup_subq.c.s_project_code,
-            dedup_subq.c.s_cluster_number,
-            dedup_subq.c.s_visit_nr,
-        )
-
+    sort_exprs = _build_sql_sort_exprs(sort_by, sort_dir, dedup_subq, settings.feature_daily_planning)
+    id_stmt = select(dedup_subq.c.id).order_by(*sort_exprs)
     visit_ids = (await db.execute(id_stmt)).scalars().all()
 
     if not visit_ids:
@@ -654,34 +850,14 @@ async def export_visits(
         allowed = set(statuses)
         visits = [v for v in visits if status_map.get(v.id) in allowed]
 
-    # Use same sorting
-    def _sort_key(v: Visit) -> tuple:
-        cluster = v.cluster
-        project: Project | None = getattr(cluster, "project", None)
-        from_date = v.from_date or date.max
-        ref_year = v.from_date.year if v.from_date else date.today().year
-        if settings.feature_daily_planning:
-            planned: date = (
-                v.planned_date
-                or (_isoweek_to_friday(ref_year, v.provisional_week) if v.provisional_week else None)
-                or date.max
-            )
-        else:
-            planned_week: int = v.planned_week or v.provisional_week or 9999
-        project_code = project.code if project else ""
-        cluster_number = cluster.cluster_number if cluster else ""
-        visit_nr = v.visit_nr or 0
-        if settings.feature_daily_planning:
-            return (from_date, planned, project_code, cluster_number, visit_nr)
-        return (from_date, planned_week, project_code, cluster_number, visit_nr)
-
-    visits.sort(key=_sort_key)
+    _py_key, _py_reverse = _build_python_sort_key(sort_by, sort_dir, settings.feature_daily_planning, status_map)
+    visits.sort(key=_py_key, reverse=_py_reverse)
 
     def iter_csv():
         output = io.StringIO()
         writer = csv.writer(output)
 
-        headers = [
+        base_headers = [
             "Projectcode",
             "Locatie",
             "Cluster",
@@ -694,7 +870,26 @@ async def export_visits(
             "Dagdeel",
             "Onderzoekers",
         ]
-        writer.writerow(headers)
+        extra_headers = [
+            "Klant",
+            "Adres",
+            "Starttijd",
+            "Duur (uur)",
+            "Min temp (°C)",
+            "Max wind (Bft)",
+            "Max neerslag",
+            "Expertise niveau",
+            "WBC",
+            "Fiets",
+            "VOG",
+            "HUB",
+            "DVP",
+            "Sleutel",
+            "Prioriteit",
+            "Opmerkingen veld",
+            "Opmerkingen planning",
+        ] if settings.full_csv_export else []
+        writer.writerow(base_headers + extra_headers)
         yield output.getvalue()
         output.seek(0)
         output.truncate(0)
@@ -736,21 +931,45 @@ async def export_visits(
                 [r.full_name or f"User {r.id}" for r in v.researchers]
             )
 
-            writer.writerow(
-                [
-                    project_code,
-                    project_location,
-                    cluster.cluster_number if cluster else "",
-                    v.visit_nr or "",
-                    status,
-                    date_str,
-                    functions_str,
-                    species_str,
-                    period_str,
-                    v.part_of_day or "",
-                    researchers_str,
+            row = [
+                project_code,
+                project_location,
+                cluster.cluster_number if cluster else "",
+                v.visit_nr or "",
+                status,
+                date_str,
+                functions_str,
+                species_str,
+                period_str,
+                v.part_of_day or "",
+                researchers_str,
+            ]
+
+            if settings.full_csv_export:
+                duration_hours = (
+                    round(v.duration / 60, 2) if v.duration is not None else ""
+                )
+                row += [
+                    project.customer if project and getattr(project, "customer", None) else "",
+                    cluster.address if cluster and getattr(cluster, "address", None) else "",
+                    v.start_time_text or "",
+                    duration_hours,
+                    v.min_temperature_celsius if v.min_temperature_celsius is not None else "",
+                    v.max_wind_force_bft if v.max_wind_force_bft is not None else "",
+                    v.max_precipitation or "",
+                    v.expertise_level or "",
+                    "Ja" if v.wbc else "Nee",
+                    "Ja" if v.fiets else "Nee",
+                    "Ja" if v.vog else "Nee",
+                    "Ja" if v.hub else "Nee",
+                    "Ja" if v.dvp else "Nee",
+                    "Ja" if v.sleutel else "Nee",
+                    "Ja" if v.priority else "Nee",
+                    v.remarks_field or "",
+                    v.remarks_planning or "",
                 ]
-            )
+
+            writer.writerow(row)
             yield output.getvalue()
             output.seek(0)
             output.truncate(0)
@@ -759,6 +978,94 @@ async def export_visits(
         iter_csv(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=bezoeken.csv"},
+    )
+
+
+@router.get("/ical", response_class=Response)
+async def download_week_ical(
+    current_user: UserDep,
+    db: DbDep,
+    week: Annotated[int, Query()],
+    year: Annotated[int | None, Query()] = None,
+) -> Response:
+    """Download an iCal file for the current user's visits in the given week."""
+    settings = get_settings()
+    if not settings.enable_ical:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    effective_year = year if year is not None else date.today().year
+    week_start = date.fromisocalendar(effective_year, week, 1)
+    week_end = week_start + timedelta(days=6)
+
+    stmt = (
+        select_active(Visit)
+        .where(Visit.researchers.any(User.id == current_user.id))
+        .options(
+            selectinload(Visit.researchers),
+            selectinload(Visit.functions),
+            selectinload(Visit.species),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+        )
+        .where(
+            and_(
+                Visit.planned_week == week,
+                or_(
+                    Visit.from_date.is_(None),
+                    extract("year", Visit.from_date) == effective_year,
+                ),
+            )
+            | and_(
+                Visit.planned_date >= week_start,
+                Visit.planned_date <= week_end,
+            )
+        )
+    )
+
+    visits = (await db.execute(stmt)).scalars().unique().all()
+
+    from app.services.ical_service import build_week_ical
+
+    ics_bytes = build_week_ical(list(visits), week, effective_year)
+    return Response(
+        content=ics_bytes,
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="planning-week-{week}.ics"'},
+    )
+
+
+@router.get("/{visit_id}/ical", response_class=Response)
+async def download_visit_ical(
+    current_user: UserDep,
+    db: DbDep,
+    visit_id: int,
+) -> Response:
+    """Download an iCal file for a single visit."""
+    settings = get_settings()
+    if not settings.enable_ical:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    stmt = (
+        select_active(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.researchers),
+            selectinload(Visit.functions),
+            selectinload(Visit.species),
+            selectinload(Visit.cluster).selectinload(Cluster.project),
+        )
+    )
+
+    visit = (await db.execute(stmt)).scalars().first()
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    from app.services.ical_service import build_visit_ical
+
+    ics_bytes = build_visit_ical(visit)
+    return Response(
+        content=ics_bytes,
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="bezoek-{visit_id}.ics"'},
     )
 
 
@@ -1639,19 +1946,17 @@ async def set_visit_advertised(
 
 @router.get("/audit/list", response_model=list[VisitListRow])
 async def list_visits_for_audit(
-    _: AdminDep,
+    current_user: UserDep,
     db: DbDep,
     simulated_today: Annotated[date | None, Query()] = None,
 ) -> list[VisitListRow]:
     """Return all visits that are relevant for admin audit.
 
-    The listing is restricted to admins and includes all visits whose
-    lifecycle status indicates that a visit was executed (with or
-    without deviation). The result is not paginated as the expected
-    volume is manageable for the audit workflow.
+    When ``AUDIT_OVERVIEW_PUBLIC`` is enabled, all authenticated users may
+    access this endpoint (read-only overview). Otherwise restricted to admins.
 
     Args:
-        _: Ensures the caller is an admin user.
+        current_user: Authenticated user; admin required unless audit_overview_public is set.
         db: Async SQLAlchemy session.
 
     Returns:
@@ -1660,6 +1965,9 @@ async def list_visits_for_audit(
     """
 
     settings = get_settings()
+    if not settings.audit_overview_public and not current_user.admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
     effective_today: date | None = None
     if settings.test_mode_enabled:
         effective_today = simulated_today

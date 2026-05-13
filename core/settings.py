@@ -48,6 +48,12 @@ class Settings(BaseModel):
         in {"1", "true", "yes"}
     )
 
+    # Feature: Public audit overview (Controle-overzicht zichtbaar voor alle ingelogde gebruikers)
+    audit_overview_public: bool = Field(
+        default_factory=lambda: os.getenv("AUDIT_OVERVIEW_PUBLIC", "false").lower()
+        in {"1", "true", "yes"}
+    )
+
     # Feature: Advertise (Hulp gevraagd / Vraag iemand anders)
     feature_advertise: bool = Field(
         default_factory=lambda: os.getenv("FEATURE_ADVERTISE", "true").lower()
@@ -57,6 +63,12 @@ class Settings(BaseModel):
     # Feature: Visit Code (Condensed species/function/daypart codes on visits)
     enable_visit_code: bool = Field(
         default_factory=lambda: os.getenv("ENABLE_VISIT_CODE", "false").lower()
+        in {"1", "true", "yes"}
+    )
+
+    # Feature: iCal export (calendar download for visits)
+    enable_ical: bool = Field(
+        default_factory=lambda: os.getenv("ICAL_ENABLED", "false").lower()
         in {"1", "true", "yes"}
     )
 
@@ -248,6 +260,18 @@ class Settings(BaseModel):
     )
     trash_purge_retention_days: int = Field(
         default_factory=lambda: int(os.getenv("TRASH_PURGE_RETENTION_DAYS", "30"))
+    )
+
+    # Feature: Full CSV Export (all visit detail fields instead of summary columns)
+    full_csv_export: bool = Field(
+        default_factory=lambda: os.getenv("FULL_CSV_EXPORT", "false").lower()
+        in {"1", "true", "yes"}
+    )
+
+    # Notify all researchers (also those without visits assigned)
+    notify_all_researchers: bool = Field(
+        default_factory=lambda: os.getenv("NOTIFY_ALL_RESEARCHERS", "false").lower()
+        in {"1", "true", "yes"}
     )
 
     # Test mode

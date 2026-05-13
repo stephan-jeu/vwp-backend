@@ -27,29 +27,24 @@ def _work_week_bounds(current_year: int, iso_week: int) -> tuple[date, date]:
 async def send_planning_emails_for_week(db: Session, week: int, year: int) -> dict:
     """
     Sends an email to each researcher who has visits planned in the specified week.
+    When NOTIFY_ALL_RESEARCHERS=true, also sends to researchers without any visits.
     Returns a summary dict: {'total': int, 'sent': int, 'failed': int, 'skipped': int}.
     """
 
     # 1. Fetch relevant visits
-    # Similar query logic as in planning.py::get_planning but we need to ensure we get all visits for the week
     week_start, week_end = _work_week_bounds(year, week)
 
-    # We want visits active (not soft deleted), assigned to researchers, for this week.
     stmt = (
         select(Visit)
-        .where(Visit.deleted_at.is_(None))  # Active visits
+        .where(Visit.deleted_at.is_(None))
         .options(
             selectinload(Visit.researchers),
             selectinload(Visit.functions),
             selectinload(Visit.species),
             selectinload(Visit.cluster).selectinload(Cluster.project),
         )
+        .where(Visit.researchers.any())
         .where(
-            # Has at least one researcher
-            Visit.researchers.any()
-        )
-        .where(
-            # Planned for this week (weekly planning mode), with year guard via from_date
             and_(
                 Visit.planned_week == week,
                 or_(
@@ -57,7 +52,6 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
                     extract("year", Visit.from_date) == year,
                 ),
             )
-            # OR planned on a specific date in this week (daily planning mode)
             | and_(
                 Visit.planned_date >= week_start,
                 Visit.planned_date <= week_end,
@@ -67,9 +61,6 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
 
     visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
 
-    if not visits:
-        return {"total": 0, "sent": 0, "failed": 0, "skipped": 0}
-
     # 2. Group by researcher
     visits_by_researcher: dict[int, list[Visit]] = defaultdict(list)
     researchers_map: dict[int, User] = {}
@@ -77,39 +68,58 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
     for visit in visits:
         for researcher in visit.researchers:
             if researcher.deleted_at is not None:
-                continue  # Skip soft-deleted researchers
+                continue
             if not researcher.email:
-                continue  # Skip researchers without email
+                continue
 
             visits_by_researcher[researcher.id].append(visit)
             researchers_map[researcher.id] = researcher
 
-    # 3. Generate and send emails
-    stats = {"total": len(visits_by_researcher), "sent": 0, "failed": 0, "skipped": 0}
-
+    # 3. When NOTIFY_ALL_RESEARCHERS is enabled, add all active researchers
     settings = get_settings()
+    if settings.notify_all_researchers:
+        all_researchers_stmt = select(User).where(
+            User.deleted_at.is_(None),
+            User.email.isnot(None),
+            User.email != "",
+        )
+        all_researchers: list[User] = (
+            (await db.execute(all_researchers_stmt)).scalars().all()
+        )
+        for researcher in all_researchers:
+            if researcher.id not in researchers_map:
+                researchers_map[researcher.id] = researcher
+                # Empty list signals "no visits" for this researcher
+
+    # 4. Generate and send emails
+    stats = {"total": len(researchers_map), "sent": 0, "failed": 0, "skipped": 0}
+
     frontend_url = settings.frontend_url
 
-    for researcher_id, researcher_visits in visits_by_researcher.items():
-        researcher = researchers_map[researcher_id]
+    for researcher_id, researcher in researchers_map.items():
+        researcher_visits = visits_by_researcher.get(researcher_id, [])
 
         try:
-            # Sort visits by date/time
             researcher_visits.sort(
                 key=lambda v: (v.planned_date or date.max, v.start_time_text or "")
             )
 
             subject = f"Planning Week {week} - Veldwerkplanning"
-            html_body = _generate_email_body(
-                researcher, researcher_visits, week, frontend_url
-            )
+            if researcher_visits:
+                html_body = _generate_email_body(
+                    researcher, researcher_visits, week, frontend_url
+                )
+            else:
+                html_body = _generate_no_visits_email_body(
+                    researcher, week, year, frontend_url
+                )
 
-            # Use the HTML sending capability (we need to update send_email to support HTML or just send as plain text/html hybrid)
-            # The current send_email in email_service.py uses `msg.set_content(body)` which implies text/plain.
-            # We should probably extend email_service or use a local helper here that does HTML.
-            # For now, let's create a local helper to send HTML email.
-            _send_html_email(researcher.email, subject, html_body)
+            ics_attachment: bytes | None = None
+            if settings.enable_ical and researcher_visits:
+                from app.services.ical_service import build_week_ical
+                ics_attachment = build_week_ical(researcher_visits, week, year)
 
+            _send_html_email(researcher.email, subject, html_body, ics_attachment, ics_week=week)
             stats["sent"] += 1
 
         except Exception as e:
@@ -260,14 +270,38 @@ def _generate_email_body(
         </table>
         
         <p style="margin-top: 30px; font-size: 0.9em; color: #666;">
-            Let op: deze planning is onder voorbehoud. Kijk altijd in de app voor de meest actuele informatie.
+            Let op: deze planning is onder voorbehoud. Kijk altijd in <a href="{frontend_url}">de app</a> voor de meest actuele informatie.
         </p>
     </body>
     </html>
     """
 
 
-def _send_html_email(to: str, subject: str, html_body: str) -> None:
+def _generate_no_visits_email_body(user: User, week: int, year: int, frontend_url: str) -> str:
+    monday = date.fromisocalendar(year, week, 1)
+    friday = monday + timedelta(days=4)
+    nl_months = [
+        "januari", "februari", "maart", "april", "mei", "juni",
+        "juli", "augustus", "september", "oktober", "november", "december",
+    ]
+    month_name = nl_months[monday.month - 1]
+    date_range = f"{monday.day}-{friday.day} {month_name}"
+
+    return f"""
+    <html>
+    <body style="font-family: sans-serif; color: #333;">
+        <h2>Planning Week {week}</h2>
+        <p>Beste {user.full_name or "collega"},</p>
+        <p>Je staat niet ingepland voor bezoeken voor week {week} ({date_range}).</p>
+        <p style="margin-top: 30px; font-size: 0.9em; color: #666;">
+            Kijk altijd in <a href="{frontend_url}">de app</a> voor de meest actuele informatie.
+        </p>
+    </body>
+    </html>
+    """
+
+
+def _send_html_email(to: str, subject: str, html_body: str, ics_attachment: bytes | None = None, ics_week: int | None = None) -> None:
     settings = get_settings()
 
     # Check if we are in a production-like environment regarding SMTP
@@ -284,6 +318,15 @@ def _send_html_email(to: str, subject: str, html_body: str) -> None:
         "Bekijk deze e-mail in een e-mailclient die HTML ondersteunt."
     )  # Fallback
     msg.add_alternative(html_body, subtype="html")
+
+    if ics_attachment:
+        filename = f"planning-week-{ics_week}.ics" if ics_week is not None else "planning.ics"
+        msg.add_attachment(
+            ics_attachment,
+            maintype="text",
+            subtype="calendar",
+            filename=filename,
+        )
 
     msg["Subject"] = subject
     msg["From"] = settings.admin_email

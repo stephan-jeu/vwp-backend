@@ -8,7 +8,10 @@ from app.models.user import User
 from app.models.cluster import Cluster
 from app.models.project import Project
 from app.models.function import Function
-from app.services.planning_notification_service import send_planning_emails_for_week
+from app.services.planning_notification_service import (
+    send_planning_emails_for_week,
+    _generate_no_visits_email_body,
+)
 
 
 # Mock settings to ensure SMTP check behaves as expected
@@ -111,7 +114,72 @@ async def test_send_planning_emails(mocker):
             assert "P-TEST" in body_r1
             assert "Researcher Two" in body_r1  # Check teammate
 
-            # Check query constraints (roughly)
-            # We can't easily check the complex SQL construction on a mock,
-            # but we can verify execute was called
             assert mock_session.execute.called
+
+
+@pytest.mark.asyncio
+async def test_notify_all_researchers_sends_to_unassigned(mocker):
+    """When notify_all_researchers=True, researchers without visits also get an email."""
+    mock_session = mocker.AsyncMock(name="db_session")
+
+    r1 = User(id=1, full_name="Researcher One", email="r1@example.com")
+    r2 = User(id=2, full_name="Researcher Two", email="r2@example.com")
+
+    proj = Project(id=10, code="P-TEST", location="Loc A")
+    cluster = Cluster(id=100, cluster_number="100", address="Street 1", project=proj)
+    func = Function(id=5, name="Vleermuis")
+
+    v1 = Visit(
+        id=1001,
+        cluster=cluster,
+        planned_week=20,
+        planned_date=None,
+        visit_nr=1,
+        part_of_day="Avond",
+    )
+    v1.researchers = [r1]
+    v1.functions = [func]
+    v1.species = []
+
+    # First execute call returns visits (r1 has a visit), second returns all researchers
+    visits_result = mocker.MagicMock()
+    visits_result.scalars.return_value.unique.return_value.all.return_value = [v1]
+
+    all_researchers_result = mocker.MagicMock()
+    all_researchers_result.scalars.return_value.all.return_value = [r1, r2]
+
+    mock_session.execute.side_effect = [visits_result, all_researchers_result]
+
+    with patch(
+        "app.services.planning_notification_service.get_settings"
+    ) as mock_get_settings:
+        mock_settings = mocker.MagicMock()
+        mock_settings.smtp_host = "localhost"
+        mock_settings.admin_email = "admin@example.com"
+        mock_settings.notify_all_researchers = True
+        mock_settings.feature_daily_planning = False
+        mock_get_settings.return_value = mock_settings
+
+        with patch(
+            "app.services.planning_notification_service._send_html_email"
+        ) as mock_send:
+            stats = await send_planning_emails_for_week(mock_session, 20, 2026)
+
+            assert stats["total"] == 2
+            assert stats["sent"] == 2
+
+            calls = mock_send.call_args_list
+            r2_call = next((c for c in calls if c[0][0] == "r2@example.com"), None)
+            assert r2_call is not None
+            body_r2 = r2_call[0][2]
+            assert "niet ingepland" in body_r2
+            assert "week 20" in body_r2
+
+
+def test_generate_no_visits_email_body():
+    user = User(id=3, full_name="Testpersoon", email="test@example.com")
+    body = _generate_no_visits_email_body(user, 20, 2026)
+    assert "week 20" in body
+    assert "niet ingepland" in body
+    assert "11-15 mei" in body
+    assert "Testpersoon" in body

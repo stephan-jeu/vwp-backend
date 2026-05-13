@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import Select, and_, func, or_, select
@@ -23,6 +24,7 @@ def apply_visit_filters(
     *,
     search: Optional[str] = None,
     week: Optional[int] = None,
+    daily_planning: bool = False,
     cluster_number: Optional[str] = None,
     function_ids: Optional[list[int]] = None,
     species_ids: Optional[list[int]] = None,
@@ -32,15 +34,34 @@ def apply_visit_filters(
 
     # --- Week Filtering ---
     if week is not None:
-        stmt = stmt.where(
-            or_(
-                Visit.planned_week == week,
-                and_(
-                    Visit.planned_week.is_(None),
-                    Visit.provisional_week == week,
-                ),
+        if daily_planning:
+            # In daily planning mode the "week" column is driven by planned_date.
+            # Filter on provisional_week OR planned_date falling within that ISO week.
+            today = date.today()
+            try:
+                week_start = date.fromisocalendar(today.year, week, 1)
+                week_end = date.fromisocalendar(today.year, week, 7)
+                stmt = stmt.where(
+                    or_(
+                        Visit.provisional_week == week,
+                        and_(
+                            Visit.planned_date >= week_start,
+                            Visit.planned_date <= week_end,
+                        ),
+                    )
+                )
+            except ValueError:
+                stmt = stmt.where(Visit.provisional_week == week)
+        else:
+            stmt = stmt.where(
+                or_(
+                    Visit.planned_week == week,
+                    and_(
+                        Visit.planned_week.is_(None),
+                        Visit.provisional_week == week,
+                    ),
+                )
             )
-        )
 
     if unplanned_only:
         stmt = stmt.where(
