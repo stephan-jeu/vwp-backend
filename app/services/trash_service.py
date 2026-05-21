@@ -501,6 +501,9 @@ async def _hard_delete_visits(db: AsyncSession, visit_ids: list[int]) -> None:
             visit_protocol_visit_windows.c.visit_id.in_(visit_ids)
         )
     )
+    await db.execute(
+        delete(VisitAudit).where(VisitAudit.visit_id.in_(visit_ids))
+    )
     await db.execute(delete(Visit).where(Visit.id.in_(visit_ids)))
 
 

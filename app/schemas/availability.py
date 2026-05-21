@@ -77,3 +77,26 @@ class AvailabilityWeekOut(AvailabilityBase):
 
     id: int
     model_config = {"from_attributes": True}
+
+
+class UnavailabilityDayInfo(BaseModel):
+    """Which parts of the day a researcher is unavailable on a specific date."""
+
+    morning: bool
+    daytime: bool
+    nighttime: bool
+
+
+class UserWeekUnavailability(BaseModel):
+    """Per-user unavailability data for a given week, keyed by ISO date string."""
+
+    user_id: int
+    user_name: str
+    dates: dict[str, UnavailabilityDayInfo]
+
+
+class WeekUnavailabilityResponse(BaseModel):
+    """Response listing per-day unavailability for all researchers in a week."""
+
+    week: int
+    users: list[UserWeekUnavailability]

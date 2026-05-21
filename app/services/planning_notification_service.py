@@ -6,7 +6,8 @@ from datetime import date, timedelta
 from email.message import EmailMessage
 
 from sqlalchemy import select, and_, or_, extract
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from core.settings import get_settings
 from app.models.visit import Visit
@@ -24,7 +25,7 @@ def _work_week_bounds(current_year: int, iso_week: int) -> tuple[date, date]:
     return first_day, last_day
 
 
-async def send_planning_emails_for_week(db: Session, week: int, year: int) -> dict:
+async def send_planning_emails_for_week(db: AsyncSession, week: int, year: int) -> dict:
     """
     Sends an email to each researcher who has visits planned in the specified week.
     When NOTIFY_ALL_RESEARCHERS=true, also sends to researchers without any visits.
@@ -59,7 +60,7 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
         )
     )
 
-    visits: list[Visit] = (await db.execute(stmt)).scalars().unique().all()
+    visits: list[Visit] = list((await db.execute(stmt)).scalars().unique().all())
 
     # 2. Group by researcher
     visits_by_researcher: dict[int, list[Visit]] = defaultdict(list)
@@ -83,7 +84,7 @@ async def send_planning_emails_for_week(db: Session, week: int, year: int) -> di
             User.email.isnot(None),
             User.email != "",
         )
-        all_researchers: list[User] = (
+        all_researchers: list[User] = list(
             (await db.execute(all_researchers_stmt)).scalars().all()
         )
         for researcher in all_researchers:
@@ -218,7 +219,7 @@ def _generate_email_body(
             content_desc += f" / {specs}"
 
         # Team
-        team = [r.full_name for r in v.researchers if r.id != user.id]
+        team = [r.full_name for r in v.researchers if r.id != user.id and r.full_name]
         team_str = ", ".join(team) if team else "-"
 
         # Link

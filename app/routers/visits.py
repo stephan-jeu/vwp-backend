@@ -136,8 +136,6 @@ async def _validate_researchers_locked_payload(
         )
 
     if visit is not None:
-        from app.services.visit_planning_selection import _qualifies_user_for_visit
-
         # Check count matches required_researchers
         required = getattr(visit, "required_researchers", 1) or 1
         if len(set(effective_ids)) != required:
@@ -149,20 +147,6 @@ async def _validate_researchers_locked_payload(
                 ),
             )
 
-        # Check each researcher is qualified
-        unqualified = [
-            u.full_name or f"#{u.id}"
-            for u in found
-            if not _qualifies_user_for_visit(u, visit)
-        ]
-        if unqualified:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"researchers_locked: de volgende onderzoekers zijn niet gekwalificeerd "
-                    f"voor dit bezoek: {', '.join(unqualified)}"
-                ),
-            )
 
 
 async def _resolve_pvw_ids_for_visit(

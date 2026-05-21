@@ -7,3 +7,4 @@ __pycache__/
 .env.viridis
 .env.dev
 scripts/update_habitus_db.sh
+scripts/update_viridis_db.sh
