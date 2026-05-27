@@ -143,7 +143,9 @@ def _generate_email_body(
         )
         cluster_info = f"C{v.cluster.cluster_number}" if v.cluster else "?"
         location = (
-            v.cluster.project.location if v.cluster and v.cluster.project else "?"
+            (v.cluster.location if v.cluster and v.cluster.location else None)
+            or (v.cluster.project.location if v.cluster and v.cluster.project else None)
+            or "?"
         )
         address = v.cluster.address if v.cluster else ""
 
@@ -229,7 +231,8 @@ def _generate_email_body(
         <tr style="border-bottom: 1px solid #eee;">
             <td style="padding: 10px; vertical-align: top;">
                 <strong>{day_str}</strong><br>
-                <span style="font-size: 0.9em; color: #666;">{part_of_day_str}</span>
+                <span style="font-size: 0.9em; color: #666;">{part_of_day_str}</span><br>
+                <a href="{link}" style="display: inline-block; margin-top: 6px; background-color: #0ea5e9; color: white; padding: 4px 10px; text-decoration: none; border-radius: 4px; font-size: 0.85em; white-space: nowrap;">Details</a>
             </td>
             <td style="padding: 10px; vertical-align: top;">
                 <strong>{project_code} {cluster_info}</strong><br>
@@ -241,9 +244,6 @@ def _generate_email_body(
             </td>
             <td style="padding: 10px; vertical-align: top;">
                 {team_str}
-            </td>
-            <td style="padding: 10px; vertical-align: top; text-align: right;">
-                <a href="{link}" style="background-color: #0ea5e9; color: white; padding: 5px 10px; text-decoration: none; border-radius: 4px; font-size: 0.9em;">Details</a>
             </td>
         </tr>
         """
@@ -262,7 +262,6 @@ def _generate_email_body(
                     <th style="padding: 10px;">Locatie</th>
                     <th style="padding: 10px;">Activiteit</th>
                     <th style="padding: 10px;">Team</th>
-                    <th style="padding: 10px;"></th>
                 </tr>
             </thead>
             <tbody>
