@@ -710,8 +710,9 @@ class SeasonPlanningService:
             if len(domain_list) <= 1:  # Only [0]
                 no_window_visit_ids.add(v.id)
                 model.Add(is_active == 0)
-                # Assign dummy 0
-                visit_week_vars[v.id] = model.NewConstant(0)
+                # Each no-window visit needs its own variable; NewConstant(0) is shared
+                # across all callers and would cause duplicate-hint MODEL_INVALID.
+                visit_week_vars[v.id] = model.NewIntVar(0, 0, f"week{suffix}_nowindow")
                 continue
 
             vw = model.NewIntVarFromDomain(
@@ -2028,6 +2029,10 @@ class SeasonPlanningService:
             solver.parameters.relative_gap_limit = 0.001
         except AttributeError:
             pass
+
+        if (validation_error := model.Validate()):
+            logger.error("SeasonPlanning CP-SAT model invalid: %s", validation_error)
+
         status = solver.Solve(model)
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
