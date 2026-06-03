@@ -4,7 +4,7 @@ from typing import Annotated
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.models.activity_log import ActivityLog
@@ -38,6 +38,8 @@ from app.services.trash_service import (
 )
 from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
 from app.services.address_validation import is_valid_address
+from app.services.visit_status_service import _STATUS_ACTIONS
+from app.db.utils import select_active
 from core.settings import get_settings
 from app.core.logging import logger
 
@@ -283,47 +285,127 @@ async def get_planning_diagnostics(
     )
     log_rows = (await db.execute(log_stmt)).scalars().all()
 
-    visit_ids = {row.target_id for row in log_rows if row.target_id is not None}
-    if not visit_ids:
-        return []
+    result_map: dict[int, PlanningDiagnosticDetail] = {}
 
-    visits_stmt = (
-        select(Visit)
+    visit_ids = {row.target_id for row in log_rows if row.target_id is not None}
+    if visit_ids:
+        visits_stmt = (
+            select(Visit)
+            .join(Cluster, Visit.cluster_id == Cluster.id)
+            .join(Project, Cluster.project_id == Project.id)
+            .where(Visit.id.in_(visit_ids))
+            .where(Visit.provisional_week.is_(None))
+            .where(Visit.planned_week.is_(None))
+            .options(
+                selectinload(Visit.cluster).selectinload(Cluster.project)
+            )
+        )
+        visits = (await db.execute(visits_stmt)).scalars().unique().all()
+        visit_map: dict[int, Visit] = {v.id: v for v in visits}
+
+        for row in log_rows:
+            vid = row.target_id
+            if vid is None:
+                continue
+            visit = visit_map.get(vid)
+            if visit is None:
+                continue
+            cluster = visit.cluster
+            project = cluster.project if cluster else None
+            details = row.details or {}
+            result_map[vid] = PlanningDiagnosticDetail(
+                visit_id=vid,
+                action=row.action,
+                reason_nl=details.get("reason_nl", "Reden onbekend."),
+                reason_code=details.get("reason_code"),
+                cluster_id=visit.cluster_id,
+                cluster_number=cluster.cluster_number if cluster else None,
+                project_code=project.code if project else None,
+                project_location=getattr(project, "location", None) if project else None,
+                visit_nr=visit.visit_nr,
+                from_date=visit.from_date,
+                to_date=visit.to_date,
+            )
+
+    # Additional: visits with an inverted date window (from_date >= to_date) that are
+    # not in a terminal lifecycle state.  A set planned/provisional week is not a reason
+    # to suppress the warning — the window is still broken.  We override any existing
+    # log entry because the invalid window is the most actionable explanation.
+    _done_actions = [
+        "visit_executed",
+        "visit_executed_deviation",
+        "visit_executed_with_deviation",
+        "visit_approved",
+        "visit_rejected",
+        "visit_cancelled",
+    ]
+
+    # Subquery: timestamp of the most recent status-bearing log per visit
+    _latest_ts_subq = (
+        select(
+            ActivityLog.target_id.label("vid"),
+            func.max(ActivityLog.created_at).label("ts"),
+        )
+        .where(
+            ActivityLog.target_type == "visit",
+            ActivityLog.action.in_(list(_STATUS_ACTIONS)),
+        )
+        .group_by(ActivityLog.target_id)
+        .subquery()
+    )
+
+    # Subquery: the action for that most recent log
+    _latest_action_subq = (
+        select(
+            ActivityLog.target_id.label("vid"),
+            ActivityLog.action.label("action"),
+        )
+        .join(
+            _latest_ts_subq,
+            and_(
+                ActivityLog.target_id == _latest_ts_subq.c.vid,
+                ActivityLog.created_at == _latest_ts_subq.c.ts,
+                ActivityLog.target_type == "visit",
+            ),
+        )
+        .subquery()
+    )
+
+    invalid_stmt = (
+        select_active(Visit)
         .join(Cluster, Visit.cluster_id == Cluster.id)
         .join(Project, Cluster.project_id == Project.id)
-        .where(Visit.id.in_(visit_ids))
-        .where(Visit.provisional_week.is_(None))
-        .where(Visit.planned_week.is_(None))
-        .options(
-            selectinload(Visit.cluster).selectinload(Cluster.project)
+        .outerjoin(_latest_action_subq, Visit.id == _latest_action_subq.c.vid)
+        .where(Visit.from_date.is_not(None))
+        .where(Visit.to_date.is_not(None))
+        .where(Visit.from_date >= Visit.to_date)
+        .where(
+            or_(
+                _latest_action_subq.c.action.is_(None),
+                _latest_action_subq.c.action.not_in(_done_actions),
+            )
         )
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
     )
-    visits = (await db.execute(visits_stmt)).scalars().unique().all()
-    visit_map: dict[int, Visit] = {v.id: v for v in visits}
-
-    result_map: dict[int, PlanningDiagnosticDetail] = {}
-    for row in log_rows:
-        vid = row.target_id
-        if vid is None:
-            continue
-        visit = visit_map.get(vid)
-        if visit is None:
-            continue
-        cluster = visit.cluster
+    invalid_visits = (await db.execute(invalid_stmt)).scalars().unique().all()
+    for v in invalid_visits:
+        cluster = v.cluster
         project = cluster.project if cluster else None
-        details = row.details or {}
-        result_map[vid] = PlanningDiagnosticDetail(
-            visit_id=vid,
-            action=row.action,
-            reason_nl=details.get("reason_nl", "Reden onbekend."),
-            reason_code=details.get("reason_code"),
-            cluster_id=visit.cluster_id,
+        result_map[v.id] = PlanningDiagnosticDetail(
+            visit_id=v.id,
+            action="planning_season_unscheduled",
+            reason_nl=(
+                f"Startdatum ({v.from_date}) valt op of na de einddatum ({v.to_date}) "
+                f"van het uitvoeringsvenster. Pas het venster aan."
+            ),
+            reason_code="venster_ongeldig",
+            cluster_id=v.cluster_id,
             cluster_number=cluster.cluster_number if cluster else None,
             project_code=project.code if project else None,
             project_location=getattr(project, "location", None) if project else None,
-            visit_nr=visit.visit_nr,
-            from_date=visit.from_date,
-            to_date=visit.to_date,
+            visit_nr=v.visit_nr,
+            from_date=v.from_date,
+            to_date=v.to_date,
         )
 
     return list(result_map.values())
