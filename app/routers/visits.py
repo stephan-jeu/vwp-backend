@@ -11,14 +11,12 @@ from sqlalchemy.orm import selectinload
 from app.models.cluster import Cluster
 from app.models.function import Function
 from app.models.project import Project
-from app.models.protocol import Protocol
-from app.models.protocol_visit_window import ProtocolVisitWindow
+from app.models.protocol_visit_window import ProtocolVisitWindow  # noqa: F401 – kept for eager-loading references
 from app.models.species import Species
 from app.models.user import User
 from app.models.visit import (
     Visit,
     visit_functions,
-    visit_protocol_visit_windows,
     visit_researchers,
     visit_species,
 )
@@ -147,71 +145,6 @@ async def _validate_researchers_locked_payload(
                 ),
             )
 
-
-
-async def _resolve_pvw_ids_for_visit(
-    db: AsyncSession,
-    *,
-    cluster_id: int,
-    visit_nr: int,
-    function_ids: list[int],
-    species_ids: list[int],
-    visit_id: int | None = None,
-) -> list[int]:
-    """Resolve PVW ids based on protocol-specific visit ordering.
-
-    Args:
-        db: Async SQLAlchemy session.
-        cluster_id: Cluster ID for the visit.
-        visit_nr: Visit ordering number within the cluster.
-        function_ids: Function IDs linked to the visit.
-        species_ids: Species IDs linked to the visit.
-
-    Returns:
-        List of protocol visit window IDs for the visit.
-    """
-
-    stmt_protocols = select(Protocol).where(
-        Protocol.function_id.in_(function_ids),
-        Protocol.species_id.in_(species_ids),
-    )
-    protocols = (await db.execute(stmt_protocols)).scalars().all()
-    if not protocols:
-        return []
-
-    pvw_ids: list[int] = []
-    for protocol in protocols:
-        if protocol.function_id is None or protocol.species_id is None:
-            continue
-
-        count_stmt = (
-            select(func.count(func.distinct(Visit.id)))
-            .select_from(Visit)
-            .join(visit_functions, visit_functions.c.visit_id == Visit.id)
-            .join(visit_species, visit_species.c.visit_id == Visit.id)
-            .where(
-                Visit.cluster_id == cluster_id,
-                Visit.deleted_at.is_(None),
-                Visit.visit_nr.is_not(None),
-                Visit.visit_nr < visit_nr,
-                visit_functions.c.function_id == protocol.function_id,
-                visit_species.c.species_id == protocol.species_id,
-            )
-        )
-        if visit_id is not None:
-            count_stmt = count_stmt.where(Visit.id != visit_id)
-        previous_count = (await db.execute(count_stmt)).scalar_one()
-        visit_index = previous_count + 1
-
-        pvw_stmt = select(ProtocolVisitWindow.id).where(
-            ProtocolVisitWindow.protocol_id == protocol.id,
-            ProtocolVisitWindow.visit_index == visit_index,
-        )
-        pvw_id = (await db.execute(pvw_stmt)).scalar_one_or_none()
-        if pvw_id is not None:
-            pvw_ids.append(pvw_id)
-
-    return pvw_ids
 
 
 @router.get("/weeks", response_model=list[int])
@@ -1202,30 +1135,7 @@ async def create_visit(
             [{"visit_id": visit.id, "user_id": rid} for rid in payload.researcher_ids],
         )
 
-    if (
-        visit.visit_nr is not None
-        and payload.function_ids
-        and payload.species_ids
-        and not payload.custom_function_name
-        and not payload.custom_species_name
-    ):
-        pvw_ids = await _resolve_pvw_ids_for_visit(
-            db,
-            cluster_id=visit.cluster_id,
-            visit_nr=visit.visit_nr,
-            function_ids=payload.function_ids,
-            species_ids=payload.species_ids,
-            visit_id=visit.id,
-        )
-        if pvw_ids:
-            await db.execute(
-                insert(visit_protocol_visit_windows),
-                [
-                    {"visit_id": visit.id, "protocol_visit_window_id": pid}
-                    for pid in pvw_ids
-                ],
-            )
-
+    await sync_cluster_pvw_links(db, visit.cluster_id)
     await db.commit()
 
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response
@@ -1614,57 +1524,15 @@ async def update_visit(
         visit=visit,
     )
 
-    # Auto-update Protocol Visit Windows if species/functions/visit_nr changed
-    # Logic: Find PVWs matching (species, function) pairs of the visit and matching visit_index.
-    # We do NOT validate dates; this is user responsibility as requested.
+    # Re-sync cluster PVW links so the whole cluster stays consistent when
+    # species, functions or visit_nr change.
     is_visit_nr_changed = "visit_nr" in data
     if (
         payload.function_ids is not None
         or payload.species_ids is not None
         or is_visit_nr_changed
     ):
-        # 1. Determine current state (Final IDs and Nr)
-        current_species_ids = (
-            payload.species_ids
-            if payload.species_ids is not None
-            else [s.id for s in visit.species]
-        )
-        current_function_ids = (
-            payload.function_ids
-            if payload.function_ids is not None
-            else [f.id for f in visit.functions]
-        )
-        current_visit_nr = visit.visit_nr  # Already updated via setattr
-
-        # 2. Clear existing PVWs irrespective of whether we find new ones or not
-        # If visit_nr is None, we just clear and stop.
-        await db.execute(
-            delete(visit_protocol_visit_windows).where(
-                visit_protocol_visit_windows.c.visit_id == visit.id
-            )
-        )
-
-        if (
-            current_visit_nr is not None
-            and current_species_ids
-            and current_function_ids
-        ):
-            pvw_ids = await _resolve_pvw_ids_for_visit(
-                db,
-                cluster_id=visit.cluster_id,
-                visit_nr=current_visit_nr,
-                function_ids=current_function_ids,
-                species_ids=current_species_ids,
-                visit_id=visit.id,
-            )
-            if pvw_ids:
-                await db.execute(
-                    insert(visit_protocol_visit_windows),
-                    [
-                        {"visit_id": visit.id, "protocol_visit_window_id": pid}
-                        for pid in pvw_ids
-                    ],
-                )
+        await sync_cluster_pvw_links(db, visit.cluster_id)
 
     await db.commit()
     # Re-fetch with eager loading to avoid lazy-load (MissingGreenlet) in response

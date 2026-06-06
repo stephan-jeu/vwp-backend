@@ -182,20 +182,6 @@ class Settings(BaseModel):
         )
     )
 
-    # PVW backfill scheduler
-    pvw_backfill_scheduler_enabled: bool = Field(
-        default_factory=lambda: os.getenv(
-            "PVW_BACKFILL_SCHEDULER_ENABLED", "false"
-        ).lower()
-        in {"1", "true", "yes"}
-    )
-    pvw_backfill_cron: str = Field(
-        default_factory=lambda: os.getenv("PVW_BACKFILL_CRON", "30 1 * * *")
-    )
-    pvw_backfill_timezone: str = Field(
-        default_factory=lambda: os.getenv("PVW_BACKFILL_TIMEZONE", "Europe/Amsterdam")
-    )
-
     # Provisional week stickiness
     provisional_week_stickiness_enabled: bool = Field(
         default_factory=lambda: os.getenv(

@@ -21,10 +21,6 @@ from app.services.season_planner_scheduler import (
     shutdown_season_planner_scheduler,
     start_season_planner_scheduler,
 )
-from app.services.pvw_backfill_scheduler import (
-    shutdown_pvw_backfill_scheduler,
-    start_pvw_backfill_scheduler,
-)
 from app.services.trash_purge_scheduler import (
     shutdown_trash_purge_scheduler,
     start_trash_purge_scheduler,
@@ -58,13 +54,11 @@ if settings.sentry_dsn:
 async def lifespan(app: FastAPI):
     # Startup logic could be added here (e.g., warm caches)
     start_season_planner_scheduler()
-    start_pvw_backfill_scheduler()
     start_trash_purge_scheduler()
     start_holiday_reset_scheduler()
     yield
     # Ensure DB connections are cleanly closed on shutdown
     shutdown_season_planner_scheduler()
-    shutdown_pvw_backfill_scheduler()
     shutdown_trash_purge_scheduler()
     shutdown_holiday_reset_scheduler()
     await engine.dispose()
