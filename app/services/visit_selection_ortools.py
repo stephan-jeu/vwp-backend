@@ -1037,8 +1037,9 @@ async def select_visits_cp_sat(
     # 2e. Consecutive-daypart proximity constraint (strict availability mode only).
     # When a researcher is assigned two visits in consecutive dayparts — either on
     # the same day (Ochtend→Dag, Dag→Avond) or overnight (Avond on day D →
-    # Ochtend on day D+1) — the clusters must be ≤30 minutes apart.  If the
-    # pre-fetched travel time exceeds 30 minutes, forbid that combination.
+    # Ochtend on day D+1) — the clusters must be ≤20 minutes apart.  If the
+    # pre-fetched travel time exceeds 20 minutes, forbid that combination.
+    _CONSEC_HARD_LIMIT = 20
     if get_settings().feature_strict_availability and consec_cluster_travel:
         for i1, v1 in v_map.items():
             p1 = (getattr(v1, "part_of_day", None) or "").strip()
@@ -1061,12 +1062,10 @@ async def select_visits_cp_sat(
                 if travel is None:
                     continue
 
-                # We always log if it's evaluated for a researcher pair, but let's log the raw truth first
-                # Actually, only log if >30 explicitly
-                if travel <= 30:
+                if travel <= _CONSEC_HARD_LIMIT:
                     continue
 
-                # Travel time exceeds 30 min: forbid assigning the same researcher
+                # Travel time exceeds 20 min: forbid assigning the same researcher
                 # to both visits in this consecutive order.
                 for j in u_map:
                     if (i1, j) not in x or (i2, j) not in x:
@@ -1233,7 +1232,7 @@ async def select_visits_cp_sat(
     # 3. Consecutive Travel Penalty (Soft Constraint)
     # If the user is assigned consecutive visits (same day or overnight), penalize the
     # travel time between them to encourage tighter routing.
-    # We only apply this if the travel time is <= 30 mins (since > 30 is forbidden).
+    # We only apply this if the travel time is <= 20 mins (since > 20 is forbidden).
     if (
         settings.feature_strict_availability
         and settings.constraint_consecutive_travel_penalty
@@ -1261,8 +1260,8 @@ async def select_visits_cp_sat(
                     continue
 
                 travel = consec_cluster_travel.get((addr1, addr2))
-                # Only penalize if there is actual travel time (and it's valid <=30 mins)
-                if travel is None or travel == 0 or travel > 30:
+                # Only penalize if there is actual travel time (and it's valid <=20 mins)
+                if travel is None or travel == 0 or travel > _CONSEC_HARD_LIMIT:
                     continue
 
                 for j in u_map:
