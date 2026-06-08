@@ -93,6 +93,9 @@ async def generate_visits_for_cluster(
         default_remarks_field=default_remarks_field,
     )
     if visits:
+        # Flush pending mutations (new visits + renumbered visit_nr on existing ones)
+        # before sync; populate_existing=True would otherwise overwrite them.
+        await db.flush()
         await sync_cluster_pvw_links(db, cluster.id)
     return visits, warnings
 

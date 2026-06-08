@@ -1532,6 +1532,10 @@ async def update_visit(
         or payload.species_ids is not None
         or is_visit_nr_changed
     ):
+        # Flush pending ORM changes before sync: sync_cluster_pvw_links uses
+        # populate_existing=True which would otherwise overwrite in-memory
+        # mutations (e.g. from_date) with stale DB values before the commit.
+        await db.flush()
         await sync_cluster_pvw_links(db, visit.cluster_id)
 
     await db.commit()
@@ -2363,6 +2367,9 @@ async def delete_visit(_: AdminDep, db: DbDep, visit_id: int) -> Response:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     cluster_id = visit.cluster_id
     await soft_delete_entity(db, visit, cascade=False)
+    # Flush so the deleted_at mutation is visible to the DB before sync;
+    # populate_existing=True in sync would otherwise reset deleted_at back to NULL.
+    await db.flush()
     await sync_cluster_pvw_links(db, cluster_id)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
