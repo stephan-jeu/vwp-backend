@@ -175,10 +175,17 @@ async def sync_cluster_pvw_links(db: AsyncSession, cluster_id: int) -> tuple[int
             raw_linked = pvw_to_visits.get(pvw.id, set())
             if raw_linked and not (raw_linked & matching_visit_ids):
                 # Pvw has existing cluster links but none to currently matching
-                # visits (those visits lost the func/species).  Don't reassign
-                # to another visit — the cleanup phase will delete the stale link.
-                # Reassigning would create unwanted duplicate index entries.
-                continue
+                # visits.  Only skip when the linked visits truly lost the
+                # (func, species) pair — the cleanup phase will then delete the
+                # stale link.  When the mismatch is a daypart difference (visit
+                # still carries the pair but belongs to the sibling timing
+                # protocol), cleanup keeps the link and the target visit is left
+                # unassigned.  Fall through to reassign in that case.
+                if not any(
+                    (func_id, species_id) in visit_fs.get(vid, set())
+                    for vid in raw_linked
+                ):
+                    continue
 
             # Preserve an existing link when exactly one valid, unassigned visit
             # already holds this pvw. Duplicates (2+) and missing (0) fall
