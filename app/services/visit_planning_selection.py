@@ -1719,6 +1719,12 @@ async def select_visits_for_week(
                     f"Het uitvoeringsvenster ({from_d} t/m {to_d}) overlapt niet "
                     f"met werkweek {week} ({week_monday} t/m {week_friday})."
                 )
+            elif v.custom_function_name or v.custom_species_name:
+                reason_code = "handmatig_inplannen"
+                reason_nl = (
+                    "Dit bezoek heeft een aangepaste soort of functie en moet "
+                    "handmatig worden ingepland."
+                )
             else:
                 reason_code = "protocol_frequentie"
                 reason_nl = (
