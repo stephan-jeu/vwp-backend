@@ -787,6 +787,8 @@ async def export_visits(
             "Dagdeel",
             "Onderzoekers",
         ]
+        if settings.enable_visit_code:
+            base_headers.append("Bezoekcode")
         extra_headers = [
             "Klant",
             "Adres",
@@ -861,6 +863,8 @@ async def export_visits(
                 v.part_of_day or "",
                 researchers_str,
             ]
+            if settings.enable_visit_code:
+                row.append(compute_visit_code(v) or "")
 
             if settings.full_csv_export:
                 duration_hours = (
