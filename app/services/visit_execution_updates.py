@@ -171,14 +171,13 @@ async def update_subsequent_visits(
         # executed visit is not in June, ensure the second visit window lies fully
         # within June while keeping the largest possible interval within June.
         requires_june = bool(getattr(protocol, "requires_june_visit", False))
-        is_two_visit_protocol = getattr(protocol, "visits", None) == 2
 
-        if not (requires_june and is_two_visit_protocol and execution_date.month != 6):
+        if not (requires_june and subsequent_pvws and execution_date.month != 6):
             logger.debug(
-                "update_subsequent_visits: June rule not applied for protocol_id=%s (requires_june=%s, visits=%s, execution_month=%s)",
+                "update_subsequent_visits: June rule not applied for protocol_id=%s (requires_june=%s, has_subsequent=%s, execution_month=%s)",
                 protocol.id,
                 requires_june,
-                getattr(protocol, "visits", None),
+                bool(subsequent_pvws),
                 execution_date.month,
             )
             continue

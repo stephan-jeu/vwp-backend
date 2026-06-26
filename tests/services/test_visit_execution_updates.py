@@ -208,6 +208,52 @@ async def test_update_subsequent_visits_june_window_clamped_both_sides():
 
 
 @pytest.mark.asyncio
+async def test_update_subsequent_visits_june_window_clamped_when_visits_field_is_null():
+    """June clamp must apply even when protocol.visits is NULL in the database."""
+    db = AsyncMock()
+    db.add = MagicMock()
+
+    protocol = Protocol(
+        id=10,
+        visits=None,  # NULL in DB — was the bug: check `== 2` would silently skip the clamp
+        min_period_between_visits_value=20,
+        min_period_between_visits_unit="days",
+        requires_june_visit=True,
+    )
+
+    pvw1 = ProtocolVisitWindow(id=100, protocol_id=10, visit_index=1, protocol=protocol)
+    pvw2 = ProtocolVisitWindow(id=101, protocol_id=10, visit_index=2, protocol=protocol)
+
+    executed_visit = Visit(id=1, cluster_id=5)
+    executed_visit.protocol_visit_windows = [pvw1]
+
+    target_visit = Visit(
+        id=2,
+        cluster_id=5,
+        from_date=date(2026, 6, 20),
+        to_date=date(2026, 7, 15),
+    )
+    target_visit.protocol_visit_windows = [pvw2]
+
+    mock_res1 = MagicMock()
+    mock_res1.scalars.return_value.first.return_value = executed_visit
+
+    mock_res2 = MagicMock()
+    mock_res2.scalars.return_value.all.return_value = [pvw2]
+
+    mock_res3 = MagicMock()
+    mock_res3.scalars.return_value.unique.return_value.all.return_value = [target_visit]
+
+    db.execute.side_effect = [mock_res1, mock_res2, mock_res3]
+
+    await update_subsequent_visits(db, executed_visit, date(2026, 5, 31))
+
+    assert target_visit.from_date == date(2026, 6, 20)
+    assert target_visit.to_date == date(2026, 6, 30)
+    db.add.assert_called_with(target_visit)
+
+
+@pytest.mark.asyncio
 async def test_update_subsequent_visits_june_requirement_ignored_when_execution_in_june():
     db = AsyncMock()
     db.add = MagicMock()

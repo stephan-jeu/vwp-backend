@@ -38,6 +38,8 @@ def make_visit(
     proto = MagicMock()
     proto.min_period_between_visits_value = min_gap_val
     proto.min_period_between_visits_unit = min_gap_unit
+    proto.start_timing_reference = None
+    proto.requires_june_visit = False
 
     pvw.protocol = proto
     v.protocol_visit_windows = [pvw]

@@ -1748,7 +1748,7 @@ class SeasonPlanningService:
                     else:
                         window_span = None
 
-                    weight = 10
+                    weight = settings.season_planner_early_placement_weight
                     if (
                         window_span is not None
                         and window_span < _TIGHT_WINDOW_THRESHOLD_WEEKS

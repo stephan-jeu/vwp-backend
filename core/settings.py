@@ -220,6 +220,18 @@ class Settings(BaseModel):
         )
     )
 
+    # Base early-placement bonus weight (pts per week a visit is placed earlier in its window).
+    # Applies to every visit regardless of window tightness; tight-window visits receive an
+    # additional bonus on top via SEASON_PLANNER_TIGHT_WINDOW_EARLY_BONUS_PER_WEEK.
+    # At 50 pts/week the incentive to place 4 weeks earlier (200 pts) comfortably outweighs
+    # the stickiness resistance (5 pts/week × 4 = 20 pts) while staying far below the
+    # overflow penalty (200 000 pts), so the solver never crosses into full weeks.
+    season_planner_early_placement_weight: int = Field(
+        default_factory=lambda: int(
+            os.getenv("SEASON_PLANNER_EARLY_PLACEMENT_WEIGHT", "50")
+        )
+    )
+
     # Holiday reset scheduler (runs Jan 1 to reset org unavailabilities)
     holiday_reset_scheduler_enabled: bool = Field(
         default_factory=lambda: os.getenv(
