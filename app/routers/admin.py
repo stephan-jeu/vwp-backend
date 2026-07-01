@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from sqlalchemy import Select, and_, func, or_, select
@@ -38,6 +38,7 @@ from app.services.trash_service import (
 )
 from app.services.tight_visits import get_tight_visit_chains, TightVisitResponse
 from app.services.address_validation import is_valid_address
+from app.services.planning_dates import week_out_of_window
 from app.services.visit_status_service import _STATUS_ACTIONS
 from app.db.utils import select_active
 from core.settings import get_settings
@@ -399,6 +400,69 @@ async def get_planning_diagnostics(
                 f"van het uitvoeringsvenster. Pas het venster aan."
             ),
             reason_code="venster_ongeldig",
+            cluster_id=v.cluster_id,
+            cluster_number=cluster.cluster_number if cluster else None,
+            project_code=project.code if project else None,
+            project_location=getattr(project, "location", None) if project else None,
+            visit_nr=v.visit_nr,
+            from_date=v.from_date,
+            to_date=v.to_date,
+        )
+
+    # Additional: visits with a planned_week/planned_date that no longer fits inside
+    # the from_date/to_date window. This happens when a related visit is executed
+    # after the (week/season) planner already assigned a slot, and
+    # visit_execution_updates shifts from_date forward without touching the
+    # already-assigned planning — see docs/planning warnings discussion.
+    planned_stmt = (
+        select_active(Visit)
+        .join(Cluster, Visit.cluster_id == Cluster.id)
+        .join(Project, Cluster.project_id == Project.id)
+        .outerjoin(_latest_action_subq, Visit.id == _latest_action_subq.c.vid)
+        .where(Visit.from_date.is_not(None))
+        .where(or_(Visit.planned_week.is_not(None), Visit.planned_date.is_not(None)))
+        .where(
+            or_(
+                _latest_action_subq.c.action.is_(None),
+                _latest_action_subq.c.action.not_in(_done_actions),
+            )
+        )
+        .options(selectinload(Visit.cluster).selectinload(Cluster.project))
+    )
+    planned_visits = (await db.execute(planned_stmt)).scalars().unique().all()
+
+    today_year = date.today().year
+    for v in planned_visits:
+        detail: str | None = None
+
+        if _settings.feature_daily_planning and v.planned_date is not None:
+            if (v.from_date and v.planned_date < v.from_date) or (
+                v.to_date and v.planned_date > v.to_date
+            ):
+                detail = f"de geplande datum ({v.planned_date})"
+        elif v.planned_week is not None:
+            try:
+                week_monday = date.fromisocalendar(today_year, v.planned_week, 1)
+            except ValueError:
+                continue
+            if week_out_of_window(v, week_monday):
+                week_friday = week_monday + timedelta(days=4)
+                detail = f"de geplande week {v.planned_week} ({week_monday}–{week_friday})"
+
+        if detail is None:
+            continue
+
+        cluster = v.cluster
+        project = cluster.project if cluster else None
+        result_map[v.id] = PlanningDiagnosticDetail(
+            visit_id=v.id,
+            action="planning_season_protocol_violation",
+            reason_nl=(
+                f"{detail[0].upper()}{detail[1:]} valt buiten het uitvoeringsvenster "
+                f"({v.from_date}–{v.to_date}). Mogelijk is de startdatum "
+                f"verschoven na uitvoering van een gerelateerd bezoek."
+            ),
+            reason_code="planned_week_buiten_venster",
             cluster_id=v.cluster_id,
             cluster_number=cluster.cluster_number if cluster else None,
             project_code=project.code if project else None,

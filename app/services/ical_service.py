@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import icalendar
 
 from app.models.visit import Visit
+from app.services.planning_dates import valid_weekdays as _valid_weekdays
 
 _TRAVEL_MINUTES = 120
 _AMS = ZoneInfo("Europe/Amsterdam")
@@ -133,19 +134,6 @@ def _make_calendar() -> icalendar.Calendar:
     cal.add("version", "2.0")
     cal.add("method", "PUBLISH")
     return cal
-
-
-def _valid_weekdays(visit: Visit, week_monday: date) -> list[date]:
-    """Return the Mon–Fri days in the week that fall within the visit's from/to window."""
-    days = []
-    for offset in range(5):
-        candidate = week_monday + timedelta(days=offset)
-        if visit.from_date and candidate < visit.from_date:
-            continue
-        if visit.to_date and candidate > visit.to_date:
-            continue
-        days.append(candidate)
-    return days or [week_monday]
 
 
 def _assign_week_dates(visits: list[Visit], week_monday: date) -> dict[int, date]:
