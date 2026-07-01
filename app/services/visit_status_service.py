@@ -183,12 +183,11 @@ def derive_visit_status(
     if from_date is None or to_date is None:
         return VisitStatusCode.CREATED
 
-    # No researchers assigned and window is in the past
-    if to_date < today:
-        return VisitStatusCode.OVERDUE
-
-    # Planned week + researchers: PLANNED if the window is current/future,
-    # MISSED if the window is already in the past.
+    # Planned week + researchers takes priority over the raw window check
+    # below: PLANNED if the plan is current/future, MISSED if it's already
+    # in the past. This must run before the OVERDUE check so a visit that
+    # was actually planned for a week stays visible (as MISSED) instead of
+    # disappearing into OVERDUE once its protocol window closes.
     planned_or_week = (
         planned_week is not None or getattr(visit, "planned_date", None) is not None
     )
@@ -206,6 +205,10 @@ def derive_visit_status(
         if planned_week is not None and planned_week < current_week:
             return VisitStatusCode.MISSED
         return VisitStatusCode.PLANNED
+
+    # No researchers/plan assigned and window is in the past
+    if to_date < today:
+        return VisitStatusCode.OVERDUE
 
     # Has a date window in the present/future but not yet planned
     return VisitStatusCode.OPEN
