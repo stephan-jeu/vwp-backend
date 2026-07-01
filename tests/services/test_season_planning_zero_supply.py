@@ -270,13 +270,24 @@ def test_quadratic_load_distributes_evenly():
     start_date = date(2025, 3, 3)  # ISO week 10
 
     def make_spread_visit(vid):
+        proto = SimpleNamespace()
+        proto.id = 1
+        proto.min_period_between_visits_value = 0
+        proto.min_period_between_visits_unit = "days"
+        pvw = SimpleNamespace()
+        pvw.protocol = proto
+        pvw.protocol_id = 1
+        pvw.visit_index = 1
+
         return SimpleNamespace(
             id=vid,
             sleutel=False,
             cluster=SimpleNamespace(project_id=vid),
             cluster_id=vid,
             from_date=date(2025, 3, 3),  # week 10
-            to_date=date(2025, 3, 14),  # week 11
+            to_date=date(2025, 4, 4),  # week 14 (span >= _TIGHT_WINDOW_THRESHOLD_WEEKS
+            # so the tight-window early-placement bonus doesn't override the
+            # quadratic spread penalty under test)
             planned_week=None,
             provisional_week=None,
             provisional_locked=False,
@@ -284,7 +295,7 @@ def test_quadratic_load_distributes_evenly():
             custom_species_name=None,
             required_researchers=1,
             functions=[],
-            protocol_visit_windows=[],
+            protocol_visit_windows=[pvw],
             species=[SimpleNamespace(family=SimpleNamespace(name="Vleermuis"))],
         )
 
@@ -328,6 +339,7 @@ def test_quadratic_load_distributes_evenly():
     mock_settings_on.constraint_large_team_penalty = False
     mock_settings_on.provisional_week_stickiness_enabled = False
     mock_settings_on.season_planner_avoid_current_week_penalty = 0
+    mock_settings_on.season_planner_early_placement_weight = 50
     with patch(
         "app.services.season_planning_service.get_settings",
         return_value=mock_settings_on,
@@ -347,6 +359,7 @@ def test_quadratic_load_distributes_evenly():
     mock_settings.constraint_large_team_penalty = False
     mock_settings.provisional_week_stickiness_enabled = False
     mock_settings.season_planner_avoid_current_week_penalty = 0
+    mock_settings.season_planner_early_placement_weight = 50
     with patch(
         "app.services.season_planning_service.get_settings", return_value=mock_settings
     ):

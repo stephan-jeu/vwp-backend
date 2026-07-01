@@ -40,6 +40,9 @@ class _FakeSession:
     def add(self, _obj):
         return None
 
+    async def flush(self):
+        return None
+
 
 @pytest_asyncio.fixture
 async def fake_db():

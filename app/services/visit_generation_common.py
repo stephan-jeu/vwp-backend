@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta, time
 
@@ -245,8 +246,9 @@ class VisitRequest:
     def id(self) -> str:
         return f"p{self.protocol.id}_v{self.visit_index}"
 
-    # helper for effective start calc during generation
+    # helper for effective start/end calc during generation
     effective_window_from: date | None = None
+    effective_window_to: date | None = None
 
 
 def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
@@ -325,6 +327,40 @@ def _generate_visit_requests(protocols: list[Protocol]) -> list[VisitRequest]:
                 wd_start = min_valid
 
         r.effective_window_from = wd_start
+
+    # Propagate effective ends (backwards): a visit that has a successor must
+    # leave enough room for min_period_between_visits before that successor's
+    # (already-adjusted) effective end. This only ever tightens window_to; if
+    # the protocol's own explicit windows are already sequential/non-overlapping,
+    # the min() below leaves it unchanged.
+    for r in requests:
+        r.effective_window_to = r.window_to
+
+    requests_by_protocol: dict[int, list[VisitRequest]] = defaultdict(list)
+    for r in requests:
+        requests_by_protocol[r.protocol.id].append(r)
+
+    for proto_requests in requests_by_protocol.values():
+        proto_requests.sort(key=lambda r: r.visit_index, reverse=True)
+        for r in proto_requests:
+            if not r.predecessor:
+                continue
+            pred_id, gap = r.predecessor
+            pred = req_map[pred_id]
+
+            r_eff_to = r.effective_window_to or r.window_to
+            candidate = r_eff_to - timedelta(days=gap)
+
+            new_eff_to = min(pred.window_to, candidate)
+
+            # Never shrink below the predecessor's own effective start, to
+            # avoid reporting an inverted/empty window when the explicit
+            # windows + gap are already at their tightest.
+            pred_eff_from = pred.effective_window_from or pred.window_from
+            if new_eff_to < pred_eff_from:
+                new_eff_to = pred_eff_from
+
+            pred.effective_window_to = new_eff_to
 
     return requests
 

@@ -42,6 +42,10 @@ class _FakeSession:
         # no-op for unit tests
         return None
 
+    async def flush(self):
+        # no-op for unit tests
+        return None
+
 
 def _make_protocol(
     *,

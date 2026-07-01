@@ -178,7 +178,7 @@ async def test_notify_all_researchers_sends_to_unassigned(mocker):
 
 def test_generate_no_visits_email_body():
     user = User(id=3, full_name="Testpersoon", email="test@example.com")
-    body = _generate_no_visits_email_body(user, 20, 2026)
+    body = _generate_no_visits_email_body(user, 20, 2026, "https://example.com")
     assert "week 20" in body
     assert "niet ingepland" in body
     assert "11-15 mei" in body

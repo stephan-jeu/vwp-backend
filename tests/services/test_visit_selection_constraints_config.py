@@ -95,6 +95,7 @@ async def test_max_travel_time_configuration():
             await select_visits_cp_sat(
                 db=[],
                 week_monday=date(2026, 5, 4),
+                today=date(2026, 5, 4),
                 visits=[visit],
                 users=users,
                 user_caps=user_caps,
@@ -109,6 +110,7 @@ async def test_max_travel_time_configuration():
         result_loose = await select_visits_cp_sat(
             db=[],
             week_monday=date(2026, 5, 4),
+            today=date(2026, 5, 4),
             visits=[visit],
             users=users,
             user_caps=user_caps,
@@ -185,6 +187,7 @@ async def test_consecutive_travel_penalty():
         result = await select_visits_cp_sat(
             db=[],
             week_monday=date(2026, 5, 4),
+            today=date(2026, 5, 4),
             visits=[v1, v2, v3],
             users=users,
             user_caps=user_caps,

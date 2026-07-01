@@ -429,7 +429,12 @@ def _add_visit_window_and_shortness_constraints(
         ends_in_visit = []
         for r_idx, req in enumerate(requests):
             eff = model.NewIntVar(min_date_ord, infinity_ord, f"eff_end_r{r_idx}_v{v}")
-            model.Add(eff == req.window_to.toordinal()).OnlyEnforceIf(
+            effective_to = (
+                req.effective_window_to
+                if getattr(req, "effective_window_to", None) is not None
+                else req.window_to
+            )
+            model.Add(eff == effective_to.toordinal()).OnlyEnforceIf(
                 req_to_visit[(r_idx, v)]
             )
             model.Add(eff == infinity_ord).OnlyEnforceIf(req_to_visit[(r_idx, v)].Not())
@@ -557,19 +562,25 @@ async def generate_visits_cp_sat(
                     if getattr(r, "effective_window_from", None) is not None
                     else r.window_from
                 )
+                latest = (
+                    r.effective_window_to
+                    if getattr(r, "effective_window_to", None) is not None
+                    else r.window_to
+                )
                 pred_str = (
                     f"{r.predecessor[0]}+{r.predecessor[1]}"
                     if getattr(r, "predecessor", None)
                     else "-"
                 )
                 _logger.info(
-                    "REQ: %s proto=%s v_idx=%s win=[%s..%s] eff_from=%s pred=%s parts=%s",
+                    "REQ: %s proto=%s v_idx=%s win=[%s..%s] eff_from=%s eff_to=%s pred=%s parts=%s",
                     r.id,
                     r.protocol.id,
                     getattr(r, "visit_index", None),
                     r.window_from,
                     r.window_to,
                     earliest,
+                    latest,
                     pred_str,
                     sorted(list(r.part_of_day_options or [])),
                 )
@@ -962,8 +973,12 @@ async def generate_visits_cp_sat(
         ]
         assigned_reqs = [requests[i] for i in assigned_req_indices]
 
-        # Extend the effective "window" to the minimum end date of all assigned requests.
-        min_window_to = min(req.window_to for req in assigned_reqs)
+        # Extend the effective "window" to the minimum end date of all assigned requests,
+        # tightened by min_period_between_visits when a request has a successor visit
+        # (see VisitRequest.effective_window_to).
+        min_window_to = min(
+            (req.effective_window_to or req.window_to) for req in assigned_reqs
+        )
         final_to_date = min_window_to
 
         # Create Visit

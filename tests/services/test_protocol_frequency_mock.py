@@ -45,10 +45,11 @@ async def test_lookback_frequency_exclusion(mocker):
     # Gap for P11: (May 11) - (Week 18 ~May 1) > 7 days. -> NOT BLOCKED.
 
     mock_result_hist = MagicMock()
-    # Row format in service: (prot_id, min_val, min_unit, locked_visit_start, locked_week, locked_cluster_id)
+    # Row format in service: (prot_id, min_val, min_unit, prot_timing_ref,
+    # locked_visit_start, locked_week, locked_cluster_id, locked_part_of_day)
     rows = [
-        (10, 3, "weeks", date(2026, 5, 8), 19, 1),
-        (11, 1, "weeks", date(2026, 5, 1), 18, 1),
+        (10, 3, "weeks", None, date(2026, 5, 8), 19, 1, None),
+        (11, 1, "weeks", None, date(2026, 5, 1), 18, 1, None),
     ]
     mock_result_hist.unique.return_value.all.return_value = rows
 
