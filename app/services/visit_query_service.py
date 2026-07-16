@@ -43,15 +43,23 @@ def apply_visit_filters(
                 week_end = date.fromisocalendar(today.year, week, 7)
                 stmt = stmt.where(
                     or_(
-                        Visit.provisional_week == week,
                         and_(
                             Visit.planned_date >= week_start,
                             Visit.planned_date <= week_end,
                         ),
+                        and_(
+                            Visit.planned_date.is_(None),
+                            Visit.provisional_week == week,
+                        ),
                     )
                 )
             except ValueError:
-                stmt = stmt.where(Visit.provisional_week == week)
+                stmt = stmt.where(
+                    and_(
+                        Visit.planned_date.is_(None),
+                        Visit.provisional_week == week,
+                    )
+                )
         else:
             stmt = stmt.where(
                 or_(
