@@ -441,6 +441,48 @@ def calculate_visit_props(
         eff = _get_effective_timing(p, visit_index=v_idx, part_of_day=part_of_day)
         effective_timings.append(eff)
 
+    # Mixed timing that genuinely depends on sunset only occurs when an MV
+    # Paarverblijf protocol (which is strictly sunset-anchored and cannot snap to
+    # a clock anchor) shares the visit with an absolute-time protocol. Only then
+    # do we (a) flag the duration as indicative via a remark and (b) re-interpret
+    # the RD "1 ronde rond middernacht" requirement as 22:15-00:15 (instead of
+    # the standalone 23:00-01:00) so the visit is not stretched to 01:00.
+    # A visit like "RD v1 + GD" keeps its plain absolute 23:00-01:00 timing.
+    has_mv_sunset_paarverblijf = any(
+        (getattr(getattr(p, "function", None), "name", "") == "Paarverblijf")
+        and (
+            getattr(getattr(p, "species", None), "abbreviation", "") == "MV"
+            or getattr(getattr(p, "species", None), "name", "") == "MV"
+        )
+        and t.start_timing_reference == "SUNSET"
+        for p, t in zip(protocols, effective_timings)
+    )
+    has_absolute_ref = any(
+        t.start_timing_reference == "ABSOLUTE_TIME"
+        and t.start_time_absolute_from is not None
+        for t in effective_timings
+    )
+    is_mixed_paarverblijf_visit = has_mv_sunset_paarverblijf and has_absolute_ref
+
+    rd_paarverblijf_v1_ids = {
+        p.id
+        for p in protocols
+        if getattr(getattr(p, "function", None), "name", "") == "Paarverblijf"
+        and getattr(getattr(p, "species", None), "abbreviation", "") == "RD"
+        and (visit_indices.get(p.id) if visit_indices else None) == 1
+    }
+
+    mixed_timing_remark: str | None = None
+    if part_of_day == "Avond" and is_mixed_paarverblijf_visit:
+        end_label = "00:15" if rd_paarverblijf_v1_ids else "00:00"
+        mixed_timing_remark = (
+            f"Onderzoek doen tot minimaal {end_label}; "
+            "opgegeven tijdsduur is een indicatie."
+        )
+        for p, t in zip(protocols, effective_timings):
+            if p.id in rd_paarverblijf_v1_ids:
+                t.start_time_absolute_from = time(22, 15)
+
     durations = [
         t.visit_duration_hours
         for t in effective_timings
@@ -476,12 +518,18 @@ def calculate_visit_props(
         # User confirmed single Massawinterverblijfplaats already has 00:00 and the right duration
         pass
     elif has_massawinter and len(protocols) > 1:
-        if has_mv_paarverblijf:
+        if has_mv_paarverblijf and part_of_day == "Avond":
+            # MV Paarverblijf drives the timing: fall through to the Avond span
+            # logic, where the 00:00 massawinter anchor is skipped so the visit
+            # runs from sunset to the paarverblijf end (~00:00 / 00:15) instead
+            # of being reported as the bare max single-protocol duration.
+            pass
+        elif has_mv_paarverblijf:
             # MV Paarverblijf exception: starts at Zonsondergang, default max duration
-            return duration_min, "Zonsondergang", None
+            return duration_min, "Zonsondergang", mixed_timing_remark
         else:
             # Combined with non-MV Paarverblijf (or other): fixed to 00:00 and 2 hours (120 min)
-            return 120, "00:00", None
+            return 120, "00:00", mixed_timing_remark
 
     def _wrap_night_minutes(value: int) -> int:
         if value < 600:
@@ -495,7 +543,7 @@ def calculate_visit_props(
         if m == 7:
             return 22 * 60
         if m == 8:
-            return 21 * 60
+            return 20 * 60 + 45
         if m == 9:
             return 20 * 60
         return 20 * 60
@@ -546,7 +594,6 @@ def calculate_visit_props(
             is_massawinter = fn_name == "Massawinterverblijfplaats"
 
             dur = int((eff.visit_duration_hours or 0) * 60)
-            per_protocol_durations.append(dur)
 
             is_sunset_fixed = (
                 is_paarverblijf
@@ -554,16 +601,16 @@ def calculate_visit_props(
                 and eff.start_timing_reference == "SUNSET"
                 and eff.start_time_relative_minutes == 0
             )
-            per_protocol_is_sunset_fixed.append(is_sunset_fixed)
 
             starts: list[int] = []
 
+            if is_massawinter and has_mv_paarverblijf:
+                # Subsumed by the sunset-anchored MV Paarverblijf work; do not let
+                # the 00:00 anchor stretch the visit to 02:00.
+                continue
             if is_massawinter:
                 starts.append(_wrap_night_minutes(0))
-                per_protocol_starts.append(starts)
-                continue
-
-            if (
+            elif (
                 eff.start_timing_reference == "ABSOLUTE_TIME"
                 and eff.start_time_absolute_from
             ):
@@ -590,10 +637,15 @@ def calculate_visit_props(
                     starts.extend(sorted(abs_anchor_candidates))
 
             if not starts:
-                per_protocol_starts = []
-                break
+                # Protocol has no resolvable evening start (e.g. a sunrise/daytime
+                # reference bundled into an evening visit). Leave it out of the
+                # span search rather than discarding the whole calculation and
+                # silently falling back to max(single protocol duration).
+                continue
 
             per_protocol_starts.append(sorted(set(starts)))
+            per_protocol_durations.append(dur)
+            per_protocol_is_sunset_fixed.append(is_sunset_fixed)
 
         if per_protocol_starts:
             best_span: int | None = None
@@ -649,7 +701,7 @@ def calculate_visit_props(
                         best_min_start - sunset_min_wrapped
                     )
 
-                return duration_min, start_text, None
+                return duration_min, start_text, mixed_timing_remark
 
     def derive_end_time_minutes(p: Protocol) -> int | None:
         ref = p.end_timing_reference or ""
@@ -702,7 +754,7 @@ def calculate_visit_props(
         hours_before = abs(min_to_sunrise) / 60.0
         h_str = f"{hours_before:g}".replace(".", ",")
         start_text = f"{h_str} uur voor zonsopkomst"
-        return duration_min, start_text, None
+        return duration_min, start_text, mixed_timing_remark
 
     # Default fallback text logic (ported)
     # Store candidates as tuples: (sort_key_minutes, text_str)
@@ -791,4 +843,4 @@ def calculate_visit_props(
         text_candidates.sort(key=lambda x: x[0])
         start_text = text_candidates[0][1]
 
-    return duration_min, start_text, None
+    return duration_min, start_text, mixed_timing_remark

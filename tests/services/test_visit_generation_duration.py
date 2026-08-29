@@ -56,11 +56,11 @@ def test_calculate_duration_pure_absolute_time_simple():
 
 
 def test_calculate_duration_mixed_absolute_sunset_august():
-    # Month August (8) -> Sunset assumed 21:00
+    # Month August (8) -> Sunset assumed 20:45
     # p1: Absolute 23:00 (1h) -> Ends 24:00 (00:00 next day)
-    # p2: Sunset + 60 min (1h) -> 21:00 + 1h = 22:00 start -> Ends 23:00
-    # Combined: Earliest Start 22:00. Latest End 24:00.
-    # Expected Duration: 2 hours (120 min)
+    # p2: Sunset + 60 min (1h) -> 20:45 + 1h = 21:45 start -> Ends 22:45
+    # Combined: Earliest Start 21:45. Latest End 24:00.
+    # Expected Duration: 2h15 (135 min)
 
     p1 = Protocol(
         id=1,
@@ -81,12 +81,12 @@ def test_calculate_duration_mixed_absolute_sunset_august():
         [p1, p2], "Avond", reference_date=ref_date_aug
     )
 
-    # 21:00 (Sunset) + 60 = 22:00.
+    # 20:45 (Sunset) + 60 = 21:45.
     # Absolute 23:00.
-    # Earliest start = 22:00.
-    # Ends: 23:00 (1h after 22:00) vs 00:00 (1h after 23:00).
-    # Span: 22:00 to 00:00 = 120 min.
-    assert duration == 120
+    # Earliest start = 21:45.
+    # Ends: 22:45 (1h after 21:45) vs 00:00 (1h after 23:00).
+    # Span: 21:45 to 00:00 = 135 min.
+    assert duration == 135
     # Text logic fallback might be complex, but for now we check duration primarily.
     # Ideally standard logic picks earliest.
     # But mixed text might depend on what `calculate_visit_props` decides.

@@ -1039,11 +1039,10 @@ async def generate_visits_cp_sat(
 
         # Calculate duration/text
         try:
-            ref_date = (
-                min(r.window_from for r in assigned_reqs)
-                if assigned_reqs
-                else visit_date
-            )
+            # Use this visit's own (CP-SAT) window start as the seasonal anchor for
+            # the sunset estimate, so a 2nd visit ~20 days later lands in the next
+            # month's bucket instead of inheriting visit 1's earliest window date.
+            ref_date = visit_date
             v_indices = {r.protocol.id: r.visit_index for r in assigned_reqs}
 
             dur, txt, rem = calculate_visit_props(
