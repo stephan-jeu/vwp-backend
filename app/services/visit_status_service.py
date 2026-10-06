@@ -325,6 +325,7 @@ async def resolve_visit_statuses(
             & (ActivityLog.created_at == latest_log_subq.c.latest_at),
         )
         .where(ActivityLog.target_type == "visit")
+        .order_by(ActivityLog.created_at, ActivityLog.id)
     )
 
     logs = (await db.execute(stmt)).scalars().all()

@@ -27,7 +27,7 @@ from app.models.user import User
 from app.services.visit_status_service import (
     VisitStatusCode,
     derive_visit_status,
-    resolve_visit_status,
+    resolve_visit_statuses,
 )
 from app.services.planning_run_errors import PlanningRunError
 
@@ -1527,15 +1527,13 @@ async def _select_visits_for_week_core(
     # status service. Use ``week_monday`` as the reference "today" so that
     # simulations and tests for historical weeks remain deterministic.
     if db is not None:
-        filtered: list[Visit] = []
-        for v in visits:
-            try:
-                status = await resolve_visit_status(db, v, today=week_monday)
-            except Exception:  # pragma: no cover - defensive only
-                status = derive_visit_status(v, None, today=week_monday)
-            if status == VisitStatusCode.OPEN:
-                filtered.append(v)
-        visits = filtered
+        try:
+            status_map = await resolve_visit_statuses(db, visits, today=week_monday)
+        except Exception:  # pragma: no cover - defensive only
+            status_map = {
+                v.id: derive_visit_status(v, None, today=week_monday) for v in visits
+            }
+        visits = [v for v in visits if status_map.get(v.id) == VisitStatusCode.OPEN]
     else:
         visits = [
             v

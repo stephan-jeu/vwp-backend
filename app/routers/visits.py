@@ -1192,9 +1192,7 @@ async def list_advertised_visits(
     if not visits:
         return []
 
-    status_map: dict[int, VisitStatusCode] = {}
-    for v in visits:
-        status_map[v.id] = await resolve_visit_status(db, v, today=effective_today)
+    status_map = await resolve_visit_statuses(db, list(visits), today=effective_today)
 
     allowed_statuses: set[VisitStatusCode] = {
         VisitStatusCode.PLANNED,
