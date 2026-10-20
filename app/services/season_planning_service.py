@@ -32,6 +32,8 @@ from app.services.visit_planning_selection import (
 )
 from app.services.planning_run_errors import PlanningRunError
 from app.schemas.capacity import (
+    BottleneckPeriod,
+    CapacityBottleneckReport,
     CapacitySimulationResponse,
     DeadlineSummaryRow,
     UnschedulableVisitInfo,
@@ -71,6 +73,12 @@ except ValueError:
 # from the predecessor_room_risk penalty (which would otherwise push their successors
 # toward the end of their windows, causing a cascade across the whole visit chain).
 _TIGHT_WINDOW_THRESHOLD_WEEKS = 4
+
+# Objective reward per scheduled visit; also the unit of the solution-quality gap.
+_BASE_VISIT_REWARD = 100_000
+
+# Share of the solver time limit for phase 1 (see season_planner_two_phase).
+_PHASE1_TIME_SHARE = 0.4
 
 
 def _visit_label(v: "Visit") -> str:
@@ -115,12 +123,441 @@ class CapacityProfile(NamedTuple):
     """
     Represents a unique set of skills/capacities (e.g. "Bat Expert + Bird Expert").
     Users are grouped into these profiles to reduce solver variables.
+
+    Pooling users with an identical skill set is exact for capacity purposes:
+    they are interchangeable, so any pooled allocation can be split over the users.
     """
 
     id: int
-    name: str  # e.g. "Pool A"
-    skills: tuple[str, ...]  # ("Vleermuis", "Zwaluw")
-    total_weekly_tokens: dict[int, int]  # WeekNum -> Total Capacity
+    skills: frozenset[str]  # {"Vleermuis", "SMP Vleermuis"}
+    user_ids: tuple[int, ...]
+    caps: dict[int, tuple[int, int, int, int]]  # week -> (morning, day, night, flex)
+
+    def serves(self, skill: str) -> bool:
+        return skill == _ANY_SKILL or skill in self.skills
+
+
+class ProfileFlowResult(NamedTuple):
+    """Outcome of allocating one week's demand buckets over capacity profiles."""
+
+    served: dict[tuple[int, str, str], int]  # (profile_id, skill, part) -> days
+    flex_used: dict[tuple[int, str], int]  # (profile_id, part m/d/n) -> flex days
+    unmet: dict[tuple[str, str], int]  # (skill, part) -> days not covered
+    remaining: dict[int, tuple[int, int, int, int]]  # profile_id -> unused (m, d, n, f)
+
+
+# Demand bucket parts: morning/day/night plus "any" for visits without a part of day.
+_PART_KEYS = ("m", "d", "n")
+_ANY_PART = "a"
+# Pseudo-skill for demand that any researcher can cover (custom/protocol-less visits).
+_ANY_SKILL = "*"
+_PART_KEY_BY_LABEL = {"Ochtend": "m", "Dag": "d", "Avond": "n"}
+
+
+def _build_capacity_profiles(
+    users: list[User],
+    avail_map: dict[tuple[int, int], Any],
+    user_skills: dict[int, set[str]],
+    weeks: range | list[int],
+) -> list[CapacityProfile]:
+    """Group users by identical skill set and sum their weekly daypart capacity.
+
+    Args:
+        users: Researchers to group.
+        avail_map: Mapping (user_id, week) -> availability record.
+        user_skills: Mapping user_id -> skill keys.
+        weeks: Weeks to aggregate capacity for.
+
+    Returns:
+        Capacity profiles, ordered by number of skills (most specialised first).
+    """
+
+    grouped: dict[frozenset[str], list[int]] = {}
+    for u in users:
+        grouped.setdefault(frozenset(user_skills.get(u.id, set())), []).append(u.id)
+
+    profiles: list[CapacityProfile] = []
+    for skills, user_ids in sorted(
+        grouped.items(), key=lambda item: (len(item[0]), sorted(item[0]))
+    ):
+        caps: dict[int, tuple[int, int, int, int]] = {}
+        for w in weeks:
+            m = d = n = f = 0
+            for uid in user_ids:
+                aw = avail_map.get((uid, w))
+                if not aw:
+                    continue
+                m += aw.morning_days or 0
+                d += aw.daytime_days or 0
+                n += aw.nighttime_days or 0
+                f += aw.flex_days or 0
+            if m + d + n + f > 0:
+                caps[w] = (m, d, n, f)
+        profiles.append(
+            CapacityProfile(
+                id=len(profiles), skills=skills, user_ids=tuple(user_ids), caps=caps
+            )
+        )
+    return profiles
+
+
+def _profile_max_flow(
+    profiles: list[CapacityProfile],
+    week: int,
+    demand: dict[tuple[str, str], int],
+) -> ProfileFlowResult:
+    """Allocate demand buckets to capacity profiles with a max-flow.
+
+    Network: source -> bucket (skill, part) -> profile-part node -> sink.
+    A profile's flex days form a shared node every part (and "any") can spill
+    into; "any"-part demand can use every part of the profile.
+
+    Args:
+        profiles: Capacity profiles.
+        week: ISO week to allocate.
+        demand: Mapping (skill, part) -> researcher-days, part in m/d/n/a.
+
+    Returns:
+        Served days per (profile, skill, part), flex usage, unmet demand per
+        bucket and the unused capacity per profile.
+    """
+    from ortools.graph.python import max_flow
+
+    flow = max_flow.SimpleMaxFlow()
+    node_ids: dict[tuple, int] = {}
+
+    def _node(key: tuple) -> int:
+        if key not in node_ids:
+            node_ids[key] = len(node_ids)
+        return node_ids[key]
+
+    source = _node(("source",))
+    sink = _node(("sink",))
+    big = sum(demand.values()) + 1
+
+    week_profiles = [p for p in profiles if week in p.caps]
+    for p in week_profiles:
+        m, d, n, f = p.caps[week]
+        for part, cap in zip(_PART_KEYS, (m, d, n)):
+            if cap > 0:
+                flow.add_arc_with_capacity(_node((p.id, part)), sink, cap)
+            if f > 0:
+                flow.add_arc_with_capacity(
+                    _node((p.id, part)), _node((p.id, "F")), big
+                )
+            flow.add_arc_with_capacity(_node((p.id, _ANY_PART)), _node((p.id, part)), big)
+        if f > 0:
+            flow.add_arc_with_capacity(_node((p.id, "F")), sink, f)
+
+    bucket_arcs: list[tuple[int, int, str, str]] = []  # (arc, profile_id, skill, part)
+    for (skill, part), amount in demand.items():
+        if amount <= 0:
+            continue
+        bucket = _node(("bucket", skill, part))
+        flow.add_arc_with_capacity(source, bucket, amount)
+        for p in week_profiles:
+            if p.serves(skill):
+                arc = flow.add_arc_with_capacity(bucket, _node((p.id, part)), amount)
+                bucket_arcs.append((arc, p.id, skill, part))
+
+    if node_ids and flow.solve(source, sink) != flow.OPTIMAL:
+        raise RuntimeError(f"Profile max-flow failed for week {week}")
+
+    served: dict[tuple[int, str, str], int] = {}
+    for arc, pid, skill, part in bucket_arcs:
+        amount = flow.flow(arc)
+        if amount > 0:
+            served[(pid, skill, part)] = amount
+
+    unmet: dict[tuple[str, str], int] = {}
+    for (skill, part), amount in demand.items():
+        got = sum(
+            v for (pid, s, pt), v in served.items() if s == skill and pt == part
+        )
+        if amount - got > 0:
+            unmet[(skill, part)] = amount - got
+
+    # Read part->sink, part->flex and flex->sink usage from the arcs.
+    key_by_node = {v: k for k, v in node_ids.items()}
+    used: dict[tuple[int, str], int] = {}
+    flex_used: dict[tuple[int, str], int] = {}
+    for arc in range(flow.num_arcs()):
+        amount = flow.flow(arc)
+        if amount <= 0:
+            continue
+        tail = flow.tail(arc)
+        head = flow.head(arc)
+        tail_key = key_by_node[tail]
+        if len(tail_key) != 2:
+            continue
+        pid, part = tail_key
+        if head == sink:
+            used[(pid, part)] = used.get((pid, part), 0) + amount
+        elif node_ids.get((pid, "F")) == head and part in _PART_KEYS:
+            flex_used[(pid, part)] = amount
+
+    remaining: dict[int, tuple[int, int, int, int]] = {}
+    for p in week_profiles:
+        m, d, n, f = p.caps[week]
+        remaining[p.id] = (
+            m - used.get((p.id, "m"), 0),
+            d - used.get((p.id, "d"), 0),
+            n - used.get((p.id, "n"), 0),
+            f - used.get((p.id, "F"), 0),
+        )
+
+    return ProfileFlowResult(
+        served=served, flex_used=flex_used, unmet=unmet, remaining=remaining
+    )
+
+
+def _candidate_weeks(v: Visit, start_date: date) -> list[tuple[int, int]]:
+    """Return (week, overlap_days) for the weeks from start_date in the visit window.
+
+    Mirrors the week-window logic of solve_season and _build_capacity_grid.
+    """
+
+    year = start_date.year
+    current_week = start_date.isocalendar().week
+    eff_start = max(v.from_date or start_date, date(year, 1, 1))
+    eff_end = min(v.to_date or date.max, date(year, 12, 31))
+
+    start_iso = eff_start.isocalendar()
+    start_w = start_iso.week if start_iso.year == year else 1
+    end_iso = eff_end.isocalendar()
+    if end_iso.year > year:
+        end_w = 53
+    elif end_iso.year < year:
+        end_w = 1
+    else:
+        end_w = end_iso.week
+    if end_w < start_w and end_w < 5:
+        end_w = 53
+
+    weeks: list[tuple[int, int]] = []
+    for w in range(max(start_w, current_week), min(end_w + 1, 54)):
+        try:
+            w_mon = date.fromisocalendar(year, w, 1)
+        except ValueError:
+            continue
+        overlap_days = (min(eff_end, w_mon + timedelta(days=4)) - max(eff_start, w_mon)).days + 1
+        if overlap_days >= 1:
+            weeks.append((w, overlap_days))
+    return weeks
+
+
+def _bottleneck_analysis(
+    start_date: date,
+    visits: list[Visit],
+    users: list[User],
+    avail_map: dict[tuple[int, int], Any],
+) -> CapacityBottleneckReport:
+    """Find real capacity bottlenecks with a max-flow over all execution windows.
+
+    Network: source -> visit -> (week, skill, part) bucket for every week in
+    the visit's window -> capacity profile of that week -> sink, with the same
+    profile/daypart/flex structure as _profile_max_flow. The max flow is the
+    most demand that fits in *any* planning, so the remainder is an unavoidable
+    shortage, independent of the weeks the season planner chose.
+
+    A bucket on the source side of the min cut is a real bottleneck: one extra
+    researcher-day for that skill and part in that week lets one more
+    researcher-day of visits fit (directly, or by shifting other visits). A full
+    week whose bucket is on the sink side is busy, but its work can move.
+
+    Protocol gaps between visits are ignored, and a visit needing several
+    researchers may be split over weeks, so the shortage is a lower bound.
+
+    Args:
+        start_date: First day of the horizon.
+        visits: Open visits.
+        users: Researchers.
+        avail_map: Mapping (user_id, week) -> availability record.
+
+    Returns:
+        Bottleneck report.
+    """
+    from ortools.graph.python import max_flow
+
+    year = start_date.year
+    current_week = start_date.isocalendar().week
+
+    # (skill, part, researcher-days, allowed weeks, fixed to its week) per visit
+    items: list[tuple[str, str, int, list[int], bool]] = []
+    for v in visits:
+        part = _PART_KEY_BY_LABEL.get(
+            (getattr(v, "part_of_day", None) or "").strip(), _ANY_PART
+        )
+        planned_week = getattr(v, "planned_week", None)
+        locked_week = (
+            getattr(v, "provisional_week", None)
+            if getattr(v, "provisional_locked", False)
+            else None
+        )
+        try:
+            req = int(getattr(v, "required_researchers", None) or 1)
+        except (TypeError, ValueError):
+            req = 1
+        is_custom = bool(
+            getattr(v, "custom_function_name", None)
+            or getattr(v, "custom_species_name", None)
+        )
+        if is_custom or not getattr(v, "protocol_visit_windows", None):
+            # Same as the season planner: fixed demand any researcher can cover.
+            target = planned_week or getattr(v, "provisional_week", None)
+            researchers = getattr(v, "researchers", None)
+            if target and int(target) >= current_week:
+                cost = len(researchers) if researchers else req
+                items.append((_ANY_SKILL, part, cost, [int(target)], True))
+            continue
+
+        fixed = planned_week or locked_week
+        if fixed:
+            weeks = [int(fixed)] if int(fixed) >= current_week else []
+        else:
+            weeks = [w for w, _ in _candidate_weeks(v, start_date)]
+        if weeks:
+            items.append(
+                (
+                    SeasonPlanningService._get_required_user_flag(v),
+                    part,
+                    req,
+                    weeks,
+                    bool(fixed),
+                )
+            )
+
+    if not items:
+        return CapacityBottleneckReport(total_unmet_days=0)
+
+    horizon = range(current_week, 54)
+    user_skills = {u.id: SeasonPlanningService._get_user_skill_keys(u) for u in users}
+    profiles = _build_capacity_profiles(users, avail_map, user_skills, horizon)
+
+    flow = max_flow.SimpleMaxFlow()
+    node_ids: dict[tuple, int] = {}
+
+    def _node(key: tuple) -> int:
+        if key not in node_ids:
+            node_ids[key] = len(node_ids)
+        return node_ids[key]
+
+    source = _node(("source",))
+    sink = _node(("sink",))
+    total_demand = sum(item[2] for item in items)
+    big = total_demand + 1
+
+    visit_arcs: list[int] = []
+    buckets: set[tuple[int, str, str]] = set()
+    for i, (skill, part, req, weeks, _fixed) in enumerate(items):
+        visit_arcs.append(flow.add_arc_with_capacity(source, _node(("visit", i)), req))
+        for w in weeks:
+            buckets.add((w, skill, part))
+            flow.add_arc_with_capacity(
+                _node(("visit", i)), _node(("bucket", w, skill, part)), req
+            )
+
+    for w, skill, part in buckets:
+        for p in profiles:
+            if w in p.caps and p.serves(skill):
+                flow.add_arc_with_capacity(
+                    _node(("bucket", w, skill, part)), _node((w, p.id, part)), big
+                )
+
+    for p in profiles:
+        for w, (m, d, n, f) in p.caps.items():
+            for part, cap in zip(_PART_KEYS, (m, d, n)):
+                if cap > 0:
+                    flow.add_arc_with_capacity(_node((w, p.id, part)), sink, cap)
+                if f > 0:
+                    flow.add_arc_with_capacity(
+                        _node((w, p.id, part)), _node((w, p.id, "F")), big
+                    )
+                flow.add_arc_with_capacity(
+                    _node((w, p.id, _ANY_PART)), _node((w, p.id, part)), big
+                )
+            if f > 0:
+                flow.add_arc_with_capacity(_node((w, p.id, "F")), sink, f)
+
+    # First only the visits fixed to a week (planned, locked, custom): what of
+    # those does not fit is overbooking already committed by the planner.
+    for item, arc in zip(items, visit_arcs):
+        if not item[4]:
+            flow.set_arc_capacity(arc, 0)
+    if flow.solve(source, sink) != flow.OPTIMAL:
+        logger.warning("Capacity bottleneck max-flow failed")
+        return CapacityBottleneckReport(total_unmet_days=0)
+    committed_overbooked = (
+        sum(item[2] for item in items if item[4]) - flow.optimal_flow()
+    )
+    # Fixed visits that are not (fully) covered; the flow may spread the missing
+    # days over several visits, so this is an indication.
+    committed_visits = sum(
+        1
+        for item, arc in zip(items, visit_arcs)
+        if item[4] and flow.flow(arc) < item[2]
+    )
+
+    for item, arc in zip(items, visit_arcs):
+        if not item[4]:
+            flow.set_arc_capacity(arc, item[2])
+    if flow.solve(source, sink) != flow.OPTIMAL:
+        logger.warning("Capacity bottleneck max-flow failed")
+        return CapacityBottleneckReport(total_unmet_days=0)
+
+    total_unmet = total_demand - flow.optimal_flow()
+    logger.info(
+        "Capacity bottleneck flow: visits=%d demand=%d unmet=%d committed=%d",
+        len(items),
+        total_demand,
+        total_unmet,
+        committed_overbooked,
+    )
+    if total_unmet <= 0:
+        return CapacityBottleneckReport(total_unmet_days=0)
+
+    def _label(skill: str) -> str:
+        return "Custom" if skill == _ANY_SKILL else skill
+
+    source_side = set(flow.get_source_side_min_cut())
+    skills_by_week: dict[int, set[str]] = {}
+    for w, skill, part in buckets:
+        if node_ids[("bucket", w, skill, part)] in source_side:
+            skills_by_week.setdefault(w, set()).add(_label(skill))
+
+    periods: list[BottleneckPeriod] = []
+    for w in sorted(skills_by_week):
+        if periods and int(periods[-1].to_week[-2:]) == w - 1:
+            periods[-1].to_week = f"{year}-W{w:02d}"
+            periods[-1].skills = sorted(set(periods[-1].skills) | skills_by_week[w])
+        else:
+            periods.append(
+                BottleneckPeriod(
+                    from_week=f"{year}-W{w:02d}",
+                    to_week=f"{year}-W{w:02d}",
+                    skills=sorted(skills_by_week[w]),
+                    unmet_days=0,
+                )
+            )
+
+    for period in periods:
+        first, last = int(period.from_week[-2:]), int(period.to_week[-2:])
+        period.unmet_days = sum(
+            req - flow.flow(arc)
+            for (skill, _part, req, weeks, _fixed), arc in zip(items, visit_arcs)
+            if _label(skill) in period.skills
+            and any(first <= w <= last for w in weeks)
+        )
+
+    return CapacityBottleneckReport(
+        total_unmet_days=total_unmet,
+        committed_overbooked_days=committed_overbooked,
+        committed_overbooked_visits=committed_visits,
+        week_skills={
+            f"{year}-W{w:02d}": sorted(s) for w, s in sorted(skills_by_week.items())
+        },
+        periods=periods,
+    )
 
 
 class SeasonPlanningService:
@@ -267,6 +704,146 @@ class SeasonPlanningService:
         return skills
 
     @staticmethod
+    def _fixed_custom_buckets(
+        week: int,
+        fixed_by_week: dict[int, int],
+        fixed_by_week_daypart: dict[tuple[int, str], int],
+    ) -> dict[tuple[str, str], int]:
+        """Split a week's fixed custom demand into (any-skill, part) buckets.
+
+        Demand without a known part of day lands in the "any" part bucket.
+        """
+
+        buckets: dict[tuple[str, str], int] = {}
+        with_part = 0
+        for part in _PART_KEYS:
+            amount = fixed_by_week_daypart.get((week, part), 0)
+            if amount > 0:
+                buckets[(_ANY_SKILL, part)] = amount
+                with_part += amount
+        rest = fixed_by_week.get(week, 0) - with_part
+        if rest > 0:
+            buckets[(_ANY_SKILL, _ANY_PART)] = rest
+        return buckets
+
+    @staticmethod
+    def _add_profile_flow_constraints(
+        model: cp_model.CpModel,
+        profiles: list[CapacityProfile],
+        week: int,
+        bucket_terms: dict[tuple[str, str], list],
+        fixed_buckets: dict[tuple[str, str], int],
+        overflow_penalty_terms: list[cp_model.IntVar],
+    ) -> dict[str, dict]:
+        """Add one week's capacity constraints as a profile -> skill flow.
+
+        Every demand bucket (skill, part) must be covered by researcher-days of
+        profiles that have the skill; a profile's days are shared between all
+        its skills. This is exact for any combination of skills, unlike
+        per-skill pools that count multi-skilled researchers in every pool.
+
+        Args:
+            model: CP-SAT model.
+            profiles: Capacity profiles.
+            week: ISO week.
+            bucket_terms: (skill, part) -> demand terms of candidate visits.
+            fixed_buckets: (skill, part) -> fixed demand (custom visits).
+            overflow_penalty_terms: Collector for penalised overflow vars.
+
+        Returns:
+            The created vars: "x" (profile, skill, part), "f" (profile, part),
+            "overflow" (skill, part), plus the "fixed" demand used.
+        """
+
+        x_vars: dict[tuple[int, str, str], cp_model.IntVar] = {}
+        f_vars: dict[tuple[int, str], cp_model.IntVar] = {}
+        overflow_vars: dict[tuple[str, str], cp_model.IntVar] = {}
+        x_by_profile_part: dict[tuple[int, str], list[cp_model.IntVar]] = {}
+
+        week_profiles = [p for p in profiles if week in p.caps]
+        buckets = set(bucket_terms) | {k for k, v in fixed_buckets.items() if v > 0}
+        for skill, part in sorted(buckets):
+            supply_vars = []
+            for p in week_profiles:
+                if not p.serves(skill):
+                    continue
+                m, d, n, f = p.caps[week]
+                if part == _ANY_PART:
+                    cap = m + d + n + f
+                else:
+                    cap = {"m": m, "d": d, "n": n}[part] + f
+                if cap <= 0:
+                    continue
+                x = model.NewIntVar(0, cap, f"flow_{week}_{p.id}_{skill}_{part}")
+                x_vars[(p.id, skill, part)] = x
+                x_by_profile_part.setdefault((p.id, part), []).append(x)
+                supply_vars.append(x)
+
+            overflow = model.NewIntVar(0, 10000, f"overflow_flow_{week}_{skill}_{part}")
+            overflow_penalty_terms.append(overflow)
+            overflow_vars[(skill, part)] = overflow
+            model.Add(
+                cp_model.LinearExpr.Sum(bucket_terms.get((skill, part), []))
+                + fixed_buckets.get((skill, part), 0)
+                <= cp_model.LinearExpr.Sum(supply_vars) + overflow
+            )
+
+        for p in week_profiles:
+            m, d, n, f = p.caps[week]
+            all_x: list[cp_model.IntVar] = list(
+                x_by_profile_part.get((p.id, _ANY_PART), [])
+            )
+            profile_flex: list[cp_model.IntVar] = []
+            for part, cap in zip(_PART_KEYS, (m, d, n)):
+                xs = x_by_profile_part.get((p.id, part), [])
+                if not xs:
+                    continue
+                all_x.extend(xs)
+                if f > 0:
+                    fv = model.NewIntVar(0, f, f"flex_{week}_{p.id}_{part}")
+                    f_vars[(p.id, part)] = fv
+                    profile_flex.append(fv)
+                    model.Add(cp_model.LinearExpr.Sum(xs) <= cap + fv)
+                else:
+                    model.Add(cp_model.LinearExpr.Sum(xs) <= cap)
+            if len(profile_flex) > 1:
+                model.Add(cp_model.LinearExpr.Sum(profile_flex) <= f)
+            if all_x:
+                model.Add(cp_model.LinearExpr.Sum(all_x) <= m + d + n + f)
+
+        return {
+            "x": x_vars,
+            "f": f_vars,
+            "overflow": overflow_vars,
+            "fixed": fixed_buckets,
+        }
+
+    @staticmethod
+    def _add_profile_flow_hints(
+        model: cp_model.CpModel,
+        profiles: list[CapacityProfile],
+        flow_vars_by_week: dict[int, dict[str, dict]],
+        hinted_demand_by_week: dict[int, dict[tuple[str, str], int]],
+    ) -> None:
+        """Hint the flow vars with a max-flow allocation of the greedy hint.
+
+        Without these hints CP-SAT only knows which week each visit gets and has
+        to rebuild the allocation itself, which costs most of a short time limit.
+        """
+
+        for w, vars_ in flow_vars_by_week.items():
+            demand = dict(vars_["fixed"])
+            for key, amount in hinted_demand_by_week.get(w, {}).items():
+                demand[key] = demand.get(key, 0) + amount
+            result = _profile_max_flow(profiles, w, demand)
+            for key, var in vars_["x"].items():
+                model.AddHint(var, result.served.get(key, 0))
+            for key, var in vars_["f"].items():
+                model.AddHint(var, result.flex_used.get(key, 0))
+            for key, var in vars_["overflow"].items():
+                model.AddHint(var, min(10000, result.unmet.get(key, 0)))
+
+    @staticmethod
     async def run_season_solver(
         db: AsyncSession,
         start_date: date,
@@ -274,6 +851,7 @@ class SeasonPlanningService:
         include_quotes: bool = False,
         persist: bool = True,
         timeout_seconds: float | None = None,
+        num_workers: int | None = None,
     ) -> None:
         """Run the seasonal planner to assign provisional weeks.
 
@@ -283,6 +861,7 @@ class SeasonPlanningService:
             include_quotes: When True, include quote projects in the solver input.
             persist: When True, commit provisional week updates to the database.
             timeout_seconds: Optional time limit for CP-SAT in seconds.
+            num_workers: Optional number of CP-SAT search workers.
 
         Returns:
             None.
@@ -307,6 +886,7 @@ class SeasonPlanningService:
                     users,
                     avail_map,
                     timeout_seconds=timeout_seconds,
+                    num_workers=num_workers,
                 ),
             )
         except Exception:
@@ -345,6 +925,7 @@ class SeasonPlanningService:
         avail_map: dict[tuple[int, int], AvailabilityWeek],
         *,
         timeout_seconds: float | None = None,
+        num_workers: int | None = None,
     ) -> list[PlanningDiagnostic]:
         """
         Pure logic solver for Season Planning.
@@ -534,6 +1115,26 @@ class SeasonPlanningService:
             if is_custom:
                 continue
             if not v.protocol_visit_windows:
+                # Visits without protocol windows with a week are fixed demand (see
+                # custom_fixed_demand_by_week). Without any week nothing can plan them:
+                # report it, otherwise they silently stay unplanned.
+                if (
+                    getattr(v, "planned_week", None) is None
+                    and getattr(v, "planned_date", None) is None
+                ):
+                    diagnostics.append(
+                        PlanningDiagnostic(
+                            visit_id=v.id,
+                            action="planning_season_unscheduled",
+                            details={
+                                "reason_nl": (
+                                    "Technisch probleem met dit bezoek. "
+                                    "Neem contact op met support."
+                                ),
+                                "reason_code": "technisch_probleem",
+                            },
+                        )
+                    )
                 continue
 
             if debug_this_visit:
@@ -882,6 +1483,7 @@ class SeasonPlanningService:
         tightness_reward_weights: list[int] = []
         stability_drift_terms: list[cp_model.IntVar] = []
         overflow_penalty_terms: list[cp_model.IntVar] = []
+        flow_overflow_penalty_terms: list[cp_model.IntVar] = []
         concentration_penalty_terms: list[cp_model.IntVar] = []
         large_team_penalty_terms: list[cp_model.BoolVar] = []
         weekly_load_penalty_terms: list[cp_model.IntVar] = []
@@ -1430,7 +2032,30 @@ class SeasonPlanningService:
         slack_by_week_skill_daypart: dict[tuple[int, str, str], cp_model.IntVar] = {}
         slack_global_by_week: dict[int, cp_model.IntVar] = {}
 
+        # Profile flow: allocate researchers per skill profile instead of counting
+        # each researcher fully in every skill pool (see _add_profile_flow_constraints).
+        use_profile_flow = get_settings().constraint_profile_flow
+        profiles: list[CapacityProfile] = []
+        flow_vars_by_week: dict[int, dict[str, dict]] = {}
+        if use_profile_flow:
+            profiles = _build_capacity_profiles(
+                users, avail_map, user_skills, horizon_weeks
+            )
+            logger.info(
+                "SeasonPlanning profile-flow: users=%d profiles=%d",
+                len(users),
+                len(profiles),
+            )
+
         for w in horizon_weeks:
+            # Visits anchored in a week that has already passed are done (or
+            # missed) and only stay in the model for the protocol sequence of
+            # their successors. Supply is only built from the current week on,
+            # so counting them here would make every past visit an unavoidable
+            # overflow that swamps the objective.
+            if w < current_week:
+                continue
+
             # We need to collect demands for skills AND special constraints
 
             # 4a. Skill Demand
@@ -1439,6 +2064,8 @@ class SeasonPlanningService:
             week_large_team_demand = []
             week_total_demand_terms = []
             week_daypart_demand_terms = {"m": [], "d": [], "n": []}
+            # (skill, part m/d/n/a) -> actual demand terms, for the profile flow
+            week_bucket_terms: dict[tuple[str, str], list] = {}
 
             # Iterate Skills
             for skill, candidates in skill_map.items():
@@ -1478,9 +2105,10 @@ class SeasonPlanningService:
                     )
 
                 if assigned_bools:
-                    overflow = model.NewIntVar(0, 10000, f"overflow_{w}_{skill}")
-                    overflow_penalty_terms.append(overflow)
-                    overflow_by_week_skill[(w, skill)] = overflow
+                    if not use_profile_flow:
+                        overflow = model.NewIntVar(0, 10000, f"overflow_{w}_{skill}")
+                        overflow_penalty_terms.append(overflow)
+                        overflow_by_week_skill[(w, skill)] = overflow
 
                     # Two separate demand views per visit:
                     #   actual_term  = b * req_res            (real researcher-days consumed)
@@ -1526,14 +2154,20 @@ class SeasonPlanningService:
                         if part_key is not None:
                             daypart_demand_terms[part_key].append(actual_term)
                             week_daypart_demand_terms[part_key].append(actual_term)
+                        week_bucket_terms.setdefault(
+                            (skill, part_key or _ANY_PART), []
+                        ).append(actual_term)
 
                     # Constraint 1: actual weekly capacity (researcher-days)
-                    model.Add(
-                        cp_model.LinearExpr.Sum(demand_terms) <= sup_total + overflow
-                    )
+                    if not use_profile_flow:
+                        model.Add(
+                            cp_model.LinearExpr.Sum(demand_terms)
+                            <= sup_total + overflow
+                        )
 
                     if (
-                        _DEBUG_SEASON_PLANNING
+                        not use_profile_flow
+                        and _DEBUG_SEASON_PLANNING
                         and _DEBUG_SEASON_PLANNING_VISIT_ID is not None
                     ):
                         slack = model.NewIntVar(0, 10000, f"slack_{w}_{skill}")
@@ -1561,7 +2195,7 @@ class SeasonPlanningService:
 
                     # Constraint 3: daypart actual capacity
                     for part_key, d_terms in daypart_demand_terms.items():
-                        if not d_terms:
+                        if not d_terms or use_profile_flow:
                             continue
                         sup_daypart = supply.get(skill, {}).get(w, {}).get(
                             part_key, 0
@@ -1603,7 +2237,23 @@ class SeasonPlanningService:
                 large_team_penalty_terms.append(sq_large)
 
             fixed_custom_demand = custom_fixed_demand_by_week.get(w, 0)
-            if week_total_demand_terms or fixed_custom_demand:
+            if use_profile_flow:
+                # Replaces the per-skill, per-daypart and global capacity constraints.
+                flow_vars_by_week[w] = (
+                    SeasonPlanningService._add_profile_flow_constraints(
+                        model,
+                        profiles,
+                        w,
+                        week_bucket_terms,
+                        SeasonPlanningService._fixed_custom_buckets(
+                            w,
+                            custom_fixed_demand_by_week,
+                            custom_fixed_demand_by_week_daypart,
+                        ),
+                        flow_overflow_penalty_terms,
+                    )
+                )
+            elif week_total_demand_terms or fixed_custom_demand:
                 global_supply_w = 0
                 for u in users:
                     aw = avail_map.get((u.id, w))
@@ -1644,6 +2294,8 @@ class SeasonPlanningService:
                 weekly_load_penalty_terms.append(sq_demand_w)
 
             for part_key in ("m", "d", "n"):
+                if use_profile_flow:
+                    break
                 fixed_custom_daypart = custom_fixed_demand_by_week_daypart.get(
                     (w, part_key), 0
                 )
@@ -1709,7 +2361,7 @@ class SeasonPlanningService:
                     urgent_active_vars.append(visit_active_vars[v.id])
 
         # Base reward: 100,000 per active visit
-        reward_term = cp_model.LinearExpr.Sum(active_vars) * 100000
+        reward_term = cp_model.LinearExpr.Sum(active_vars) * _BASE_VISIT_REWARD
 
         urgent_reward_term = cp_model.LinearExpr.Sum(urgent_active_vars) * 150000
 
@@ -1765,6 +2417,14 @@ class SeasonPlanningService:
         # Constraint penalties: 200k per overflow unit so one overflow outweighs two active-visit rewards,
         # making it preferable to leave a visit unassigned rather than violate capacity.
         p_overflow = cp_model.LinearExpr.Sum(overflow_penalty_terms) * -200000
+        # Profile-flow overflow is counted once per bucket, whereas one excess visit
+        # in the pool model typically hit the skill, daypart and global constraints
+        # (2-3x 200k). 600k keeps it above the largest per-visit reward (base 100k +
+        # urgent 150k + priority 50k + difficulty bonuses), so the solver never
+        # prefers overbooking over leaving a visit unscheduled.
+        p_flow_overflow = (
+            cp_model.LinearExpr.Sum(flow_overflow_penalty_terms) * -600000
+        )
         # Day-concentration risk penalty: 80k per overflow unit.
         # Lower than p_overflow because concentration overflow is a probabilistic risk —
         # the week planner may still distribute narrow-window visits across different days.
@@ -1815,6 +2475,7 @@ class SeasonPlanningService:
             + priority_reward_term
             + slack_penalty
             + p_overflow
+            + p_flow_overflow
             + p_concentration
             + p_successor_risk
             + p_predecessor_room_risk
@@ -1827,6 +2488,20 @@ class SeasonPlanningService:
             + p_avoid_current_week
         )
         model.Maximize(total_obj)
+
+        # Phase 1 objective: which visits fit and the capacity penalties, without the
+        # small soft terms (early placement, spreading, stability, successor risk).
+        primary_obj = (
+            reward_term
+            + urgent_reward_term
+            + priority_reward_term
+            + sequence_length_reward
+            + sequence_pressure_reward
+            + tightness_reward
+            + p_overflow
+            + p_flow_overflow
+            + p_concentration
+        )
 
         remaining_total_supply: dict[str, dict[int, int]] = {
             skill: {w: sum(vals.values()) for w, vals in by_week.items()}
@@ -1880,6 +2555,56 @@ class SeasonPlanningService:
             )
         )
 
+        # Profile flow: the greedy checks a week with a max-flow over the profiles
+        # instead of the per-skill pools, so the hint is feasible for the flow
+        # constraints and CP-SAT does not start by repairing overbooked weeks.
+        hinted_demand_by_week: dict[int, dict[tuple[str, str], int]] = {}
+        unmet_by_week: dict[int, int] = {}
+
+        def _flow_demand(v: Visit) -> tuple[tuple[str, str], int]:
+            """Bucket and researcher-days, with the model's demand coefficient."""
+            try:
+                req_res = int(getattr(v, "required_researchers", None) or 1)
+            except (TypeError, ValueError):
+                req_res = 1
+            part = _PART_KEY_BY_LABEL.get(
+                (getattr(v, "part_of_day", None) or "").strip(), _ANY_PART
+            )
+            return (SeasonPlanningService._get_required_user_flag(v), part), req_res
+
+        def _week_unmet(w: int, extra: dict[tuple[str, str], int]) -> int:
+            demand = SeasonPlanningService._fixed_custom_buckets(
+                w, custom_fixed_demand_by_week, custom_fixed_demand_by_week_daypart
+            )
+            for source in (hinted_demand_by_week.get(w, {}), extra):
+                for key, amount in source.items():
+                    demand[key] = demand.get(key, 0) + amount
+            return sum(_profile_max_flow(profiles, w, demand).unmet.values())
+
+        def _hint_add(w: int, v: Visit) -> None:
+            key, req_res = _flow_demand(v)
+            week_demand = hinted_demand_by_week.setdefault(w, {})
+            week_demand[key] = week_demand.get(key, 0) + req_res
+            unmet_by_week.pop(w, None)
+
+        def _flow_fits(w: int, v: Visit) -> bool:
+            """True when adding v to week w does not increase the week's overflow."""
+            if w not in unmet_by_week:
+                unmet_by_week[w] = _week_unmet(w, {})
+            key, req_res = _flow_demand(v)
+            return _week_unmet(w, {key: req_res}) == unmet_by_week[w]
+
+        if use_profile_flow:
+            # Fit flexible visits around the anchored ones.
+            for v in candidate_visits:
+                anchor = getattr(v, "planned_week", None) or (
+                    getattr(v, "provisional_week", None)
+                    if getattr(v, "provisional_locked", False)
+                    else None
+                )
+                if anchor and v.id in visit_active_vars:
+                    _hint_add(int(anchor), v)
+
         for v in candidate_visits:
             v_id = getattr(v, "id", None)
             if v_id is None:
@@ -1929,7 +2654,11 @@ class SeasonPlanningService:
                         ),
                         None,
                     )
-                    if existing_days is not None:
+                    if existing_days is not None and use_profile_flow:
+                        if _flow_fits(existing_week_int, v):
+                            chosen_week = existing_week_int
+                            greedy_existing += 1
+                    elif existing_days is not None:
                         cost = _visit_cost(v)
                         demand = cost  # actual researcher-days (no window_weight)
 
@@ -1953,6 +2682,10 @@ class SeasonPlanningService:
             for w, days in sorted(visit_candidates.get(v_id, []), key=lambda x: x[0]):
                 if chosen_week is not None:
                     break
+                if use_profile_flow:
+                    if _flow_fits(w, v):
+                        chosen_week = w
+                    continue
                 cost = _visit_cost(v)
                 demand = cost  # actual researcher-days (no window_weight)
 
@@ -2000,6 +2733,8 @@ class SeasonPlanningService:
 
             model.AddHint(va, 1)
             model.AddHint(vw, chosen_week)
+            if use_profile_flow:
+                _hint_add(chosen_week, v)
             greedy_active += 1
 
         logger.info(
@@ -2010,7 +2745,11 @@ class SeasonPlanningService:
             greedy_existing,
         )
 
-        solver = cp_model.CpSolver()
+        if use_profile_flow:
+            SeasonPlanningService._add_profile_flow_hints(
+                model, profiles, flow_vars_by_week, hinted_demand_by_week
+            )
+
         if timeout_seconds is not None:
             time_limit = float(timeout_seconds)
             time_limit_source = "override"
@@ -2022,18 +2761,85 @@ class SeasonPlanningService:
             time_limit,
             time_limit_source,
         )
-        solver.parameters.max_time_in_seconds = time_limit  # Reasonable limit
-        solver.parameters.num_search_workers = 2
+        if num_workers is None:
+            num_workers = settings.season_planner_num_workers_quick
 
-        try:
-            solver.parameters.relative_gap_limit = 0.001
-        except AttributeError:
-            pass
+        def _new_solver(
+            limit: float, *, absolute_gap: float | None = None
+        ) -> cp_model.CpSolver:
+            """Solver with the shared settings.
+
+            Without absolute_gap the legacy relative gap limit of 0.1% applies. At an
+            objective of ~100M that is about one visit, so the two-phase solve passes
+            an absolute gap (0 = prove optimality) instead.
+            """
+            new_solver = cp_model.CpSolver()
+            new_solver.parameters.max_time_in_seconds = limit
+            new_solver.parameters.num_search_workers = max(1, int(num_workers))
+            if use_profile_flow:
+                # The flow constraints need the full LP relaxation for a useful bound;
+                # at the default level CP-SAT spends the time limit proving optimality.
+                new_solver.parameters.linearization_level = 2
+            try:
+                if absolute_gap is None:
+                    new_solver.parameters.relative_gap_limit = 0.001
+                else:
+                    new_solver.parameters.relative_gap_limit = 0.0
+                    new_solver.parameters.absolute_gap_limit = absolute_gap
+            except AttributeError:
+                pass
+            return new_solver
 
         if (validation_error := model.Validate()):
             logger.error("SeasonPlanning CP-SAT model invalid: %s", validation_error)
 
-        status = solver.Solve(model)
+        if settings.season_planner_two_phase:
+            # Phase 1: schedule as many visits as possible with the capacity penalties
+            # only. Searching the full objective in one go regularly ends with
+            # visits left out that do fit, because the many small soft terms drown
+            # out the decision that matters.
+            model.Maximize(primary_obj)
+            # Gap below the smallest bonus (5,000): never stop one visit short.
+            phase1 = _new_solver(time_limit * _PHASE1_TIME_SHARE, absolute_gap=1000)
+            phase1_status = phase1.Solve(model)
+            logger.info(
+                "SeasonPlanning CP-SAT phase 1: status=%s time=%.2fs",
+                phase1.StatusName(phase1_status),
+                phase1.WallTime(),
+            )
+        else:
+            phase1_status = cp_model.UNKNOWN
+            phase1 = None
+
+        if phase1 is not None and phase1_status in (
+            cp_model.OPTIMAL,
+            cp_model.FEASIBLE,
+        ):
+            # Phase 2: optimise the full objective, never worse on what phase 1
+            # achieved, starting from the phase 1 solution.
+            model.Add(primary_obj >= int(round(phase1.ObjectiveValue())))
+            model.ClearHints()
+            for index in range(len(model.Proto().variables)):
+                model.AddHint(
+                    model.GetIntVarFromProtoIndex(index),
+                    phase1.Value(model.GetIntVarFromProtoIndex(index)),
+                )
+            model.Maximize(total_obj)
+            solver = _new_solver(
+                max(5.0, time_limit - phase1.WallTime()), absolute_gap=0
+            )
+            status = solver.Solve(model)
+            if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                logger.warning(
+                    "SeasonPlanning CP-SAT phase 2 found nothing (%s); using phase 1",
+                    solver.StatusName(status),
+                )
+                solver, status = phase1, phase1_status
+        else:
+            if phase1 is not None:
+                model.Maximize(total_obj)  # phase 1 failed: single full solve
+            solver = _new_solver(time_limit)
+            status = solver.Solve(model)
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             active_count = sum(
@@ -2043,7 +2849,11 @@ class SeasonPlanningService:
             )
             obj = solver.ObjectiveValue()
             bound = solver.BestObjectiveBound()
-            denom = max(1.0, abs(bound))
+            # Gap relative to the base reward of all plannable visits, not to the
+            # bound: fixed penalties (e.g. anchored visits in overbooked weeks)
+            # shift the objective level and would inflate a bound-relative gap.
+            plannable = len(visit_active_vars) - len(no_window_visit_ids)
+            denom = max(1.0, float(plannable * _BASE_VISIT_REWARD))
             gap = max(0.0, (bound - obj) / denom)
 
             if status == cp_model.OPTIMAL:
@@ -2329,13 +3139,96 @@ class SeasonPlanningService:
 
         year = start_date.year
         avail_map = await SeasonPlanningService._load_availability_map(db, year)
-        return SeasonPlanningService._build_capacity_grid(
+
+        # Diagnostics of the last season planner run. Visits that did not fit get a
+        # hint week for the week planner, so they are only recognisable by these.
+        entries = await SeasonPlanningService._load_persisted_unscheduled(db, visits)
+        result = SeasonPlanningService._build_capacity_grid(
             start_date,
             visits,
             users,
             avail_map,
+            unschedulable_ids=frozenset(visit_id for visit_id, _ in entries),
             strict_availability=get_settings().feature_strict_availability,
         )
+        SeasonPlanningService._apply_unschedulable(result, visits, entries)
+        return result
+
+    @staticmethod
+    async def _load_persisted_unscheduled(
+        db: AsyncSession, visits: list[Visit]
+    ) -> list[tuple[int, dict]]:
+        """Latest 'unscheduled' diagnostics for the given visits.
+
+        Diagnostics of visits that have a fixed planned week since are stale and
+        skipped.
+        """
+        open_ids = {v.id for v in visits if v.planned_week is None}
+        if not open_ids:
+            return []
+        rows = (
+            (
+                await db.execute(
+                    select(ActivityLog)
+                    .where(
+                        ActivityLog.action == "planning_season_unscheduled",
+                        ActivityLog.target_id.in_(open_ids),
+                    )
+                    .order_by(ActivityLog.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        latest = {row.target_id: row.details or {} for row in rows}
+        return list(latest.items())
+
+    @staticmethod
+    def _apply_unschedulable(
+        result: CapacitySimulationResponse,
+        visits: list[Visit],
+        entries: list[tuple[int, dict]],
+    ) -> None:
+        """Add the visits the season planner could not schedule to the response.
+
+        Also sets the number of visits and researcher-days that do not fit in the
+        capacity on the bottleneck report; unlike the bottleneck analysis itself
+        this includes the minimum period between visits.
+        """
+        visit_by_id = {v.id: v for v in visits}
+        result.unschedulable_visits = []
+        gap_visits = gap_days = 0
+        for visit_id, details in entries:
+            v = visit_by_id.get(visit_id)
+            cluster = getattr(v, "cluster", None) if v else None
+            project = getattr(cluster, "project", None) if cluster else None
+            reason_code = details.get("reason_code", "onbekend")
+            result.unschedulable_visits.append(
+                UnschedulableVisitInfo(
+                    visit_id=visit_id,
+                    reason_nl=details.get("reason_nl", "Reden onbekend"),
+                    reason_code=reason_code,
+                    project_code=getattr(project, "code", None),
+                    cluster_address=getattr(cluster, "address", None),
+                    to_date=getattr(v, "to_date", None) if v else None,
+                    part_of_day=getattr(v, "part_of_day", None) if v else None,
+                    family=SeasonPlanningService._get_required_user_flag(v)
+                    if v
+                    else None,
+                )
+            )
+            if reason_code == "capaciteitsgebrek" and v is not None:
+                gap_visits += 1
+                researchers = getattr(v, "researchers", None)
+                try:
+                    gap_days += len(researchers) or int(
+                        getattr(v, "required_researchers", None) or 1
+                    )
+                except (TypeError, ValueError):
+                    gap_days += 1
+        if result.bottlenecks is not None:
+            result.bottlenecks.unscheduled_visits = gap_visits
+            result.bottlenecks.unscheduled_days = gap_days
 
     @staticmethod
     async def simulate_capacity_grid(
@@ -2371,40 +3264,20 @@ class SeasonPlanningService:
             start_date, visits, users, avail_map
         )
 
-        unschedulable_ids = frozenset(
-            d.visit_id for d in diagnostics if d.action == "planning_season_unscheduled"
-        )
+        entries = [
+            (d.visit_id, d.details)
+            for d in diagnostics
+            if d.action == "planning_season_unscheduled"
+        ]
         result = SeasonPlanningService._build_capacity_grid(
             start_date,
             visits,
             users,
             avail_map,
-            unschedulable_ids=unschedulable_ids,
+            unschedulable_ids=frozenset(visit_id for visit_id, _ in entries),
             strict_availability=get_settings().feature_strict_availability,
         )
-
-        visit_by_id = {v.id: v for v in visits}
-        result.unschedulable_visits = []
-        for d in diagnostics:
-            if d.action != "planning_season_unscheduled":
-                continue
-            v = visit_by_id.get(d.visit_id)
-            cluster = getattr(v, "cluster", None) if v else None
-            project = getattr(cluster, "project", None) if cluster else None
-            result.unschedulable_visits.append(
-                UnschedulableVisitInfo(
-                    visit_id=d.visit_id,
-                    reason_nl=d.details.get("reason_nl", "Reden onbekend"),
-                    reason_code=d.details.get("reason_code", "onbekend"),
-                    project_code=getattr(project, "code", None),
-                    cluster_address=getattr(cluster, "address", None),
-                    to_date=getattr(v, "to_date", None) if v else None,
-                    part_of_day=getattr(v, "part_of_day", None) if v else None,
-                    family=SeasonPlanningService._get_required_user_flag(v)
-                    if v
-                    else None,
-                )
-            )
+        SeasonPlanningService._apply_unschedulable(result, visits, entries)
 
         await db.rollback()
         return result
@@ -2664,8 +3537,34 @@ class SeasonPlanningService:
                             planned_total_by_part_week[_part].get(_wiso, 0) + _count
                         )
 
+        # Profile flow: allocate each week's planned demand over skill profiles, so a
+        # skill's spare capacity excludes researchers already used for other skills.
+        use_profile_flow = get_settings().constraint_profile_flow
+        profiles = (
+            _build_capacity_profiles(users, avail_map, user_skills, horizon_weeks)
+            if use_profile_flow
+            else []
+        )
+
+        def _bucket(skill: str, part: str) -> tuple[str, str]:
+            return (
+                _ANY_SKILL if skill == "Custom" else skill,
+                _PART_KEY_BY_LABEL.get(part, _ANY_PART),
+            )
+
         for w in horizon_weeks:
             week_iso = f"{year}-W{w:02d}"
+
+            week_flow: ProfileFlowResult | None = None
+            if use_profile_flow:
+                week_demand: dict[tuple[str, str], int] = {}
+                for _skill, parts_data in planned_by_skill_part.items():
+                    for _part, weeks_data in parts_data.items():
+                        amount = weeks_data.get(week_iso, 0)
+                        if amount:
+                            key = _bucket(_skill, _part)
+                            week_demand[key] = week_demand.get(key, 0) + amount
+                week_flow = _profile_max_flow(profiles, w, week_demand)
 
             # Sum all users' days directly — summing per-skill supply would double-count
             # users who have multiple skills.
@@ -2736,6 +3635,35 @@ class SeasonPlanningService:
 
                 raw_demand = week_view_rows[row_key][week_iso]["demand"]
 
+                if week_flow is not None:
+                    bucket_skill, bucket_part = _bucket(skill, part)
+                    served = sum(
+                        amount
+                        for (_pid, s, pt), amount in week_flow.served.items()
+                        if s == bucket_skill and pt == bucket_part
+                    )
+                    # Unused days of every profile that could take on more of this
+                    # skill/part. Rows of different skills can share the same people.
+                    spare = 0
+                    for p in profiles:
+                        rem = week_flow.remaining.get(p.id)
+                        if rem is None or not p.serves(bucket_skill):
+                            continue
+                        rem_m, rem_d, rem_n, rem_f = rem
+                        if bucket_part == _ANY_PART:
+                            spare += rem_m + rem_d + rem_n + rem_f
+                        else:
+                            spare += (
+                                {"m": rem_m, "d": rem_d, "n": rem_n}[bucket_part]
+                                + rem_f
+                            )
+                    week_view_rows[row_key][week_iso]["planned"] = served
+                    week_view_rows[row_key][week_iso]["spare"] = spare
+                    week_view_rows[row_key][week_iso]["shortage"] = (
+                        week_flow.unmet.get((bucket_skill, bucket_part), 0)
+                    )
+                    continue
+
                 # For part-specific rows, align with the season solver:
                 # Ochtend/Dag/Avond use (part + flex). Unknown parts fall back to total skill.
                 if part in {"Ochtend", "Dag", "Avond"}:
@@ -2797,6 +3725,7 @@ class SeasonPlanningService:
                 "rows": week_view_rows,
             },
             deadline_summary=deadline_summary,
+            bottlenecks=_bottleneck_analysis(start_date, visits, users, avail_map),
         )
 
     @staticmethod

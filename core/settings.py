@@ -119,6 +119,15 @@ class Settings(BaseModel):
         )
     )
 
+    # Constraint: Season planner capacity via skill-profile flow instead of per-skill pools.
+    # Prevents counting multi-skilled researchers in every skill pool at once.
+    constraint_profile_flow: bool = Field(
+        default_factory=lambda: os.getenv(
+            "CONSTRAINT_PROFILE_FLOW", "false"
+        ).lower()
+        in {"1", "true", "yes"}
+    )
+
     # Constraint: Max Travel Time (Minutes)
     constraint_max_travel_time_minutes: int = Field(
         default_factory=lambda: int(
@@ -178,8 +187,26 @@ class Settings(BaseModel):
     )
     season_planner_timeout_thorough_seconds: float = Field(
         default_factory=lambda: float(
-            os.getenv("SEASON_PLANNER_TIMEOUT_THOROUGH_SECONDS", "180")
+            os.getenv("SEASON_PLANNER_TIMEOUT_THOROUGH_SECONDS", "600")
         )
+    )
+    # CP-SAT search workers. Quick runs are user-triggered during the day, so they
+    # leave a core free for the API/DB; the nightly thorough run may use all cores.
+    season_planner_num_workers_quick: int = Field(
+        default_factory=lambda: int(
+            os.getenv("SEASON_PLANNER_NUM_WORKERS_QUICK", "3")
+        )
+    )
+    season_planner_num_workers_thorough: int = Field(
+        default_factory=lambda: int(
+            os.getenv("SEASON_PLANNER_NUM_WORKERS_THOROUGH", "4")
+        )
+    )
+
+    # Season planner: first maximise the visits that fit, then optimise the rest.
+    season_planner_two_phase: bool = Field(
+        default_factory=lambda: os.getenv("SEASON_PLANNER_TWO_PHASE", "true").lower()
+        in {"1", "true", "yes"}
     )
 
     # Provisional week stickiness

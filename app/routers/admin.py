@@ -155,24 +155,33 @@ async def list_activity_logs(
 # Helper _sim_result_to_response is no longer needed as SeasonPlanningService returns the schema directly
 
 
+def _effective_today(simulated_today: date | None) -> date:
+    """Today, or the simulated date when test mode is enabled."""
+    if _settings.test_mode_enabled and simulated_today:
+        return simulated_today
+    return date.today()
+
+
 @router.get("/capacity/visits/families", response_model=CapacitySimulationResponse)
 async def get_family_capacity(
     _: AdminDep,
     db: DbDep,
     simulate: Annotated[bool, Query()] = False,
     quote_project_ids: Annotated[list[int], Query()] = [],
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> CapacitySimulationResponse:
     """
     Get persisted Season Planning result.
     This replaces the legacy simulation. It reads validation weeks from visits.
     """
+    today = _effective_today(simulated_today)
     effective_quote_ids = quote_project_ids if quote_project_ids else None
     if simulate:
         return await SeasonPlanningService.simulate_capacity_grid(
-            db, date.today(), quote_project_ids=effective_quote_ids
+            db, today, quote_project_ids=effective_quote_ids
         )
     return await SeasonPlanningService.get_capacity_grid(
-        db, date.today(), quote_project_ids=effective_quote_ids
+        db, today, quote_project_ids=effective_quote_ids
     )
 
 
@@ -182,23 +191,26 @@ async def regenerate_family_capacity(
     db: DbDep,
     simulate: Annotated[bool, Query()] = False,
     quote_project_ids: Annotated[list[int], Query()] = [],
+    simulated_today: Annotated[date | None, Query()] = None,
 ) -> CapacitySimulationResponse:
     """Run the Season Solver (Global Planning)."""
 
+    today = _effective_today(simulated_today)
     effective_quote_ids = quote_project_ids if quote_project_ids else None
     if simulate:
         return await SeasonPlanningService.simulate_capacity_grid(
-            db, date.today(), quote_project_ids=effective_quote_ids
+            db, today, quote_project_ids=effective_quote_ids
         )
 
     # Run Solver
     try:
         await SeasonPlanningService.run_season_solver(
             db,
-            date.today(),
+            today,
             include_quotes=False,
             persist=True,
             timeout_seconds=_settings.season_planner_timeout_quick_seconds,
+            num_workers=_settings.season_planner_num_workers_quick,
         )
     except PlanningRunError as exc:
         await db.rollback()
@@ -222,7 +234,7 @@ async def regenerate_family_capacity(
 
     # Return new state
     res = await SeasonPlanningService.get_capacity_grid(
-        db, date.today(), include_quotes=False
+        db, today, include_quotes=False
     )
 
     await log_activity(

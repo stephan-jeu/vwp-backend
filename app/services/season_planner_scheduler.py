@@ -78,6 +78,7 @@ async def _execute_season_planner(session: AsyncSession) -> None:
         session,
         date.today(),
         timeout_seconds=_settings.season_planner_timeout_thorough_seconds,
+        num_workers=_settings.season_planner_num_workers_thorough,
     )
     await log_activity(
         session,

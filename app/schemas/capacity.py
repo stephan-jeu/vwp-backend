@@ -70,6 +70,52 @@ class DeadlineSummaryRow(BaseModel):
     not_scheduled: int
 
 
+class BottleneckPeriod(BaseModel):
+    """Consecutive weeks where extra capacity would let more visits be planned.
+
+    Attributes:
+        from_week: First ISO week of the period (e.g. "2026-W20").
+        to_week: Last ISO week of the period.
+        skills: Skills for which extra researcher-days in this period help.
+        unmet_days: Researcher-days of visits for these skills that do not fit,
+            with an execution window overlapping this period (indicative).
+    """
+
+    from_week: str
+    to_week: str
+    skills: list[str]
+    unmet_days: int
+
+
+class CapacityBottleneckReport(BaseModel):
+    """Capacity check independent of the weeks the season planner chose.
+
+    Attributes:
+        total_unmet_days: Researcher-days that cannot be planned in any week,
+            whatever the planning. A lower bound: protocol gaps between visits
+            are not taken into account.
+        unscheduled_visits: Visits the season planner could not fit in the
+            capacity in its last run (None when unknown).
+        unscheduled_days: Researcher-days of those visits. Unlike
+            total_unmet_days this includes the minimum period between visits, so
+            it is the more realistic number.
+        committed_overbooked_days: Part of the shortage in visits already fixed
+            to an overbooked week (planned, locked or custom); moving other
+            visits cannot solve this.
+        committed_overbooked_visits: Number of those visits (indicative).
+        week_skills: ISO week -> skills that are a real bottleneck that week.
+        periods: Bottleneck weeks grouped into consecutive periods.
+    """
+
+    total_unmet_days: int
+    unscheduled_visits: int | None = None
+    unscheduled_days: int | None = None
+    committed_overbooked_days: int = 0
+    committed_overbooked_visits: int = 0
+    week_skills: dict[str, list[str]] = {}
+    periods: list[BottleneckPeriod] = []
+
+
 class CapacitySimulationResponse(BaseModel):
     """Response model for long-term family capacity simulations.
 
@@ -92,5 +138,6 @@ class CapacitySimulationResponse(BaseModel):
     week_view: WeekView | None = None
     unschedulable_visits: list[UnschedulableVisitInfo] = []
     deadline_summary: list[DeadlineSummaryRow] = []
+    bottlenecks: CapacityBottleneckReport | None = None
 
     model_config = {"from_attributes": True}
